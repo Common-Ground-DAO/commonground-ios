@@ -1,0 +1,120 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* CommonGroundApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* CommonGroundApp.swift */; };
+		A10000000000000000000002 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* AppModel.swift */; };
+		A10000000000000000000003 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* RootView.swift */; };
+		A10000000000000000000004 /* InstanceOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* InstanceOnboardingView.swift */; };
+		A10000000000000000000005 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* AuthenticationView.swift */; };
+		A10000000000000000000006 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* HomeView.swift */; };
+		A10000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* Assets.xcassets */; };
+		A10000000000000000000008 /* CommonGroundKit in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000001 /* CommonGroundKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B10000000000000000000001 /* CommonGroundApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommonGroundApp.swift; sourceTree = "<group>"; };
+		B10000000000000000000002 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		B10000000000000000000004 /* InstanceOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstanceOnboardingView.swift; sourceTree = "<group>"; };
+		B10000000000000000000005 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
+		B10000000000000000000006 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B10000000000000000000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B10000000000000000000009 /* CommonGround.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CommonGround.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C10000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A10000000000000000000008 /* CommonGroundKit in Frameworks */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (E10000000000000000000002 /* CommonGroundApp */, E10000000000000000000005 /* Products */);
+			sourceTree = "<group>";
+		};
+		E10000000000000000000002 /* CommonGroundApp */ = {
+			isa = PBXGroup;
+			children = (E10000000000000000000003 /* App */, E10000000000000000000004 /* Models */, E10000000000000000000006 /* Views */, B10000000000000000000007 /* Assets.xcassets */, B10000000000000000000008 /* Info.plist */);
+			path = CommonGroundApp;
+			sourceTree = "<group>";
+		};
+		E10000000000000000000003 /* App */ = {isa = PBXGroup; children = (B10000000000000000000001 /* CommonGroundApp.swift */,); path = App; sourceTree = "<group>"; };
+		E10000000000000000000004 /* Models */ = {isa = PBXGroup; children = (B10000000000000000000002 /* AppModel.swift */,); path = Models; sourceTree = "<group>"; };
+		E10000000000000000000005 /* Products */ = {isa = PBXGroup; children = (B10000000000000000000009 /* CommonGround.app */,); name = Products; sourceTree = "<group>"; };
+		E10000000000000000000006 /* Views */ = {isa = PBXGroup; children = (B10000000000000000000003 /* RootView.swift */, B10000000000000000000004 /* InstanceOnboardingView.swift */, B10000000000000000000005 /* AuthenticationView.swift */, B10000000000000000000006 /* HomeView.swift */,); path = Views; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F10000000000000000000001 /* CommonGround */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F10000000000000000000002 /* Build configuration list for PBXNativeTarget "CommonGround" */;
+			buildPhases = (C10000000000000000000002 /* Sources */, C10000000000000000000001 /* Frameworks */, C10000000000000000000003 /* Resources */);
+			buildRules = ();
+			dependencies = ();
+			name = CommonGround;
+			packageProductDependencies = (D10000000000000000000001 /* CommonGroundKit */,);
+			productName = CommonGround;
+			productReference = B10000000000000000000009 /* CommonGround.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F10000000000000000000003 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2630; LastUpgradeCheck = 2630; TargetAttributes = {F10000000000000000000001 = {CreatedOnToolsVersion = 26.3;};};};
+			buildConfigurationList = F10000000000000000000004 /* Build configuration list for PBXProject "CommonGroundApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base);
+			mainGroup = E10000000000000000000001;
+			packageReferences = (D10000000000000000000002 /* XCLocalSwiftPackageReference "." */,);
+			productRefGroup = E10000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (F10000000000000000000001 /* CommonGround */,);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		C10000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000007 /* Assets.xcassets in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C10000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004, A10000000000000000000005, A10000000000000000000006,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		F10000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0;}; name = Debug; };
+		F10000000000000000000006 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.0; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_VERSION = 5.0;}; name = Release; };
+		F10000000000000000000007 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = CommonGroundApp/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 16.0; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = org.commonground.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2";}; name = Debug; };
+		F10000000000000000000008 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = CommonGroundApp/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 16.0; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = org.commonground.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; VALIDATE_PRODUCT = YES;}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F10000000000000000000002 = {isa = XCConfigurationList; buildConfigurations = (F10000000000000000000007 /* Debug */, F10000000000000000000008 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		F10000000000000000000004 = {isa = XCConfigurationList; buildConfigurations = (F10000000000000000000005 /* Debug */, F10000000000000000000006 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		D10000000000000000000002 /* XCLocalSwiftPackageReference "." */ = {isa = XCLocalSwiftPackageReference; relativePath = .; };
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D10000000000000000000001 /* CommonGroundKit */ = {isa = XCSwiftPackageProductDependency; package = D10000000000000000000002 /* XCLocalSwiftPackageReference "." */; productName = CommonGroundKit; };
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = F10000000000000000000003 /* Project object */;
+}
