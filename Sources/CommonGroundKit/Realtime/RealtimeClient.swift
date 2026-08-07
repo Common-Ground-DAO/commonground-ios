@@ -51,6 +51,25 @@ public final class RealtimeClient: ObservableObject {
 
     public func connect(reconnects: Bool = true) async throws {
         guard socket == nil else { throw RealtimeError.alreadyConnected }
+        let retryDelays: [UInt64] = [400_000_000, 1_000_000_000]
+        var lastError: Error?
+
+        for attempt in 0...retryDelays.count {
+            do {
+                try await connectOnce(reconnects: reconnects)
+                return
+            } catch {
+                tearDownSocket()
+                if error is CancellationError { throw error }
+                lastError = error
+                guard attempt < retryDelays.count else { break }
+                try await Task.sleep(nanoseconds: retryDelays[attempt])
+            }
+        }
+        throw lastError ?? RealtimeError.connectionFailed("unknown")
+    }
+
+    private func connectOnce(reconnects: Bool) async throws {
         let cookie = await transport.cookieHeader()
         var configuration: SocketIOClientConfiguration = [
             .path("/api/ws/"),
@@ -128,11 +147,16 @@ public final class RealtimeClient: ObservableObject {
     }
 
     public func close() {
+        tearDownSocket()
+        greeting = nil
+    }
+
+    private func tearDownSocket() {
+        socket?.removeAllHandlers()
         socket?.disconnect()
         socket = nil
         manager = nil
         connected = false
-        greeting = nil
     }
 
     private func emitWithAck(_ event: String, _ items: SocketData...) async throws -> Any {

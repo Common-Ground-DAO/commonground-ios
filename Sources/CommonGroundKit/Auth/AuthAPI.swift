@@ -70,7 +70,7 @@ public struct AuthAPI: Sendable {
     }
 
     /// Logout soft-deletes the server device. Callers must also discard the
-    /// matching local key and device id; `CommonGroundSession.logout()` does.
+    /// matching local key and device id; `AppModel.logout()` does this in the app.
     public func logout() async throws {
         let _: EmptyResponse = try await transport.call("User/logout")
     }

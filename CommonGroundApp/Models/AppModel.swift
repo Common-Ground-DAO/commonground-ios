@@ -20,14 +20,22 @@ final class AppModel: ObservableObject {
     private(set) var client: CommonGroundClient?
     private var signingKey: (any DeviceSigningKey)?
     private var realtime: RealtimeClient?
+    private var didAttemptLaunchRestore = false
 
     var savedDeviceID: String? {
         guard let instance = try? InstanceURL(instanceInput) else { return nil }
-        return UserDefaults.standard.string(forKey: Keys.deviceID(instance))
+        return savedDeviceID(for: instance)
     }
 
     var instanceHost: String {
         client?.instance.url.host ?? "Common Ground"
+    }
+
+    func restoreOnLaunch() async {
+        guard !didAttemptLaunchRestore else { return }
+        didAttemptLaunchRestore = true
+        guard UserDefaults.standard.string(forKey: Keys.instance) != nil else { return }
+        await connect()
     }
 
     func connect() async {
@@ -39,19 +47,30 @@ final class AppModel: ObservableObject {
             self.instanceConfig = config
             self.instanceInput = instance.description
             UserDefaults.standard.set(instance.description, forKey: Keys.instance)
-            self.signingKey = try DeviceKeyStore.loadOrCreate(for: instance)
-            self.phase = .authentication
+            let signingKey = try DeviceKeyStore.loadOrCreate(for: instance)
+            self.signingKey = signingKey
+            if !(await self.restoreSession(client: client, signingKey: signingKey)) {
+                self.phase = .authentication
+            }
         }
     }
 
     func signIn(alias: String, password: String) async {
         await perform(activity: "Signing in…") {
             guard let client, let signingKey else { throw AppError.noInstance }
+            let preparation = try await self.preparePasswordLogin(
+                client: client,
+                signingKey: signingKey
+            )
             let session = try await client.auth.loginWithPassword(
                 aliasOrEmail: alias,
                 password: password,
-                deviceKey: signingKey
+                deviceKey: preparation.deviceKey
             )
+            if let retirementClient = preparation.retirementClient {
+                try? await retirementClient.auth.logout()
+                await retirementClient.transport.clearCookies()
+            }
             await self.didAuthenticate(session)
         }
     }
@@ -74,11 +93,16 @@ final class AppModel: ObservableObject {
             guard let client, let signingKey, let deviceID = savedDeviceID else {
                 throw AppError.noSavedDevice
             }
-            let session = try await client.auth.loginWithDevice(
-                deviceId: deviceID,
-                deviceKey: signingKey
-            )
-            await self.didAuthenticate(session)
+            do {
+                let session = try await client.auth.loginWithDevice(
+                    deviceId: deviceID,
+                    deviceKey: signingKey
+                )
+                await self.didAuthenticate(session)
+            } catch let error as APIError where Self.isStaleDeviceError(error) {
+                _ = try self.resetLocalDeviceIdentity(for: client.instance)
+                throw AppError.savedDeviceExpired
+            }
         }
     }
 
@@ -88,6 +112,8 @@ final class AppModel: ObservableObject {
             let access = MessageAccess.community(channel.communityId, channelId: channel.channelId)
             let messages = try await client.messages.load(access: access)
             store.seed(messages, channelId: channel.channelId)
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = userMessage(for: error)
         }
@@ -114,10 +140,12 @@ final class AppModel: ObservableObject {
         do {
             try await client.auth.logout()
             realtime?.close()
-            try DeviceKeyStore.delete(for: client.instance)
+            await client.transport.clearCookies()
             UserDefaults.standard.removeObject(forKey: Keys.deviceID(client.instance))
-            signingKey = try DeviceKeyStore.loadOrCreate(for: client.instance)
+            UserDefaults.standard.removeObject(forKey: Keys.cachedLogin(client.instance))
             phase = .authentication
+            try DeviceKeyStore.delete(for: client.instance)
+            signingKey = try DeviceKeyStore.loadOrCreate(for: client.instance)
         } catch {
             errorMessage = userMessage(for: error)
         }
@@ -136,6 +164,7 @@ final class AppModel: ObservableObject {
         guard let client else { return }
         store.hydrate(from: session.response)
         UserDefaults.standard.set(session.deviceId, forKey: Keys.deviceID(client.instance))
+        saveCachedResponse(session.response, for: client.instance)
         selectedChannelID = session.response.communities
             .flatMap(\.channels)
             .sorted(by: { $0.order < $1.order })
@@ -154,6 +183,91 @@ final class AppModel: ObservableObject {
             // a later lifecycle pass without invalidating the authenticated UI.
             realtimeNotice = "Live updates are temporarily unavailable. Pull to refresh."
         }
+    }
+
+    private func restoreSession(
+        client: CommonGroundClient,
+        signingKey: any DeviceSigningKey
+    ) async -> Bool {
+        let status: LoginStatus
+        do {
+            status = try await client.auth.checkLoginStatus()
+        } catch {
+            // A transient status-check failure should not destroy a cache that
+            // may still match a valid rolling session on the next launch.
+            return false
+        }
+        guard let userID = status.userId,
+              let deviceID = savedDeviceID(for: client.instance),
+              let response = cachedResponse(for: client.instance),
+              response.ownData.id == userID else {
+            UserDefaults.standard.removeObject(forKey: Keys.cachedLogin(client.instance))
+            return false
+        }
+        await didAuthenticate(
+            AuthSession(response: response, deviceId: deviceID, deviceKey: signingKey)
+        )
+        return true
+    }
+
+    private func preparePasswordLogin(
+        client: CommonGroundClient,
+        signingKey: any DeviceSigningKey
+    ) async throws -> PasswordLoginPreparation {
+        guard let oldDeviceID = savedDeviceID(for: client.instance) else {
+            return PasswordLoginPreparation(deviceKey: signingKey, retirementClient: nil)
+        }
+
+        let cleanupClient = CommonGroundClient(
+            instance: client.instance,
+            sessionConfiguration: .ephemeral
+        )
+        do {
+            _ = try await cleanupClient.auth.loginWithDevice(
+                deviceId: oldDeviceID,
+                deviceKey: signingKey
+            )
+            return PasswordLoginPreparation(
+                deviceKey: signingKey,
+                retirementClient: cleanupClient
+            )
+        } catch let error as APIError where Self.isStaleDeviceError(error) {
+            let replacement = try resetLocalDeviceIdentity(for: client.instance)
+            return PasswordLoginPreparation(deviceKey: replacement, retirementClient: nil)
+        } catch {
+            // Cleanup is best-effort. A password login must remain available if
+            // the old device cannot be reached for an unrelated transient reason.
+            return PasswordLoginPreparation(deviceKey: signingKey, retirementClient: nil)
+        }
+    }
+
+    private func resetLocalDeviceIdentity(for instance: InstanceURL) throws -> any DeviceSigningKey {
+        UserDefaults.standard.removeObject(forKey: Keys.deviceID(instance))
+        UserDefaults.standard.removeObject(forKey: Keys.cachedLogin(instance))
+        try DeviceKeyStore.delete(for: instance)
+        let replacement = try DeviceKeyStore.loadOrCreate(for: instance)
+        signingKey = replacement
+        return replacement
+    }
+
+    private func savedDeviceID(for instance: InstanceURL) -> String? {
+        UserDefaults.standard.string(forKey: Keys.deviceID(instance))
+    }
+
+    private func cachedResponse(for instance: InstanceURL) -> LoginResponse? {
+        guard let data = UserDefaults.standard.data(forKey: Keys.cachedLogin(instance)) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(LoginResponse.self, from: data)
+    }
+
+    private func saveCachedResponse(_ response: LoginResponse, for instance: InstanceURL) {
+        guard let data = try? JSONEncoder().encode(response) else { return }
+        UserDefaults.standard.set(data, forKey: Keys.cachedLogin(instance))
+    }
+
+    private static func isStaleDeviceError(_ error: APIError) -> Bool {
+        error.code == "INVALID_SIGNATURE" || error.code == "NOT_FOUND"
     }
 
     private func perform(activity: String, operation: () async throws -> Void) async {
@@ -187,15 +301,25 @@ final class AppModel: ObservableObject {
         static func deviceID(_ instance: InstanceURL) -> String {
             "deviceID.\(instance.description)"
         }
+        static func cachedLogin(_ instance: InstanceURL) -> String {
+            "cachedLogin.\(instance.description)"
+        }
+    }
+
+    private struct PasswordLoginPreparation {
+        let deviceKey: any DeviceSigningKey
+        let retirementClient: CommonGroundClient?
     }
 
     private enum AppError: Error, LocalizedError {
         case noInstance
         case noSavedDevice
+        case savedDeviceExpired
         var errorDescription: String? {
             switch self {
             case .noInstance: return "Connect to an instance first."
             case .noSavedDevice: return "No saved device login was found."
+            case .savedDeviceExpired: return "This saved device login expired. Sign in with your password to reconnect it."
             }
         }
     }

@@ -10,12 +10,14 @@ The first protocol spine is implemented end-to-end:
 
 - multi-instance onboarding begins with `GET /api/v2/Instance/config`;
 - typed POST-RPC transport unwraps `{status,data|error}` even when errors use HTTP 200;
-- per-instance URL sessions retain the rolling session cookie;
+- per-instance URL sessions isolate rolling session cookies and persist them in the Keychain;
 - P-256 device keys are generated in the Secure Enclave and exported as the server's exact public JWK shape;
 - ECDSA signatures are normalized to raw 64-byte IEEE-P1363 and base64 encoded;
 - ALTCHA v2 is solved natively with PBKDF2/HMAC-SHA256 while preserving all signed challenge fields;
 - registration, password login, device-signature login, session status, and destructive logout are wrapped;
-- Socket.IO connects at `/api/ws/`, performs in-band device login, and routes all 17 `cli*` events;
+- valid sessions restore silently from cached login state on launch;
+- stale device identities fall back to password login and superseded devices are retired when possible;
+- Socket.IO connects at `/api/ws/`, retries transient initial failures, performs in-band device login, and routes all 17 `cli*` events;
 - community channel history and structured text-message sends back the initial SwiftUI experience;
 - own REST writes are applied locally because the server deliberately sends no same-device echo.
 
@@ -32,6 +34,16 @@ Run the headless SDK tests with:
 ```sh
 swift test
 ```
+
+The live login contract can be checked without storing credentials in the repository:
+
+```sh
+COMMON_GROUND_LIVE_EMAIL='…' COMMON_GROUND_LIVE_PASSWORD='…' \
+  swift test --filter CommonGroundKitTests.testLiveExistingAccountPasswordLoginContract
+```
+
+`COMMON_GROUND_LIVE_AUTH=1 swift test --filter CommonGroundKitTests.testLiveRegistrationAndPasswordLoginContract`
+runs the registration-to-password-login path with a generated disposable account. Both live probes are opt-in and skipped during normal test runs.
 
 The default onboarding target is `https://cg.mogged.eu`. Plain HTTP is accepted only for `localhost`, `127.0.0.1`, and `::1`, including the disposable conformance target at `http://127.0.0.1:18080`.
 

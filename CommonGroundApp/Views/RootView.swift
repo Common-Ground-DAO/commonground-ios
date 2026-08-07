@@ -21,6 +21,7 @@ struct RootView: View {
             }
         }
         .animation(.spring(response: 0.35), value: model.errorMessage)
+        .task { await model.restoreOnLaunch() }
     }
 }
 

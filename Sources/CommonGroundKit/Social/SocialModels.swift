@@ -46,12 +46,47 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     public let reactions: [String: Int]
     public let ownReaction: String?
     public let parentMessageId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, creatorId, channelId, body, attachments, editedAt, createdAt, updatedAt
+        case reactions, ownReaction, parentMessageId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        creatorId = try container.decode(String.self, forKey: .creatorId)
+        channelId = try container.decode(String.self, forKey: .channelId)
+        body = try container.decode(MessageBody.self, forKey: .body)
+        attachments = try container.decode([JSONValue].self, forKey: .attachments)
+        editedAt = try container.decodeIfPresent(String.self, forKey: .editedAt)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        reactions = try container.decodeIfPresent([String: Int].self, forKey: .reactions) ?? [:]
+        ownReaction = try container.decodeIfPresent(String.self, forKey: .ownReaction)
+        parentMessageId = try container.decodeIfPresent(String.self, forKey: .parentMessageId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(creatorId, forKey: .creatorId)
+        try container.encode(channelId, forKey: .channelId)
+        try container.encode(body, forKey: .body)
+        try container.encode(attachments, forKey: .attachments)
+        try container.encodeIfPresent(editedAt, forKey: .editedAt)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(reactions, forKey: .reactions)
+        try container.encodeIfPresent(ownReaction, forKey: .ownReaction)
+        try container.encodeIfPresent(parentMessageId, forKey: .parentMessageId)
+    }
 }
 
 public struct Channel: Codable, Equatable, Identifiable, Sendable {
     public let communityId: String
     public let channelId: String
-    public let areaId: String
+    public let areaId: String?
     public let title: String
     public let url: String?
     public let order: Int
@@ -87,7 +122,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public let adminIds: [String]
     public let createdAt: String
     public let updatedAt: String
-    public let unread: Bool?
+    public let unread: Int?
     public let lastRead: String?
     public let lastMessage: Message?
 }
