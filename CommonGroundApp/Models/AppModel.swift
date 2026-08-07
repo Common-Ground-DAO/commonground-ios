@@ -51,6 +51,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var userArticles: [String: [UserArticlePreview]] = [:]
     @Published private(set) var articleDetails: [String: ArticleDetail] = [:]
     @Published private(set) var profileDetails: [String: UserProfileDetails] = [:]
+    @Published private(set) var channelMembers: [String: ChannelMemberList] = [:]
     @Published var appearance = AppearancePreference(
         rawValue: UserDefaults.standard.string(forKey: "appearancePreference") ?? ""
     ) ?? .system {
@@ -403,6 +404,41 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func loadChannelMembers(channel: Channel) async {
+        guard let client else { return }
+        do {
+            var members = try await client.communities.channelMembers(
+                communityID: channel.communityId,
+                channelID: channel.channelId,
+                offset: 0,
+                limit: 100
+            )
+            var loadedCount = members.all.count
+            while loadedCount < members.count {
+                let page = try await client.communities.channelMembers(
+                    communityID: channel.communityId,
+                    channelID: channel.channelId,
+                    offset: loadedCount,
+                    limit: 100
+                )
+                let pageCount = page.all.count
+                guard pageCount > 0 else { break }
+                members = members.appending(page)
+                loadedCount += pageCount
+            }
+            channelMembers[channel.channelId] = members
+            await refreshUsers(ids: members.all.map(\.userId))
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func loadChatMembers(chat: Chat) async {
+        await refreshUsers(ids: chat.userIds)
+    }
+
     func discoverCommunities(query: String = "") async {
         guard let client, !isLoadingCommunities else { return }
         isLoadingCommunities = true
@@ -685,6 +721,19 @@ final class AppModel: ObservableObject {
             await loadAttachmentURLs(objectIDs: users.compactMap(\.imageID))
         } catch {
             // Names and avatars are enhancement data. The primary content remains usable.
+        }
+    }
+
+    private func refreshUsers(ids: [String]) async {
+        guard let client else { return }
+        let unique = Array(Set(ids))
+        guard !unique.isEmpty else { return }
+        do {
+            let users = try await client.profiles.users(ids: unique)
+            store.seed(users: users)
+            await loadAttachmentURLs(objectIDs: users.compactMap(\.imageID))
+        } catch {
+            // Presence can be refreshed again while the drawer remains open.
         }
     }
 

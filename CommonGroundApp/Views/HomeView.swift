@@ -1409,12 +1409,116 @@ private struct ConversationView: View {
     @State private var deleteTarget: Message?
     @State private var showMentionPicker = false
     @State private var selectedUser: UserProfile?
+    @State private var showParticipants = ProcessInfo.processInfo.arguments.contains("-showParticipants")
+    @GestureState private var participantDrag: CGFloat = 0
 
     private var messages: [Message] {
         store.orderedMessages(channelId: context.channelID)
     }
 
     var body: some View {
+        GeometryReader { proxy in
+            let drawerWidth = min(max(proxy.size.width * 0.82, 280), 370)
+            let baseOffset = showParticipants ? drawerWidth : 0
+            let visibleOffset = min(drawerWidth, max(0, baseOffset + participantDrag))
+
+            ZStack(alignment: .leading) {
+                ConversationParticipantsView(
+                    context: context,
+                    store: store,
+                    isVisible: showParticipants,
+                    select: { selectedUser = $0 },
+                    close: { showParticipants = false }
+                )
+                .frame(width: drawerWidth)
+                .offset(x: visibleOffset - drawerWidth)
+
+                conversationBody
+                    .offset(x: visibleOffset)
+                    .overlay {
+                        if visibleOffset > 1 {
+                            Color.black
+                                .opacity(0.18 * visibleOffset / drawerWidth)
+                                .contentShape(Rectangle())
+                                .onTapGesture { showParticipants = false }
+                        }
+                    }
+            }
+            .clipped()
+            .animation(.snappy(duration: 0.26), value: showParticipants)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 18)
+                    .updating($participantDrag) { value, state, _ in
+                        if abs(value.translation.width) > abs(value.translation.height) {
+                            state = value.translation.width
+                        }
+                    }
+                    .onEnded { value in
+                        guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                        if value.translation.width > 55 {
+                            showParticipants = true
+                        } else if value.translation.width < -55 {
+                            showParticipants = false
+                        }
+                    }
+            )
+        }
+        .navigationTitle(context.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Channel participants", systemImage: "person.2") {
+                    showParticipants.toggle()
+                }
+                .accessibilityHint("Swipe right in the conversation to reveal this panel")
+            }
+        }
+        .task(id: context.channelID) { await load() }
+        .sheet(item: $reportTarget) { ReportSheet(target: $0) }
+        .sheet(item: $selectedUser) { user in
+            UserProfileView(userID: user.id, store: store) { chatID in
+                selectedUser = nil
+                model.selectChat(chatID)
+            }
+        }
+        .sheet(isPresented: $showMentionPicker) {
+            MentionPicker(store: store) { user in
+                model.insertMention(user)
+                showMentionPicker = false
+            }
+            .presentationDetents([.medium, .large])
+        }
+        .onChange(of: selectedPhoto) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    await model.uploadMessageImage(data)
+                } else {
+                    model.errorMessage = "That image could not be loaded from the photo library."
+                }
+                selectedPhoto = nil
+            }
+        }
+        .confirmationDialog(
+            "Delete this message?",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete message", role: .destructive) {
+                guard let message = deleteTarget else { return }
+                deleteTarget = nil
+                Task { await model.deleteMessage(message, access: context.access) }
+            }
+            Button("Cancel", role: .cancel) { deleteTarget = nil }
+        } message: {
+            Text("This cannot be undone.")
+        }
+    }
+
+    private var conversationBody: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -1546,51 +1650,6 @@ private struct ConversationView: View {
             .padding(12)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle(context.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .task(id: context.channelID) { await load() }
-        .sheet(item: $reportTarget) { ReportSheet(target: $0) }
-        .sheet(item: $selectedUser) { user in
-            UserProfileView(userID: user.id, store: store) { chatID in
-                selectedUser = nil
-                model.selectChat(chatID)
-            }
-        }
-        .sheet(isPresented: $showMentionPicker) {
-            MentionPicker(store: store) { user in
-                model.insertMention(user)
-                showMentionPicker = false
-            }
-            .presentationDetents([.medium, .large])
-        }
-        .onChange(of: selectedPhoto) { _, item in
-            guard let item else { return }
-            Task {
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    await model.uploadMessageImage(data)
-                } else {
-                    model.errorMessage = "That image could not be loaded from the photo library."
-                }
-                selectedPhoto = nil
-            }
-        }
-        .confirmationDialog(
-            "Delete this message?",
-            isPresented: Binding(
-                get: { deleteTarget != nil },
-                set: { if !$0 { deleteTarget = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete message", role: .destructive) {
-                guard let message = deleteTarget else { return }
-                deleteTarget = nil
-                Task { await model.deleteMessage(message, access: context.access) }
-            }
-            Button("Cancel", role: .cancel) { deleteTarget = nil }
-        } message: {
-            Text("This cannot be undone.")
-        }
     }
 
     private func load() async {
@@ -1604,6 +1663,192 @@ private struct ConversationView: View {
         switch context {
         case .channel(let channel): await model.sendMessage(channel: channel)
         case .chat(let chat): await model.sendMessage(chat: chat)
+        }
+    }
+}
+
+private struct ConversationParticipantsView: View {
+    @EnvironmentObject private var model: AppModel
+    let context: ConversationContext
+    @ObservedObject var store: SyncStore
+    let isVisible: Bool
+    let select: (UserProfile) -> Void
+    let close: () -> Void
+    @State private var query = ""
+
+    private struct Participant: Identifiable {
+        let id: String
+        let user: UserProfile?
+        let isOnline: Bool
+        let role: String
+    }
+
+    private var participants: [Participant] {
+        switch context {
+        case .channel(let channel):
+            guard let members = model.channelMembers[channel.channelId] else { return [] }
+            let onlineIDs = Set(members.online.map(\.userId))
+            return members.all.map { entry in
+                Participant(
+                    id: entry.userId,
+                    user: store.users[entry.userId],
+                    isOnline: onlineIDs.contains(entry.userId),
+                    role: role(for: entry.userId, in: members)
+                )
+            }
+        case .chat(let chat):
+            return chat.userIds.map { userID in
+                let user = store.users[userID]
+                let status = user?.onlineStatus ?? "offline"
+                return Participant(
+                    id: userID,
+                    user: user,
+                    isOnline: status != "offline" && status != "invisible",
+                    role: userID == store.ownUser?.id ? "You" : "Participant"
+                )
+            }
+        }
+    }
+
+    private var filtered: [Participant] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return participants }
+        return participants.filter {
+            ($0.user?.displayName ?? "").localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
+    private var online: [Participant] {
+        filtered.filter(\.isOnline).sorted(by: participantSort)
+    }
+
+    private var other: [Participant] {
+        filtered.filter { !$0.isOnline }.sorted(by: participantSort)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(contextParticipantTitle).font(.headline)
+                    Text("\(participants.count) participants · \(participants.filter(\.isOnline).count) online")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close participants", systemImage: "xmark") { close() }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+            }
+            .padding(16)
+
+            HStack(spacing: 9) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Find a member", text: $query)
+                    .textInputAutocapitalization(.never)
+                if !query.isEmpty {
+                    Button("Clear search", systemImage: "xmark.circle.fill") { query = "" }
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+
+            List {
+                if !online.isEmpty {
+                    Section("Online now · \(online.count)") {
+                        ForEach(online) { participantRow($0) }
+                    }
+                }
+                Section(other.isEmpty ? "All members" : "Other members · \(other.count)") {
+                    if filtered.isEmpty {
+                        ContentUnavailableView.search(text: query)
+                            .listRowBackground(Color.clear)
+                    } else {
+                        ForEach(other) { participantRow($0) }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .refreshable { await refresh() }
+        }
+        .background(.regularMaterial)
+        .overlay(alignment: .trailing) { Divider() }
+        .task(id: isVisible) {
+            guard isVisible else { return }
+            while !Task.isCancelled {
+                await refresh()
+                do {
+                    try await Task.sleep(for: .seconds(20))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func participantRow(_ participant: Participant) -> some View {
+        Button {
+            if let user = participant.user { select(user) }
+        } label: {
+            HStack(spacing: 11) {
+                Avatar(
+                    name: participant.user?.displayName ?? "Member",
+                    url: participant.user?.imageID.flatMap { model.attachmentURLs[$0] },
+                    small: true
+                )
+                .overlay(alignment: .bottomTrailing) {
+                    Circle()
+                        .fill(participant.isOnline ? Color.green : Color.secondary.opacity(0.45))
+                        .frame(width: 11, height: 11)
+                        .overlay(Circle().stroke(.background, lineWidth: 2))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(participant.user?.displayName ?? "Loading member…")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                    Text(participant.isOnline ? "Online · \(participant.role)" : participant.role)
+                        .font(.caption)
+                        .foregroundStyle(participant.isOnline ? Color.green : Color.secondary)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(participant.user == nil)
+    }
+
+    private var contextParticipantTitle: String {
+        switch context {
+        case .channel: "Channel members"
+        case .chat: "Conversation"
+        }
+    }
+
+    private func role(for userID: String, in members: ChannelMemberList) -> String {
+        if members.admin.contains(where: { $0.userId == userID }) { return "Admin" }
+        if members.moderator.contains(where: { $0.userId == userID }) { return "Moderator" }
+        if members.writer.contains(where: { $0.userId == userID }) { return "Writer" }
+        return "Member"
+    }
+
+    private func participantSort(_ lhs: Participant, _ rhs: Participant) -> Bool {
+        (lhs.user?.displayName ?? lhs.id).localizedCaseInsensitiveCompare(
+            rhs.user?.displayName ?? rhs.id
+        ) == .orderedAscending
+    }
+
+    private func refresh() async {
+        switch context {
+        case .channel(let channel): await model.loadChannelMembers(channel: channel)
+        case .chat(let chat): await model.loadChatMembers(chat: chat)
         }
     }
 }

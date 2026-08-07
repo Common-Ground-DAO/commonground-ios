@@ -285,6 +285,37 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(created.title, "iOS Builders")
     }
 
+    func testChannelMemberListSeparatesOnlineAndOfflineMembers() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Community/getChannelMemberList")
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(object["communityId"] as? String, "community-1")
+            XCTAssertEqual(object["channelId"] as? String, "channel-1")
+            XCTAssertEqual(object["offset"] as? Int, 0)
+            XCTAssertEqual(object["limit"] as? Int, 100)
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":{"count":3,"adminCount":1,"moderatorCount":0,"writerCount":1,"readerCount":0,"offlineCount":1,"admin":[["user-online-admin",["role-admin"]]],"moderator":[],"writer":[["user-online-writer",["role-writer"]]],"reader":[],"offline":[["user-offline",["role-member"]]]}}"#
+            )
+        }
+        let api = CommunityAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let members = try await api.channelMembers(
+            communityID: "community-1",
+            channelID: "channel-1"
+        )
+        XCTAssertEqual(members.count, 3)
+        XCTAssertEqual(members.online.map(\.userId), ["user-online-admin", "user-online-writer"])
+        XCTAssertEqual(members.offline.map(\.userId), ["user-offline"])
+        XCTAssertEqual(members.all.count, 3)
+    }
+
     func testReportContractUsesModerationRouteAndReasonCode() async throws {
         MockURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.path, "/api/v2/Report/createReport")

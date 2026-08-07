@@ -269,6 +269,84 @@ public struct CommunitySummary: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct ChannelMemberEntry: Decodable, Equatable, Identifiable, Sendable {
+    public let userId: String
+    public let roleIds: [String]
+    public var id: String { userId }
+
+    public init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        userId = try container.decode(String.self)
+        roleIds = try container.decode([String].self)
+    }
+}
+
+public struct ChannelMemberList: Decodable, Equatable, Sendable {
+    public let count: Int
+    public let adminCount: Int
+    public let moderatorCount: Int
+    public let writerCount: Int
+    public let readerCount: Int
+    public let offlineCount: Int
+    public let admin: [ChannelMemberEntry]
+    public let moderator: [ChannelMemberEntry]
+    public let writer: [ChannelMemberEntry]
+    public let reader: [ChannelMemberEntry]
+    public let offline: [ChannelMemberEntry]
+
+    public init(
+        count: Int,
+        adminCount: Int,
+        moderatorCount: Int,
+        writerCount: Int,
+        readerCount: Int,
+        offlineCount: Int,
+        admin: [ChannelMemberEntry],
+        moderator: [ChannelMemberEntry],
+        writer: [ChannelMemberEntry],
+        reader: [ChannelMemberEntry],
+        offline: [ChannelMemberEntry]
+    ) {
+        self.count = count
+        self.adminCount = adminCount
+        self.moderatorCount = moderatorCount
+        self.writerCount = writerCount
+        self.readerCount = readerCount
+        self.offlineCount = offlineCount
+        self.admin = admin
+        self.moderator = moderator
+        self.writer = writer
+        self.reader = reader
+        self.offline = offline
+    }
+
+    public var online: [ChannelMemberEntry] {
+        var seen = Set<String>()
+        return (admin + moderator + writer + reader).filter { seen.insert($0.userId).inserted }
+    }
+
+    public var all: [ChannelMemberEntry] {
+        var seen = Set<String>()
+        return (online + offline).filter { seen.insert($0.userId).inserted }
+    }
+
+    public func appending(_ next: ChannelMemberList) -> ChannelMemberList {
+        ChannelMemberList(
+            count: next.count,
+            adminCount: next.adminCount,
+            moderatorCount: next.moderatorCount,
+            writerCount: next.writerCount,
+            readerCount: next.readerCount,
+            offlineCount: next.offlineCount,
+            admin: admin + next.admin,
+            moderator: moderator + next.moderator,
+            writer: writer + next.writer,
+            reader: reader + next.reader,
+            offline: offline + next.offline
+        )
+    }
+}
+
 public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let channelId: String
