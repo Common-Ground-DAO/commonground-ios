@@ -55,11 +55,58 @@ public struct ProfileAPI: Sendable {
             body: StatusRequest(status: status)
         )
     }
+
+    public func updateOwnData(email: String? = nil, dmNotifications: Bool? = nil) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "User/updateOwnData",
+            body: UpdateOwnDataRequest(email: email, dmNotifications: dmNotifications)
+        )
+    }
+
+    public func updateCGAccount(
+        displayName: String,
+        description: String,
+        homepage: String
+    ) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "User/updateUserAccount",
+            body: UpdateCGAccountRequest(
+                type: "cg",
+                displayName: displayName,
+                description: description,
+                homepage: homepage,
+                links: []
+            )
+        )
+    }
+
+    public func setPassword(_ password: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "User/setPassword",
+            body: PasswordRequest(password: password)
+        )
+    }
 }
 
 private struct UserIDsRequest: Encodable, Sendable { let userIds: [String] }
 private struct UserIDRequest: Encodable, Sendable { let userId: String }
 private struct StatusRequest: Encodable, Sendable { let status: String }
+private struct UpdateOwnDataRequest: Encodable, Sendable {
+    let email: String?
+    let dmNotifications: Bool?
+}
+private struct UpdateCGAccountRequest: Encodable, Sendable {
+    struct Link: Encodable, Sendable {
+        let url: String
+        let text: String
+    }
+    let type: String
+    let displayName: String
+    let description: String
+    let homepage: String
+    let links: [Link]
+}
+private struct PasswordRequest: Encodable, Sendable { let password: String }
 private struct SearchUsersRequest: Encodable, Sendable {
     let query: String
     let limit: Int

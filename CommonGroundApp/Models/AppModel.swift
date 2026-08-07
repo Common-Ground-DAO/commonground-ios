@@ -8,6 +8,19 @@ enum CommunityJoinOutcome {
     case failed
 }
 
+enum AppearancePreference: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase { case instance, authentication, home }
@@ -34,6 +47,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var userSearchResultIDs: [String] = []
     @Published var isLoadingCommunities = false
     @Published private(set) var communityResults: [CommunitySummary] = []
+    @Published private(set) var communityArticles: [String: [CommunityArticlePreview]] = [:]
+    @Published private(set) var userArticles: [String: [UserArticlePreview]] = [:]
+    @Published private(set) var articleDetails: [String: ArticleDetail] = [:]
+    @Published private(set) var profileDetails: [String: UserProfileDetails] = [:]
+    @Published var appearance = AppearancePreference(
+        rawValue: UserDefaults.standard.string(forKey: "appearancePreference") ?? ""
+    ) ?? .system {
+        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "appearancePreference") }
+    }
 
     let store = SyncStore()
     private(set) var client: CommonGroundClient?
@@ -246,6 +268,128 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func loadUserProfile(userID: String) async {
+        guard let client else { return }
+        do {
+            await hydrateUsers(ids: [userID])
+            async let details = client.profiles.details(userID: userID)
+            async let articles = client.articles.userArticles(userID: userID)
+            profileDetails[userID] = try await details
+            userArticles[userID] = try await articles
+            await loadAttachmentURLs(
+                objectIDs: userArticles[userID]?.compactMap(\.article.thumbnailImageId) ?? []
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func loadCommunityArticles(communityID: String) async {
+        guard let client else { return }
+        do {
+            let results = try await client.articles.communityArticles(communityID: communityID)
+            communityArticles[communityID] = results
+            await hydrateUsers(ids: results.map(\.article.creatorId))
+            await loadAttachmentURLs(objectIDs: results.compactMap(\.article.thumbnailImageId))
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func loadCommunityArticle(communityID: String, articleID: String) async {
+        guard let client else { return }
+        do {
+            let result = try await client.articles.communityArticle(
+                communityID: communityID,
+                articleID: articleID
+            )
+            articleDetails[articleID] = result.article
+            await hydrateUsers(ids: [result.article.creatorId])
+            await loadAttachmentURLs(objectIDs: [result.article.headerImageId].compactMap { $0 })
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func loadUserArticle(userID: String, articleID: String) async {
+        guard let client else { return }
+        do {
+            let result = try await client.articles.userArticle(userID: userID, articleID: articleID)
+            articleDetails[articleID] = result.article
+            await loadAttachmentURLs(objectIDs: [result.article.headerImageId].compactMap { $0 })
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func publishUserArticle(title: String, preview: String, text: String, tags: [String]) async -> Bool {
+        guard let client, let userID = store.ownUser?.id else { return false }
+        do {
+            _ = try await client.articles.createUserArticle(
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                previewText: preview.trimmingCharacters(in: .whitespacesAndNewlines),
+                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                tags: tags
+            )
+            userArticles[userID] = try await client.articles.userArticles(userID: userID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func updateAccount(
+        displayName: String,
+        description: String,
+        homepage: String,
+        email: String,
+        dmNotifications: Bool,
+        newPassword: String
+    ) async -> Bool {
+        guard let client, let userID = store.ownUser?.id else { return false }
+        do {
+            try await client.profiles.updateCGAccount(
+                displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines),
+                description: description.trimmingCharacters(in: .whitespacesAndNewlines),
+                homepage: homepage.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            try await client.profiles.updateOwnData(
+                email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+                dmNotifications: dmNotifications
+            )
+            let password = newPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !password.isEmpty { try await client.profiles.setPassword(password) }
+            store.seed(users: try await client.profiles.users(ids: [userID]))
+            profileDetails[userID] = try await client.profiles.details(userID: userID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func uploadProfileImage(_ data: Data) async -> Bool {
+        guard let client, let userID = store.ownUser?.id else { return false }
+        guard data.count <= 8 * 1_024 * 1_024 else {
+            errorMessage = "That image is larger than the instance’s 8 MB upload limit."
+            return false
+        }
+        do {
+            let upload = try await client.files.uploadImage(data, type: .userProfileImage)
+            store.seed(users: try await client.profiles.users(ids: [userID]))
+            await loadAttachmentURLs(objectIDs: [upload.imageId])
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
     func startChat(with userID: String) async -> Chat? {
         guard let client else { return nil }
         do {
@@ -451,6 +595,7 @@ final class AppModel: ObservableObject {
         do {
             let messages = try await client.messages.load(access: access)
             store.seed(messages, channelId: channelID)
+            await hydrateUsers(ids: messages.map(\.creatorId))
             await loadAttachmentURLs(
                 objectIDs: messages.flatMap(\.imageAttachments).flatMap { [$0.imageId, $0.largeImageId] }
             )
@@ -530,6 +675,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func hydrateUsers(ids: [String]) async {
+        guard let client else { return }
+        let missing = Array(Set(ids)).filter { store.users[$0] == nil }
+        guard !missing.isEmpty else { return }
+        do {
+            let users = try await client.profiles.users(ids: missing)
+            store.seed(users: users)
+            await loadAttachmentURLs(objectIDs: users.compactMap(\.imageID))
+        } catch {
+            // Names and avatars are enhancement data. The primary content remains usable.
+        }
+    }
+
     private func resetComposerContext() {
         replyingTo = nil
         editingMessage = nil
@@ -575,6 +733,7 @@ final class AppModel: ObservableObject {
     private func didAuthenticate(_ session: AuthSession) async {
         guard let client else { return }
         store.hydrate(from: session.response)
+        await hydrateUsers(ids: [session.response.ownData.id])
         UserDefaults.standard.set(session.deviceId, forKey: Keys.deviceID(client.instance))
         saveCachedResponse(session.response, for: client.instance)
         let communityIDs = Set(session.response.communities.map(\.id))
