@@ -178,9 +178,14 @@ private struct HomeContent: View {
                 select: openChat
             )
         case .notifications:
-            NotificationsView(unreadCount: store.unreadNotificationCount)
+            NotificationsView(store: store)
         case .search:
-            SearchView(communities: communities, openChannel: openChannel)
+            SearchView(
+                communities: communities,
+                store: store,
+                openChannel: openChannel,
+                openChat: openChat
+            )
         case .community(let id):
             if let community = store.communities[id] {
                 ChannelListView(
@@ -266,6 +271,7 @@ private struct HomeContent: View {
 }
 
 private struct OverviewView: View {
+    @EnvironmentObject private var model: AppModel
     let communities: [Community]
     let chatCount: Int
     let unreadCount: Int
@@ -330,6 +336,7 @@ private struct OverviewView: View {
             .padding(20)
         }
         .navigationTitle("Overview")
+        .task { await model.loadNotifications() }
     }
 }
 
@@ -437,26 +444,108 @@ private struct ChatListView: View {
 }
 
 private struct NotificationsView: View {
-    let unreadCount: Int
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var store: SyncStore
+
+    private var notifications: [AppNotification] {
+        store.notifications.values.sorted { $0.createdAt > $1.createdAt }
+    }
 
     var body: some View {
-        ContentUnavailableView {
-            Label("Notifications", systemImage: unreadCount > 0 ? "bell.badge" : "bell")
-        } description: {
-            Text(unreadCount > 0
-                 ? "You have \(unreadCount) unread notifications. The notification timeline is the next API-backed surface."
-                 : "You’re all caught up. New activity will appear here.")
+        Group {
+            if model.isLoadingNotifications && notifications.isEmpty {
+                ProgressView("Loading notifications…")
+            } else if notifications.isEmpty {
+                ContentUnavailableView(
+                    "You’re all caught up",
+                    systemImage: "bell",
+                    description: Text("New activity on this instance will appear here.")
+                )
+            } else {
+                List(notifications) { notification in
+                    Button {
+                        Task { await model.markNotificationRead(notification.id) }
+                    } label: {
+                        NotificationRow(notification: notification)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .refreshable { await model.loadNotifications() }
+            }
         }
         .navigationTitle("Notifications")
+        .toolbar {
+            if store.unreadNotificationCount > 0 {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Read all") {
+                        Task { await model.markAllNotificationsRead() }
+                    }
+                }
+            }
+        }
+        .task { await model.loadNotifications() }
+    }
+}
+
+private struct NotificationRow: View {
+    let notification: AppNotification
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .frame(width: 32, height: 32)
+                .foregroundStyle(notification.read ? .secondary : AppTheme.accent)
+                .background(.thinMaterial, in: Circle())
+            VStack(alignment: .leading, spacing: 5) {
+                Text(notification.text)
+                    .fontWeight(notification.read ? .regular : .semibold)
+                    .foregroundStyle(.primary)
+                Text(timestamp)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !notification.read {
+                Circle()
+                    .fill(AppTheme.accent)
+                    .frame(width: 8, height: 8)
+                    .accessibilityLabel("Unread")
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var icon: String {
+        switch notification.type {
+        case "Follower": "person.badge.plus"
+        case "Mention": "at"
+        case "Reply": "arrowshape.turn.up.left"
+        case "DM": "bubble.left"
+        case "ChannelMessage": "number"
+        case "Call": "phone"
+        case "Approval": "checkmark.seal"
+        case "BanState": "hand.raised"
+        default: "bell"
+        }
+    }
+
+    private var timestamp: String {
+        guard let date = ISO8601DateFormatter().date(from: notification.createdAt) else { return "" }
+        return date.formatted(.relative(presentation: .named))
     }
 }
 
 private struct SearchView: View {
+    @EnvironmentObject private var model: AppModel
     let communities: [Community]
+    @ObservedObject var store: SyncStore
     let openChannel: (String, String) -> Void
+    let openChat: (String) -> Void
     @State private var query = ""
+    @State private var selectedUser: UserProfile?
 
-    private var results: [(Community, Channel)] {
+    private var channelResults: [(Community, Channel)] {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         return communities.flatMap { community in
             community.channels
@@ -468,6 +557,10 @@ private struct SearchView: View {
         }
     }
 
+    private var userResults: [UserProfile] {
+        model.userSearchResultIDs.compactMap { store.users[$0] }
+    }
+
     var body: some View {
         Group {
             if query.isEmpty {
@@ -476,24 +569,157 @@ private struct SearchView: View {
                     systemImage: "magnifyingglass",
                     description: Text("Start with a community or channel name.")
                 )
-            } else if results.isEmpty {
+            } else if channelResults.isEmpty && userResults.isEmpty && !model.isSearchingUsers {
                 ContentUnavailableView.search(text: query)
             } else {
-                List(results, id: \.1.channelId) { community, channel in
-                    Button { openChannel(channel.channelId, community.id) } label: {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Label(channel.title, systemImage: "number")
-                            Text(community.title)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                List {
+                    if !userResults.isEmpty {
+                        Section("People") {
+                            ForEach(userResults) { user in
+                                Button { selectedUser = user } label: {
+                                    HStack(spacing: 12) {
+                                        Avatar(name: user.displayName, small: true)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(user.displayName).fontWeight(.semibold)
+                                            Text(user.onlineStatus.capitalized)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
-                    .buttonStyle(.plain)
+                    if !channelResults.isEmpty {
+                        Section("Channels") {
+                            ForEach(channelResults, id: \.1.channelId) { community, channel in
+                                Button { openChannel(channel.channelId, community.id) } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Label(channel.title, systemImage: "number")
+                                        Text(community.title)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
                 }
+                .overlay { if model.isSearchingUsers { ProgressView() } }
             }
         }
         .navigationTitle("Search")
-        .searchable(text: $query, prompt: "Communities and channels")
+        .searchable(text: $query, prompt: "People, communities, and channels")
+        .task(id: query) {
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+                await model.searchUsers(query: query)
+            } catch {
+                // A newer keystroke cancelled this search.
+            }
+        }
+        .sheet(item: $selectedUser) { user in
+            UserProfileView(userID: user.id, store: store) { chatID in
+                selectedUser = nil
+                openChat(chatID)
+            }
+        }
+    }
+}
+
+private struct UserProfileView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let userID: String
+    @ObservedObject var store: SyncStore
+    let openChat: (String) -> Void
+
+    private var user: UserProfile? { store.users[userID] }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let user {
+                    VStack(spacing: 18) {
+                        Avatar(name: user.displayName)
+                            .scaleEffect(1.8)
+                            .padding(28)
+                        VStack(spacing: 5) {
+                            Text(user.displayName).font(.title2.bold())
+                            Label(user.onlineStatus.capitalized, systemImage: "circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(user.onlineStatus == "online" ? .green : .secondary)
+                        }
+
+                        HStack(spacing: 36) {
+                            profileMetric(user.followerCount, "Followers")
+                            profileMetric(user.followingCount, "Following")
+                        }
+
+                        if user.id != store.ownUser?.id {
+                            Button {
+                                Task {
+                                    await model.setFollowing(userID: user.id, following: !user.isFollowed)
+                                }
+                            } label: {
+                                Label(
+                                    user.isFollowed ? "Following" : "Follow",
+                                    systemImage: user.isFollowed ? "person.badge.checkmark" : "person.badge.plus"
+                                )
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            if user.isFollowed && user.isFollower {
+                                Button {
+                                    Task {
+                                        if let chat = await model.startChat(with: user.id) {
+                                            dismiss()
+                                            openChat(chat.id)
+                                        }
+                                    }
+                                } label: {
+                                    Label("Message", systemImage: "bubble.left.and.bubble.right")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                            } else {
+                                Label("Direct messages unlock after you follow each other.", systemImage: "person.2")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if let tags = user.tags, !tags.isEmpty {
+                            Text(tags.map { "#\($0)" }.joined(separator: "  "))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: 480)
+                    .padding(24)
+                    .frame(maxWidth: .infinity)
+                } else {
+                    ContentUnavailableView("Profile unavailable", systemImage: "person.crop.circle.badge.questionmark")
+                }
+            }
+            .navigationTitle("Profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func profileMetric(_ value: Int, _ label: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value, format: .number).font(.headline)
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 

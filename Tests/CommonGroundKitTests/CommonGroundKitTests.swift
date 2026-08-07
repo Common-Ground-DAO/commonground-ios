@@ -176,6 +176,71 @@ final class CommonGroundKitTests: XCTestCase {
         }
     }
 
+    func testNotificationContractNormalizesUnreadCountAndNullContext() async throws {
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/v2/Notification/loadNotifications":
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":[{"type":"General","id":"11111111-1111-1111-1111-111111111111","text":"Welcome","createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","read":false,"subjectItemId":null,"subjectCommunityId":null,"subjectUserId":null,"subjectArticleId":null,"extraData":null}]}"#
+                )
+            case "/api/v2/Notification/getUnreadCount":
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":"1"}"#)
+            default:
+                XCTFail("Unexpected route \(request.url?.path ?? "nil")")
+                return Self.response(request, status: 500, body: #"{"status":"ERROR","error":"UNKNOWN"}"#)
+            }
+        }
+        let api = NotificationAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+
+        let notifications = try await api.load()
+        XCTAssertEqual(notifications[0].text, "Welcome")
+        XCTAssertNil(notifications[0].extraData)
+        let unreadCount = try await api.unreadCount()
+        XCTAssertEqual(unreadCount, 1)
+    }
+
+    func testUserSearchHydratesPublicProfileContract() async throws {
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/v2/Search/searchUsers":
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","matchPriority":"4","matchedAccountTypes":["cg"]}]}"#
+                )
+            case "/api/v2/User/getUserData":
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","isBot":false,"botOwner":null,"onlineStatus":"online","isFollowed":true,"isFollower":false,"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","bannerImageId":null,"displayAccount":"cg","accounts":[{"type":"cg","displayName":"alice","imageId":null,"extraData":null}],"premiumFeatures":[],"followingCount":2,"followerCount":3,"tags":["swift"]}]}"#
+                )
+            default:
+                XCTFail("Unexpected route \(request.url?.path ?? "nil")")
+                return Self.response(request, status: 500, body: #"{"status":"ERROR","error":"UNKNOWN"}"#)
+            }
+        }
+        let api = ProfileAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+
+        let hits = try await api.searchUsers(query: "ali")
+        XCTAssertEqual(hits[0].matchPriority, 4)
+        let users = try await api.users(ids: hits.map(\.id))
+        XCTAssertEqual(users[0].displayName, "alice")
+        XCTAssertTrue(users[0].isFollowed)
+        XCTAssertEqual(users[0].tags, ["swift"])
+    }
+
     func testBareInstanceConfig() async throws {
         MockURLProtocol.handler = { request in
             XCTAssertEqual(request.httpMethod, "GET")
@@ -374,11 +439,18 @@ final class CommonGroundKitTests: XCTestCase {
         let latestOwn = messages
             .filter { $0.creatorId == login.response.ownData.id }
             .max(by: { $0.createdAt < $1.createdAt })
+        let notifications = try await client.notifications.load()
+        let unreadCount = try await client.notifications.unreadCount()
+        let hits = try await client.profiles.searchUsers(query: login.response.ownData.displayName)
+        let profiles = try await client.profiles.users(ids: [login.response.ownData.id])
+        XCTAssertTrue(hits.contains(where: { $0.id == login.response.ownData.id }))
+        XCTAssertEqual(profiles.first?.id, login.response.ownData.id)
         print(
             "LIVE_AUTH_SELECTED community=\(selectedCommunity.title) " +
             "communityID=\(selectedCommunity.id) channel=\(selectedChannel.title) " +
             "channelID=\(selectedChannel.channelId) messages=\(messages.count) " +
-            "latestOwnID=\(latestOwn?.id ?? "none") latestOwnAt=\(latestOwn?.createdAt ?? "none")"
+            "latestOwnID=\(latestOwn?.id ?? "none") latestOwnAt=\(latestOwn?.createdAt ?? "none") " +
+            "notifications=\(notifications.count) unread=\(unreadCount)"
         )
         try await client.auth.logout()
     }

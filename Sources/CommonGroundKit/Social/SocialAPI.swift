@@ -45,7 +45,32 @@ public struct MessageAPI: Sendable {
     }
 }
 
+public struct ChatAPI: Sendable {
+    private let transport: HTTPTransport
+    public init(transport: HTTPTransport) { self.transport = transport }
+
+    public func list() async throws -> [Chat] {
+        try await transport.call("Chat/getChats")
+    }
+
+    public func start(otherUserID: String) async throws -> Chat {
+        try await transport.call(
+            "Chat/startChat",
+            body: OtherUserRequest(otherUserId: otherUserID)
+        )
+    }
+
+    public func close(chatID: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Chat/closeChat",
+            body: ChatIDRequest(chatId: chatID)
+        )
+    }
+}
+
 private struct IDRequest: Encodable, Sendable { let id: String }
+private struct OtherUserRequest: Encodable, Sendable { let otherUserId: String }
+private struct ChatIDRequest: Encodable, Sendable { let chatId: String }
 private struct LoadMessagesRequest: Encodable, Sendable {
     let access: MessageAccess
     let createdBefore: String

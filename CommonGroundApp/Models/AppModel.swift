@@ -17,6 +17,9 @@ final class AppModel: ObservableObject {
     @Published var selectedChannelID: String?
     @Published var selectedChatID: String?
     @Published var draftMessage = ""
+    @Published var isLoadingNotifications = false
+    @Published var isSearchingUsers = false
+    @Published private(set) var userSearchResultIDs: [String] = []
 
     let store = SyncStore()
     private(set) var client: CommonGroundClient?
@@ -150,6 +153,94 @@ final class AppModel: ObservableObject {
         selectedChannelID = nil
         guard let client else { return }
         UserDefaults.standard.set(id, forKey: Keys.chatID(client.instance))
+    }
+
+    func loadNotifications() async {
+        guard let client, !isLoadingNotifications else { return }
+        isLoadingNotifications = true
+        defer { isLoadingNotifications = false }
+        do {
+            let notifications = try await client.notifications.load()
+            let unreadCount = try await client.notifications.unreadCount()
+            store.replaceNotifications(notifications, unreadCount: unreadCount)
+            var userIDs = Set(notifications.compactMap(\.subjectUserId))
+            if let ownUserID = store.ownUser?.id { userIDs.insert(ownUserID) }
+            if !userIDs.isEmpty {
+                store.seed(users: try await client.profiles.users(ids: Array(userIDs)))
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func markNotificationRead(_ id: String) async {
+        guard let client, store.notifications[id]?.read == false else { return }
+        do {
+            try await client.notifications.markAsRead(id)
+            store.markNotificationRead(id)
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func markAllNotificationsRead() async {
+        guard let client, store.unreadNotificationCount > 0 else { return }
+        do {
+            try await client.notifications.markAllAsRead()
+            store.markAllNotificationsRead()
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func searchUsers(query: String) async {
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, let client else {
+            userSearchResultIDs = []
+            return
+        }
+        isSearchingUsers = true
+        defer { isSearchingUsers = false }
+        do {
+            let hits = try await client.profiles.searchUsers(query: value)
+            let ids = hits.map(\.id)
+            if !ids.isEmpty { store.seed(users: try await client.profiles.users(ids: ids)) }
+            userSearchResultIDs = ids
+        } catch is CancellationError {
+            return
+        } catch {
+            userSearchResultIDs = []
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func setFollowing(userID: String, following: Bool) async {
+        guard let client else { return }
+        do {
+            if following {
+                try await client.profiles.follow(userID: userID)
+            } else {
+                try await client.profiles.unfollow(userID: userID)
+            }
+            store.setFollowing(userID: userID, isFollowed: following)
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func startChat(with userID: String) async -> Chat? {
+        guard let client else { return nil }
+        do {
+            let chat = try await client.chats.start(otherUserID: userID)
+            store.seed(chat: chat)
+            selectChat(chat.id)
+            return chat
+        } catch {
+            errorMessage = userMessage(for: error)
+            return nil
+        }
     }
 
     private func loadMessages(access: MessageAccess, channelID: String) async {
