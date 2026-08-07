@@ -33,6 +33,31 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(result.value, "yes")
     }
 
+    func testInjectedCookieStoresRemainIsolated() async throws {
+        MockURLProtocol.handler = { request in
+            Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":{"value":"yes"}}"#,
+                headers: ["Set-Cookie": "session=one; Path=/; Secure; HttpOnly"]
+            )
+        }
+        let first = HTTPTransport(
+            baseURL: URL(string: "https://example.org")!,
+            sessionConfiguration: configuration()
+        )
+        let _: Echo = try await first.call("Test/echo")
+        let firstCookie = await first.cookieHeader()
+        XCTAssertEqual(firstCookie, "session=one")
+
+        let second = HTTPTransport(
+            baseURL: URL(string: "https://example.org")!,
+            sessionConfiguration: configuration()
+        )
+        let secondCookie = await second.cookieHeader()
+        XCTAssertNil(secondCookie)
+    }
+
     func testTransportThrowsAPIErrorFromHTTP200() async throws {
         MockURLProtocol.handler = { request in
             Self.response(request, status: 200, body: #"{"status":"ERROR","error":"LOGIN_REQUIRED"}"#)
@@ -48,6 +73,95 @@ final class CommonGroundKitTests: XCTestCase {
             XCTAssertEqual(error.code, "LOGIN_REQUIRED")
             XCTAssertEqual(error.httpStatus, 200)
         }
+    }
+
+    func testLoginResponseMatchesBackendContract() async throws {
+        MockURLProtocol.handler = { request in
+            let body = #"""
+            {
+              "status": "OK",
+              "data": {
+                "ownData": {
+                  "id": "11111111-1111-1111-1111-111111111111",
+                  "onlineStatus": "offline",
+                  "createdAt": "2026-08-07T00:00:00.000Z",
+                  "updatedAt": "2026-08-07T00:00:00.000Z",
+                  "bannerImageId": null,
+                  "displayAccount": "cg",
+                  "accounts": [{"type":"cg","displayName":"alice","imageId":null,"extraData":null}],
+                  "premiumFeatures": [],
+                  "followingCount": 0,
+                  "followerCount": 0,
+                  "tags": null,
+                  "communityOrder": [],
+                  "finishedTutorials": [],
+                  "newsletter": false,
+                  "weeklyNewsletter": false,
+                  "dmNotifications": true,
+                  "email": "alice@example.org",
+                  "features": {},
+                  "emailVerified": true,
+                  "trustScore": "0",
+                  "pointBalance": 0,
+                  "passkeys": [],
+                  "extraData": {}
+                },
+                "deviceId": "22222222-2222-2222-2222-222222222222",
+                "webPushSubscription": null,
+                "communities": [{
+                  "id": "33333333-3333-3333-3333-333333333333",
+                  "url": "test",
+                  "title": "Test",
+                  "createdAt": "2026-08-07T00:00:00.000Z",
+                  "updatedAt": "2026-08-07T00:00:00.000Z",
+                  "memberCount": 1,
+                  "myRoleIds": [],
+                  "channels": [{
+                    "communityId": "33333333-3333-3333-3333-333333333333",
+                    "channelId": "44444444-4444-4444-4444-444444444444",
+                    "areaId": null,
+                    "title": "general",
+                    "url": null,
+                    "order": 0,
+                    "description": null,
+                    "emoji": null,
+                    "updatedAt": "2026-08-07T00:00:00.000Z",
+                    "lastRead": "2026-08-07T00:00:00.000Z",
+                    "lastMessageDate": null,
+                    "pinnedMessageIds": null,
+                    "rolePermissions": []
+                  }],
+                  "areas": [],
+                  "roles": [],
+                  "calls": []
+                }],
+                "chats": [{
+                  "id": "55555555-5555-5555-5555-555555555555",
+                  "channelId": "66666666-6666-6666-6666-666666666666",
+                  "userIds": [],
+                  "adminIds": [],
+                  "createdAt": "2026-08-07T00:00:00.000Z",
+                  "updatedAt": "2026-08-07T00:00:00.000Z",
+                  "unread": 3,
+                  "lastRead": "2026-08-07T00:00:00.000Z",
+                  "lastMessage": null
+                }],
+                "unreadNotificationCount": "2"
+              }
+            }
+            """#
+            return Self.response(request, status: 200, body: body)
+        }
+        let transport = HTTPTransport(
+            baseURL: URL(string: "https://example.org")!,
+            sessionConfiguration: configuration()
+        )
+
+        let response: LoginResponse = try await transport.call("User/login", body: Echo(value: "request"))
+
+        XCTAssertEqual(response.ownData.displayName, "alice")
+        XCTAssertNil(response.communities[0].channels[0].areaId)
+        XCTAssertEqual(response.chats[0].unread, 3)
     }
 
     func testBareInstanceConfig() async throws {
@@ -149,6 +263,114 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(message.body.plainText, "hello")
     }
 
+    func testMessageLoadTreatsNullReactionsAsEmpty() async throws {
+        MockURLProtocol.handler = { request in
+            let response = #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","creatorId":"22222222-2222-2222-2222-222222222222","channelId":"33333333-3333-3333-3333-333333333333","body":{"version":"1","content":[{"type":"text","value":"legacy"}]},"attachments":[],"editedAt":null,"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","reactions":null,"ownReaction":null,"parentMessageId":null}]}"#
+            return Self.response(request, status: 200, body: response)
+        }
+        let api = MessageAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let messages = try await api.load(
+            access: .community(
+                "44444444-4444-4444-4444-444444444444",
+                channelId: "33333333-3333-3333-3333-333333333333"
+            )
+        )
+
+        XCTAssertEqual(messages[0].body.plainText, "legacy")
+        XCTAssertEqual(messages[0].reactions, [:])
+    }
+
+    /// Opt-in compatibility probe for the deployed development instance. It
+    /// creates a disposable account, logs out, then exercises password login
+    /// against the real response payload. It is skipped during normal tests.
+    func testLiveRegistrationAndPasswordLoginContract() async throws {
+        guard ProcessInfo.processInfo.environment["COMMON_GROUND_LIVE_AUTH"] == "1" else {
+            throw XCTSkip("Set COMMON_GROUND_LIVE_AUTH=1 to run the live auth probe")
+        }
+
+        let suffix = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let email = "ios-e2e-\(suffix.prefix(16))@example.org"
+        let displayName = "ios\(suffix.prefix(12))"
+        let password = "Cg!\(suffix)9a"
+        let instance = try InstanceURL("https://cg.mogged.eu")
+        let registrationClient = CommonGroundClient(
+            instance: instance,
+            sessionConfiguration: .ephemeral
+        )
+        let registration = try await registrationClient.auth.register(
+            email: email,
+            password: password,
+            displayName: displayName,
+            deviceKey: SoftwareDeviceKey()
+        )
+        XCTAssertEqual(registration.response.ownData.email, email)
+        try await registrationClient.auth.logout()
+
+        let loginClient = CommonGroundClient(
+            instance: instance,
+            sessionConfiguration: .ephemeral
+        )
+        let login = try await loginClient.auth.loginWithPassword(
+            aliasOrEmail: email,
+            password: password,
+            deviceKey: SoftwareDeviceKey()
+        )
+        XCTAssertEqual(login.response.ownData.id, registration.response.ownData.id)
+        try await loginClient.auth.logout()
+    }
+
+    /// Login-only live probe for an existing account. Credentials are supplied
+    /// through the environment and are never stored in the repository.
+    func testLiveExistingAccountPasswordLoginContract() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let email = environment["COMMON_GROUND_LIVE_EMAIL"],
+              let password = environment["COMMON_GROUND_LIVE_PASSWORD"] else {
+            throw XCTSkip("Set live email/password variables to run the existing-account probe")
+        }
+        let client = CommonGroundClient(
+            instance: try InstanceURL("https://cg.mogged.eu"),
+            sessionConfiguration: .ephemeral
+        )
+        let login = try await client.auth.loginWithPassword(
+            aliasOrEmail: email,
+            password: password,
+            deviceKey: SoftwareDeviceKey()
+        )
+        XCTAssertEqual(login.response.ownData.email, email)
+        let selectedChannel = try XCTUnwrap(
+            login.response.communities
+                .flatMap(\.channels)
+                .sorted(by: { $0.order < $1.order })
+                .first
+        )
+        let selectedCommunity = try XCTUnwrap(
+            login.response.communities.first { community in
+                community.channels.contains { $0.channelId == selectedChannel.channelId }
+            }
+        )
+        let messages = try await client.messages.load(
+            access: .community(
+                selectedCommunity.id,
+                channelId: selectedChannel.channelId
+            )
+        )
+        let latestOwn = messages
+            .filter { $0.creatorId == login.response.ownData.id }
+            .max(by: { $0.createdAt < $1.createdAt })
+        print(
+            "LIVE_AUTH_SELECTED community=\(selectedCommunity.title) " +
+            "communityID=\(selectedCommunity.id) channel=\(selectedChannel.title) " +
+            "channelID=\(selectedChannel.channelId) messages=\(messages.count) " +
+            "latestOwnID=\(latestOwn?.id ?? "none") latestOwnAt=\(latestOwn?.createdAt ?? "none")"
+        )
+        try await client.auth.logout()
+    }
+
     private func configuration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
@@ -158,13 +380,16 @@ final class CommonGroundKitTests: XCTestCase {
     private static func response(
         _ request: URLRequest,
         status: Int,
-        body: String
+        body: String,
+        headers: [String: String] = [:]
     ) -> (HTTPURLResponse, Data) {
+        var responseHeaders = ["Content-Type": "application/json"]
+        responseHeaders.merge(headers) { _, new in new }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: status,
             httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"]
+            headerFields: responseHeaders
         )!
         return (response, Data(body.utf8))
     }

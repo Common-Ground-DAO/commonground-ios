@@ -8,6 +8,7 @@ public actor HTTPTransport {
     private let apiBasePath: String
     private let session: URLSession
     private let cookieStorage: HTTPCookieStorage
+    private let cookiePersistence: PersistentCookieStore?
     private let extraHeaders: [String: String]
 
     public init(
@@ -20,12 +21,20 @@ public actor HTTPTransport {
         self.apiBasePath = apiBasePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.extraHeaders = extraHeaders
 
-        let configuration = sessionConfiguration ?? .default
-        let storage = configuration.httpCookieStorage ?? HTTPCookieStorage.shared
+        let configuration = sessionConfiguration ?? .ephemeral
+        let storage = configuration.httpCookieStorage
+            ?? URLSessionConfiguration.ephemeral.httpCookieStorage!
+        let persistence = sessionConfiguration == nil
+            ? PersistentCookieStore(baseURL: baseURL)
+            : nil
         configuration.httpCookieStorage = storage
         configuration.httpShouldSetCookies = true
         configuration.httpCookieAcceptPolicy = .always
         self.cookieStorage = storage
+        self.cookiePersistence = persistence
+        if let persistence {
+            for cookie in persistence.load() { storage.setCookie(cookie) }
+        }
         self.session = URLSession(configuration: configuration)
     }
 
@@ -88,6 +97,7 @@ public actor HTTPTransport {
         for cookie in cookieStorage.cookies(for: baseURL) ?? [] {
             cookieStorage.deleteCookie(cookie)
         }
+        cookiePersistence?.clear()
     }
 
     private func endpoint(_ route: String) throws -> URL {
@@ -110,12 +120,33 @@ public actor HTTPTransport {
             guard let http = response as? HTTPURLResponse else {
                 throw TransportError("response is not HTTP", route: route)
             }
+            captureCookies(from: http, requestURL: request.url)
             return (data, http)
         } catch let error as TransportError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw TransportError("network error: \(error.localizedDescription)", route: route)
         }
+    }
+
+    private func captureCookies(from response: HTTPURLResponse, requestURL: URL?) {
+        guard let requestURL else { return }
+        var headers: [String: String] = [:]
+        for (key, value) in response.allHeaderFields {
+            headers[String(describing: key)] = String(describing: value)
+        }
+        for cookie in HTTPCookie.cookies(withResponseHeaderFields: headers, for: requestURL) {
+            if let expiration = cookie.expiresDate, expiration <= Date() {
+                cookieStorage.deleteCookie(cookie)
+            } else {
+                cookieStorage.setCookie(cookie)
+            }
+        }
+        cookiePersistence?.save(cookieStorage.cookies(for: baseURL) ?? [])
     }
 
     private func decodeEnvelope<Response: Decodable>(
@@ -150,10 +181,33 @@ public actor HTTPTransport {
             return try Self.decoder.decode(Response.self, from: payloadData)
         } catch {
             throw TransportError(
-                "response data does not match the contract: \(error.localizedDescription)",
+                "response data does not match the contract: \(Self.decodingDescription(error))",
                 route: route,
                 httpStatus: response.statusCode
             )
+        }
+    }
+
+    private static func decodingDescription(_ error: Error) -> String {
+        func path(_ context: DecodingError.Context) -> String {
+            let value = context.codingPath.map(\.stringValue).joined(separator: ".")
+            return value.isEmpty ? "<root>" : value
+        }
+
+        guard let decodingError = error as? DecodingError else {
+            return error.localizedDescription
+        }
+        switch decodingError {
+        case .keyNotFound(let key, let context):
+            return "missing key '\(key.stringValue)' at \(path(context)): \(context.debugDescription)"
+        case .typeMismatch(let type, let context):
+            return "expected \(type) at \(path(context)): \(context.debugDescription)"
+        case .valueNotFound(let type, let context):
+            return "missing \(type) value at \(path(context)): \(context.debugDescription)"
+        case .dataCorrupted(let context):
+            return "invalid data at \(path(context)): \(context.debugDescription)"
+        @unknown default:
+            return error.localizedDescription
         }
     }
 

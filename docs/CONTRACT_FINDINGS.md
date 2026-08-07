@@ -18,6 +18,16 @@ ALTCHA and `off` registration are native (`off` sends the web client's establish
 
 The server soft-deletes the device row on logout. The app therefore disconnects realtime, deletes the per-instance local key and device id, and creates a fresh key for the next password login. Retaining the old Secure Enclave key would create a permanently unusable identity.
 
+Device ids and keys can also drift independently across reinstall, Keychain reset, or server-side deletion. `INVALID_SIGNATURE` and `NOT_FOUND` during device login therefore clear both local identity halves, regenerate the key, and return the user to password authentication. When a user deliberately chooses password login while an older device identity is still valid, the app authenticates that identity in an isolated cleanup session and retires it only after the replacement login succeeds.
+
 ## N-05 — push gateway contract is still required
 
 The current `registerWebPushSubscription` endpoint cannot register an APNs token. iOS push is intentionally not shimmed; it needs the publisher-run gateway planned by the native-client roadmap.
+
+## N-06 — sessions are isolated and restored per instance
+
+The process-wide `HTTPCookieStorage.shared` can blur ownership when several Common Ground instances are used. Each default `HTTPTransport` now owns an ephemeral cookie jar and mirrors only that instance's cookies into a dedicated Keychain item. A successful login response is cached separately by instance; on launch, `checkLoginStatus` validates the rolling cookie and the app hydrates the matching cached response without asking the user to authenticate again.
+
+## N-07 — deployed unread count is string-encoded
+
+The TypeScript `User/login` contract declares `unreadNotificationCount` as a number, but the deployed PostgreSQL-backed response currently serializes it as an integer string. `LoginResponse` accepts both forms and normalizes them to `Int`. An opt-in live login test pins the deployed payload in addition to the source-derived fixture tests.
