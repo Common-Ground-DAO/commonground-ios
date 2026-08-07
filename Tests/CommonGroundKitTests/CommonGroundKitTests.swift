@@ -241,7 +241,7 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(users[0].tags, ["swift"])
     }
 
-    func testCommunityDiscoveryNormalizesCountAndCreateSendsRequiredNullImages() async throws {
+    func testCommunityDiscoveryCreateAndUpdateContracts() async throws {
         MockURLProtocol.handler = { request in
             switch request.url?.path {
             case "/api/v2/Community/getCommunityList":
@@ -258,14 +258,21 @@ final class CommonGroundKitTests: XCTestCase {
             case "/api/v2/Community/createCommunity":
                 let body = try XCTUnwrap(Self.bodyData(request))
                 let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
-                XCTAssertTrue(object["logoSmallId"] is NSNull)
-                XCTAssertTrue(object["logoLargeId"] is NSNull)
+                XCTAssertEqual(object["logoSmallId"] as? String, "icon-upload")
+                XCTAssertEqual(object["logoLargeId"] as? String, "sidebar-upload")
                 XCTAssertTrue(object["headerImageId"] is NSNull)
                 return Self.response(
                     request,
                     status: 200,
-                    body: #"{"status":"OK","data":{"id":"11111111-1111-1111-1111-111111111111","url":"ios-builders","title":"iOS Builders","createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","memberCount":"1","myRoleIds":[],"channels":[],"areas":[],"roles":[],"calls":[]}}"#
+                    body: #"{"status":"OK","data":{"id":"11111111-1111-1111-1111-111111111111","url":"ios-builders","title":"iOS Builders","description":"Native apps","links":[{"url":"https://example.org","text":"Website"}],"tags":["swift"],"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","memberCount":"1","myRoleIds":["role-admin"],"channels":[],"areas":[],"roles":[{"id":"role-admin","permissions":["COMMUNITY_MANAGE_INFO"]}],"calls":[]}}"#
                 )
+            case "/api/v2/Community/updateCommunity":
+                let body = try XCTUnwrap(Self.bodyData(request))
+                let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                XCTAssertEqual(object["id"] as? String, "11111111-1111-1111-1111-111111111111")
+                XCTAssertEqual(object["title"] as? String, "Updated Builders")
+                XCTAssertEqual((object["links"] as? [[String: String]])?.first?["url"], "https://example.org")
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":null}"#)
             default:
                 XCTFail("Unexpected route \(request.url?.path ?? "nil")")
                 return Self.response(request, status: 500, body: #"{"status":"ERROR","error":"UNKNOWN"}"#)
@@ -284,8 +291,24 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(communities[0].logoSmallId, "icon-1")
         XCTAssertEqual(communities[0].logoLargeId, "sidebar-1")
         XCTAssertEqual(communities[0].headerImageId, "hero-1")
-        let created = try await api.create(title: "iOS Builders", tags: ["swift"])
+        let created = try await api.create(
+            title: "iOS Builders",
+            tags: ["swift"],
+            logoSmallID: "icon-upload",
+            logoLargeID: "sidebar-upload"
+        )
         XCTAssertEqual(created.title, "iOS Builders")
+        XCTAssertTrue(created.canManageInfo)
+        XCTAssertEqual(created.description, "Native apps")
+        XCTAssertEqual(created.links.first?.text, "Website")
+        try await api.update(
+            id: created.id,
+            title: "Updated Builders",
+            shortDescription: "Native people",
+            description: "A community",
+            tags: ["swift"],
+            links: [CommunityLink(url: "https://example.org", text: "Website")]
+        )
     }
 
     func testChannelMemberListSeparatesOnlineAndOfflineMembers() async throws {
@@ -563,6 +586,28 @@ final class CommonGroundKitTests: XCTestCase {
             filename: "photo.jpg"
         )
         XCTAssertEqual(result.largeImageId, "22222222-2222-2222-2222-222222222222")
+    }
+
+    func testCommunityImageUploadIncludesCommunityID() async throws {
+        MockURLProtocol.handler = { request in
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let string = String(decoding: body, as: UTF8.self)
+            XCTAssertTrue(string.contains("communityLogoLarge"))
+            XCTAssertTrue(string.contains("community-1"))
+            return Self.response(request, status: 200, body: #"{"imageId":"sidebar-image","largeImageId":null}"#)
+        }
+        let api = FileAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let result = try await api.uploadImage(
+            Data([0x01]),
+            type: .communityLogoLarge,
+            communityID: "community-1"
+        )
+        XCTAssertEqual(result.imageId, "sidebar-image")
     }
 
     func testMessageLoadTreatsNullReactionsAsEmpty() async throws {

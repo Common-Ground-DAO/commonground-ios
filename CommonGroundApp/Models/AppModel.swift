@@ -73,6 +73,11 @@ final class AppModel: ObservableObject {
         client?.instance.url.host ?? "Common Ground"
     }
 
+    func communityShareURL(_ community: Community) -> URL? {
+        guard let baseURL = client?.instance.url else { return nil }
+        return baseURL.appending(path: "c").appending(path: community.url)
+    }
+
     func restoreOnLaunch() async {
         guard !didAttemptLaunchRestore else { return }
         didAttemptLaunchRestore = true
@@ -479,15 +484,22 @@ final class AppModel: ObservableObject {
         title: String,
         shortDescription: String,
         description: String,
-        tags: [String]
+        tags: [String],
+        iconData: Data,
+        sidebarImageData: Data
     ) async -> Community? {
         guard let client else { return nil }
         do {
+            async let iconUpload = client.files.uploadImage(iconData, type: .communityLogoSmall)
+            async let sidebarUpload = client.files.uploadImage(sidebarImageData, type: .communityLogoLarge)
+            let (icon, sidebar) = try await (iconUpload, sidebarUpload)
             let community = try await client.communities.create(
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                 shortDescription: shortDescription.trimmingCharacters(in: .whitespacesAndNewlines),
                 description: description.trimmingCharacters(in: .whitespacesAndNewlines),
-                tags: tags
+                tags: tags,
+                logoSmallID: icon.imageId,
+                logoLargeID: sidebar.imageId
             )
             store.seed(community: community)
             await loadCommunityMedia([community])
@@ -496,6 +508,58 @@ final class AppModel: ObservableObject {
         } catch {
             errorMessage = userMessage(for: error)
             return nil
+        }
+    }
+
+    func updateCommunity(
+        _ community: Community,
+        title: String,
+        shortDescription: String,
+        description: String,
+        tags: [String],
+        links: [CommunityLink],
+        iconData: Data?,
+        sidebarImageData: Data?,
+        heroImageData: Data?
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.update(
+                id: community.id,
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                shortDescription: shortDescription.trimmingCharacters(in: .whitespacesAndNewlines),
+                description: description.trimmingCharacters(in: .whitespacesAndNewlines),
+                tags: tags,
+                links: links
+            )
+            if let iconData {
+                _ = try await client.files.uploadImage(
+                    iconData,
+                    type: .communityLogoSmall,
+                    communityID: community.id
+                )
+            }
+            if let sidebarImageData {
+                _ = try await client.files.uploadImage(
+                    sidebarImageData,
+                    type: .communityLogoLarge,
+                    communityID: community.id
+                )
+            }
+            if let heroImageData {
+                _ = try await client.files.uploadImage(
+                    heroImageData,
+                    type: .communityHeaderImage,
+                    communityID: community.id
+                )
+            }
+            guard let refreshed = try? await client.communities.detail(id: community.id) else { return true }
+            store.seed(community: refreshed)
+            await loadCommunityMedia([refreshed])
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
         }
     }
 

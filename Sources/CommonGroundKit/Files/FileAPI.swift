@@ -30,11 +30,12 @@ public struct FileAPI: Sendable {
     public func uploadImage(
         _ data: Data,
         type: ImageUploadType,
+        communityID: String? = nil,
         filename: String = "upload.jpg",
         mimeType: String = "image/jpeg"
     ) async throws -> ImageUploadResult {
         let options = try String(
-            data: JSONEncoder().encode(UploadOptions(type: type)),
+            data: JSONEncoder().encode(UploadOptions(type: type, communityId: communityID)),
             encoding: .utf8
         ) ?? "{}"
         return try await transport.callMultipart(
@@ -56,5 +57,8 @@ public struct FileAPI: Sendable {
     }
 }
 
-private struct UploadOptions: Encodable, Sendable { let type: ImageUploadType }
+private struct UploadOptions: Encodable, Sendable {
+    let type: ImageUploadType
+    let communityId: String?
+}
 private struct SignedURLsRequest: Encodable, Sendable { let objectIds: [String] }

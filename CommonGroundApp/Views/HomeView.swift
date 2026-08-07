@@ -1,6 +1,7 @@
 import CommonGroundKit
 import PhotosUI
 import SwiftUI
+import UIKit
 
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
@@ -585,6 +586,10 @@ private struct CreateCommunityView: View {
     @State private var shortDescription = ""
     @State private var description = ""
     @State private var tags = ""
+    @State private var iconSelection: PhotosPickerItem?
+    @State private var sidebarSelection: PhotosPickerItem?
+    @State private var iconData: Data?
+    @State private var sidebarImageData: Data?
     @State private var isCreating = false
 
     var body: some View {
@@ -596,9 +601,26 @@ private struct CreateCommunityView: View {
                     TextField("Full description", text: $description, axis: .vertical)
                         .lineLimit(3...8)
                 }
+                Section("Required images") {
+                    CommunityImagePicker(
+                        title: "Community icon",
+                        guidance: "Square image · 75 × 75 recommended",
+                        selection: $iconSelection,
+                        data: iconData
+                    )
+                    CommunityImagePicker(
+                        title: "Sidebar image",
+                        guidance: "Community navigation cover · 282 × 220 recommended",
+                        selection: $sidebarSelection,
+                        data: sidebarImageData
+                    )
+                    Text("Both images are required so the community has a complete identity everywhere it appears.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section("Tags") {
                     TextField("swift, design, berlin", text: $tags)
-                    Text("Separate tags with commas. You can update imagery and richer settings later.")
+                    Text("Separate tags with commas. You can add a hero image and links in Community Settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -611,10 +633,12 @@ private struct CreateCommunityView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") { create() }
-                        .disabled(trimmedTitle.isEmpty || isCreating)
+                        .disabled(trimmedTitle.isEmpty || iconData == nil || sidebarImageData == nil || isCreating)
                 }
             }
             .overlay { if isCreating { ProgressView() } }
+            .onChange(of: iconSelection) { _, item in loadImage(item, into: $iconData) }
+            .onChange(of: sidebarSelection) { _, item in loadImage(item, into: $sidebarImageData) }
         }
     }
 
@@ -623,6 +647,7 @@ private struct CreateCommunityView: View {
     }
 
     private func create() {
+        guard let iconData, let sidebarImageData else { return }
         isCreating = true
         Task {
             let normalizedTags = tags
@@ -633,11 +658,230 @@ private struct CreateCommunityView: View {
                 title: trimmedTitle,
                 shortDescription: String(shortDescription.prefix(50)),
                 description: String(description.prefix(1_000)),
-                tags: Array(normalizedTags.prefix(10))
+                tags: Array(normalizedTags.prefix(10)),
+                iconData: iconData,
+                sidebarImageData: sidebarImageData
             ) {
                 created(community.id)
             }
             isCreating = false
+        }
+    }
+
+    private func loadImage(_ item: PhotosPickerItem?, into data: Binding<Data?>) {
+        guard let item else { return }
+        Task {
+            if let loaded = try? await item.loadTransferable(type: Data.self) {
+                data.wrappedValue = loaded
+            } else {
+                model.errorMessage = "That image could not be loaded from the photo library."
+            }
+        }
+    }
+}
+
+private struct EditableCommunityLink: Identifiable {
+    let id = UUID()
+    var text: String
+    var url: String
+}
+
+private struct CommunitySettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    @State private var title: String
+    @State private var shortDescription: String
+    @State private var description: String
+    @State private var tags: String
+    @State private var links: [EditableCommunityLink]
+    @State private var iconSelection: PhotosPickerItem?
+    @State private var sidebarSelection: PhotosPickerItem?
+    @State private var heroSelection: PhotosPickerItem?
+    @State private var iconData: Data?
+    @State private var sidebarData: Data?
+    @State private var heroData: Data?
+    @State private var isSaving = false
+
+    init(community: Community) {
+        self.community = community
+        _title = State(initialValue: community.title)
+        _shortDescription = State(initialValue: community.shortDescription ?? "")
+        _description = State(initialValue: community.description)
+        _tags = State(initialValue: community.tags.joined(separator: ", "))
+        _links = State(initialValue: community.links.map {
+            EditableCommunityLink(text: $0.text, url: $0.url)
+        })
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Community information") {
+                    TextField("Community name", text: $title)
+                    TextField("Tagline", text: $shortDescription)
+                        .onChange(of: shortDescription) { _, value in
+                            if value.count > 50 { shortDescription = String(value.prefix(50)) }
+                        }
+                    TextField("Description", text: $description, axis: .vertical)
+                        .lineLimit(4...10)
+                        .onChange(of: description) { _, value in
+                            if value.count > 1_000 { description = String(value.prefix(1_000)) }
+                        }
+                    TextField("Tags separated by commas", text: $tags)
+                }
+
+                Section("Community images") {
+                    CommunityImagePicker(
+                        title: "Community icon",
+                        guidance: "Square image · 75 × 75 recommended",
+                        selection: $iconSelection,
+                        data: iconData,
+                        existingURL: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                    )
+                    CommunityImagePicker(
+                        title: "Sidebar image",
+                        guidance: "282 × 220 recommended",
+                        selection: $sidebarSelection,
+                        data: sidebarData,
+                        existingURL: community.logoLargeId.flatMap { model.attachmentURLs[$0] }
+                    )
+                    CommunityImagePicker(
+                        title: "Hero image",
+                        guidance: "Community home banner · 800 × 252 recommended",
+                        selection: $heroSelection,
+                        data: heroData,
+                        existingURL: community.headerImageId.flatMap { model.attachmentURLs[$0] }
+                    )
+                }
+
+                Section("Links") {
+                    ForEach($links) { $link in
+                        VStack(alignment: .leading, spacing: 8) {
+                            TextField("Label", text: $link.text)
+                            TextField("https://example.com", text: $link.url)
+                                .textInputAutocapitalization(.never)
+                                .keyboardType(.URL)
+                            Button("Remove link", systemImage: "trash", role: .destructive) {
+                                links.removeAll { $0.id == link.id }
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    Button("Add link", systemImage: "plus") {
+                        links.append(EditableCommunityLink(text: "", url: ""))
+                    }
+                }
+            }
+            .navigationTitle("Community Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }
+                        .disabled(trimmedTitle.isEmpty || isSaving)
+                }
+            }
+            .overlay { if isSaving { ProgressView() } }
+            .onChange(of: iconSelection) { _, item in loadImage(item, into: $iconData) }
+            .onChange(of: sidebarSelection) { _, item in loadImage(item, into: $sidebarData) }
+            .onChange(of: heroSelection) { _, item in loadImage(item, into: $heroData) }
+        }
+    }
+
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func save() {
+        isSaving = true
+        Task {
+            let normalizedTags = tags
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }
+                .filter { !$0.isEmpty }
+            let normalizedLinks = links.compactMap { link -> CommunityLink? in
+                let text = link.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let url = link.url.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty, !url.isEmpty else { return nil }
+                return CommunityLink(url: url, text: text)
+            }
+            let saved = await model.updateCommunity(
+                community,
+                title: trimmedTitle,
+                shortDescription: String(shortDescription.prefix(50)),
+                description: String(description.prefix(1_000)),
+                tags: Array(normalizedTags.prefix(10)),
+                links: normalizedLinks,
+                iconData: iconData,
+                sidebarImageData: sidebarData,
+                heroImageData: heroData
+            )
+            isSaving = false
+            if saved { dismiss() }
+        }
+    }
+
+    private func loadImage(_ item: PhotosPickerItem?, into data: Binding<Data?>) {
+        guard let item else { return }
+        Task {
+            if let loaded = try? await item.loadTransferable(type: Data.self) {
+                data.wrappedValue = loaded
+            } else {
+                model.errorMessage = "That image could not be loaded from the photo library."
+            }
+        }
+    }
+}
+
+private struct CommunityImagePicker: View {
+    let title: String
+    let guidance: String
+    @Binding var selection: PhotosPickerItem?
+    let data: Data?
+    var existingURL: URL? = nil
+
+    var body: some View {
+        HStack(spacing: 14) {
+            preview
+                .frame(width: 76, height: 62)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).fontWeight(.semibold)
+                Text(guidance).font(.caption).foregroundStyle(.secondary)
+                PhotosPicker(selection: $selection, matching: .images) {
+                    Text(data == nil && existingURL == nil ? "Choose image" : "Replace image")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        if let data, let image = UIImage(data: data) {
+            Image(uiImage: image).resizable().scaledToFill()
+        } else if let existingURL {
+            AsyncImage(url: existingURL) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    placeholder
+                }
+            }
+        } else {
+            placeholder
+        }
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            Color.secondary.opacity(0.12)
+            Image(systemName: "photo").foregroundStyle(.secondary)
         }
     }
 }
@@ -899,6 +1143,7 @@ private struct ChannelListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showLeaveConfirmation = false
     @State private var reportTarget: ReportTarget?
+    @State private var showCommunitySettings = false
     let community: Community
     let selectedChannelID: String?
     let openHome: () -> Void
@@ -945,6 +1190,7 @@ private struct ChannelListView: View {
                                     .foregroundStyle(AppTheme.accent)
                             }
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -954,6 +1200,21 @@ private struct ChannelListView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    if let shareURL = model.communityShareURL(community) {
+                        ShareLink(
+                            item: shareURL,
+                            subject: Text(community.title),
+                            message: Text("Join \(community.title) on Common Ground")
+                        ) {
+                            Label("Share community", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    if community.canManageInfo || community.creatorId == model.store.ownUser?.id {
+                        Button("Community settings", systemImage: "gearshape") {
+                            showCommunitySettings = true
+                        }
+                    }
+                    Divider()
                     Button("Report community", systemImage: "exclamationmark.bubble") {
                         reportTarget = ReportTarget(
                             type: .community,
@@ -984,6 +1245,9 @@ private struct ChannelListView: View {
             Text("You can join again later if the community remains public.")
         }
         .sheet(item: $reportTarget) { ReportSheet(target: $0) }
+        .sheet(isPresented: $showCommunitySettings) {
+            CommunitySettingsView(community: community)
+        }
     }
 }
 
@@ -1434,7 +1698,7 @@ private struct ConversationView: View {
     @State private var deleteTarget: Message?
     @State private var showMentionPicker = false
     @State private var selectedUser: UserProfile?
-    @State private var showParticipants = ProcessInfo.processInfo.arguments.contains("-showParticipants")
+    @State private var showParticipants = false
     @GestureState private var participantDrag: CGFloat = 0
 
     private var messages: [Message] {
@@ -1718,7 +1982,8 @@ private struct ConversationParticipantsView: View {
                 Participant(
                     id: entry.userId,
                     user: store.users[entry.userId],
-                    isOnline: onlineIDs.contains(entry.userId),
+                    isOnline: onlineIDs.contains(entry.userId)
+                        || (entry.userId == store.ownUser?.id && model.realtimeNotice == nil),
                     role: role(for: entry.userId, in: members)
                 )
             }
@@ -1729,7 +1994,9 @@ private struct ConversationParticipantsView: View {
                 return Participant(
                     id: userID,
                     user: user,
-                    isOnline: status != "offline" && status != "invisible",
+                    isOnline: userID == store.ownUser?.id
+                        ? model.realtimeNotice == nil
+                        : status != "offline" && status != "invisible",
                     role: userID == store.ownUser?.id ? "You" : "Participant"
                 )
             }
@@ -1754,36 +2021,42 @@ private struct ConversationParticipantsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(contextParticipantTitle).font(.headline)
-                    Text("\(participants.count) participants · \(participants.filter(\.isOnline).count) online")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            VStack(spacing: 14) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(contextParticipantTitle).font(.headline)
+                        Text("\(participants.count) participants · \(participants.filter(\.isOnline).count) online")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Close participants", systemImage: "xmark") { close() }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.circle)
                 }
-                Spacer()
-                Button("Close participants", systemImage: "xmark") { close() }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.circle)
+
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Find a member", text: $query)
+                        .textInputAutocapitalization(.never)
+                    if !query.isEmpty {
+                        Button("Clear search", systemImage: "xmark.circle.fill") { query = "" }
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 13))
             }
             .padding(16)
-
-            HStack(spacing: 9) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Find a member", text: $query)
-                    .textInputAutocapitalization(.never)
-                if !query.isEmpty {
-                    Button("Clear search", systemImage: "xmark.circle.fill") { query = "" }
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
-            .padding(.horizontal, 12)
-            .padding(.bottom, 6)
+            .background(
+                Color(uiColor: .secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            )
+            .padding([.horizontal, .top], 10)
+            .padding(.bottom, 4)
 
             List {
                 if !online.isEmpty {
@@ -1801,9 +2074,10 @@ private struct ConversationParticipantsView: View {
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
             .refreshable { await refresh() }
         }
-        .background(.regularMaterial)
+        .background(Color(uiColor: .systemGroupedBackground))
         .overlay(alignment: .leading) { Divider() }
         .task(id: isVisible) {
             guard isVisible else { return }
@@ -2442,15 +2716,25 @@ private struct CommunityFeatureImage: View {
     let height: CGFloat
 
     var body: some View {
-        AsyncImage(url: url) { image in
-            image.resizable().scaledToFill()
-        } placeholder: {
-            Rectangle().fill(Color.secondary.opacity(0.1)).overlay { ProgressView() }
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: height)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+            case .empty:
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.secondary.opacity(0.08))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: height)
+            case .failure:
+                EmptyView()
+            @unknown default:
+                EmptyView()
+            }
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: height)
-        .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: 16))
         .accessibilityLabel("Community image")
     }
 }

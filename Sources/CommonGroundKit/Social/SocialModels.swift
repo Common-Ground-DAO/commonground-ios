@@ -179,6 +179,16 @@ public struct Channel: Codable, Equatable, Identifiable, Sendable {
     public var id: String { channelId }
 }
 
+public struct CommunityLink: Codable, Equatable, Sendable {
+    public let url: String
+    public let text: String
+
+    public init(url: String, text: String) {
+        self.url = url
+        self.text = text
+    }
+}
+
 public struct Community: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let url: String
@@ -187,6 +197,10 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
     public let logoLargeId: String?
     public let headerImageId: String?
     public let shortDescription: String?
+    public let description: String
+    public let links: [CommunityLink]
+    public let tags: [String]
+    public let creatorId: String?
     public let createdAt: String
     public let updatedAt: String
     public let memberCount: Int
@@ -198,6 +212,7 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, url, title, logoSmallId, logoLargeId, headerImageId, shortDescription
+        case description, links, tags, creatorId
         case createdAt, updatedAt, memberCount, myRoleIds
         case channels, areas, roles, calls
     }
@@ -211,6 +226,10 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         logoLargeId = try container.decodeIfPresent(String.self, forKey: .logoLargeId)
         headerImageId = try container.decodeIfPresent(String.self, forKey: .headerImageId)
         shortDescription = try container.decodeIfPresent(String.self, forKey: .shortDescription)
+        description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+        links = try container.decodeIfPresent([CommunityLink].self, forKey: .links) ?? []
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        creatorId = try container.decodeIfPresent(String.self, forKey: .creatorId)
         createdAt = try container.decode(String.self, forKey: .createdAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
         if let value = try? container.decode(Int.self, forKey: .memberCount) {
@@ -237,6 +256,10 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         try container.encodeIfPresent(logoLargeId, forKey: .logoLargeId)
         try container.encodeIfPresent(headerImageId, forKey: .headerImageId)
         try container.encodeIfPresent(shortDescription, forKey: .shortDescription)
+        try container.encode(description, forKey: .description)
+        try container.encode(links, forKey: .links)
+        try container.encode(tags, forKey: .tags)
+        try container.encodeIfPresent(creatorId, forKey: .creatorId)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encode(memberCount, forKey: .memberCount)
@@ -245,6 +268,22 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         try container.encode(areas, forKey: .areas)
         try container.encode(roles, forKey: .roles)
         try container.encode(calls, forKey: .calls)
+    }
+
+    public var managementPermissions: Set<String> {
+        let ownRoles = Set(myRoleIds)
+        return Set(roles.flatMap { role -> [String] in
+            guard let object = role.objectValue,
+                  let id = object["id"]?.stringValue,
+                  ownRoles.contains(id),
+                  let permissions = object["permissions"],
+                  case .array(let values) = permissions else { return [] }
+            return values.compactMap(\.stringValue)
+        })
+    }
+
+    public var canManageInfo: Bool {
+        managementPermissions.contains("COMMUNITY_MANAGE_INFO")
     }
 }
 

@@ -38,7 +38,11 @@ public struct CommunityAPI: Sendable {
         title: String,
         shortDescription: String = "",
         description: String = "",
-        tags: [String] = []
+        tags: [String] = [],
+        links: [CommunityLink] = [],
+        logoSmallID: String,
+        logoLargeID: String,
+        headerImageID: String? = nil
     ) async throws -> Community {
         try await transport.call(
             "Community/createCommunity",
@@ -46,6 +50,31 @@ public struct CommunityAPI: Sendable {
                 title: title,
                 shortDescription: shortDescription,
                 description: description,
+                tags: tags,
+                links: links,
+                logoSmallId: logoSmallID,
+                logoLargeId: logoLargeID,
+                headerImageId: headerImageID
+            )
+        )
+    }
+
+    public func update(
+        id: String,
+        title: String,
+        shortDescription: String,
+        description: String,
+        tags: [String],
+        links: [CommunityLink]
+    ) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/updateCommunity",
+            body: UpdateCommunityRequest(
+                id: id,
+                title: title,
+                shortDescription: shortDescription,
+                description: description,
+                links: links,
                 tags: tags
             )
         )
@@ -191,23 +220,39 @@ private struct CreateCommunityRequest: Encodable, Sendable {
     let shortDescription: String
     let description: String
     let tags: [String]
+    let links: [CommunityLink]
+    let logoSmallId: String
+    let logoLargeId: String
+    let headerImageId: String?
 
     private enum CodingKeys: String, CodingKey {
-        case title, logoSmallId, logoLargeId, headerImageId
-        case shortDescription, description, links, tags
+        case title, shortDescription, description, tags, links
+        case logoSmallId, logoLargeId, headerImageId
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(title, forKey: .title)
-        try container.encodeNil(forKey: .logoSmallId)
-        try container.encodeNil(forKey: .logoLargeId)
-        try container.encodeNil(forKey: .headerImageId)
         try container.encode(shortDescription, forKey: .shortDescription)
         try container.encode(description, forKey: .description)
-        try container.encode([String](), forKey: .links)
         try container.encode(tags, forKey: .tags)
+        try container.encode(links, forKey: .links)
+        try container.encode(logoSmallId, forKey: .logoSmallId)
+        try container.encode(logoLargeId, forKey: .logoLargeId)
+        if let headerImageId {
+            try container.encode(headerImageId, forKey: .headerImageId)
+        } else {
+            try container.encodeNil(forKey: .headerImageId)
+        }
     }
+}
+private struct UpdateCommunityRequest: Encodable, Sendable {
+    let id: String
+    let title: String
+    let shortDescription: String
+    let description: String
+    let links: [CommunityLink]
+    let tags: [String]
 }
 private struct ChannelMemberListRequest: Encodable, Sendable {
     let communityId: String
