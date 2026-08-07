@@ -449,6 +449,11 @@ final class AppModel: ObservableObject {
                 search: value.isEmpty ? nil : value,
                 sort: value.isEmpty ? .popular : .new
             )
+            await loadAttachmentURLs(
+                objectIDs: communityResults.flatMap {
+                    [$0.logoSmallId, $0.logoLargeId, $0.headerImageId].compactMap { $0 }
+                }
+            )
         } catch is CancellationError {
             return
         } catch {
@@ -461,6 +466,7 @@ final class AppModel: ObservableObject {
         do {
             guard let community = try await client.communities.join(id: id) else { return .pending }
             store.seed(community: community)
+            await loadCommunityMedia([community])
             selectCommunity(community.id)
             return .joined
         } catch {
@@ -484,6 +490,7 @@ final class AppModel: ObservableObject {
                 tags: tags
             )
             store.seed(community: community)
+            await loadCommunityMedia([community])
             selectCommunity(community.id)
             return community
         } catch {
@@ -711,6 +718,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func loadCommunityMedia(_ communities: [Community]) async {
+        await loadAttachmentURLs(
+            objectIDs: communities.flatMap {
+                [$0.logoSmallId, $0.logoLargeId, $0.headerImageId].compactMap { $0 }
+            }
+        )
+    }
+
+    private func refreshCommunityPresentation(communityIDs: [String]) async {
+        guard let client else { return }
+        var refreshed: [Community] = []
+        for id in communityIDs {
+            if let community = try? await client.communities.detail(id: id) {
+                store.seed(community: community)
+                refreshed.append(community)
+            }
+        }
+        await loadCommunityMedia(refreshed)
+    }
+
     private func hydrateUsers(ids: [String]) async {
         guard let client else { return }
         let missing = Array(Set(ids)).filter { store.users[$0] == nil }
@@ -795,6 +822,9 @@ final class AppModel: ObservableObject {
         selectedChannelID = savedChannelID.flatMap { channelIDs.contains($0) ? $0 : nil }
         selectedChatID = savedChatID.flatMap { chatIDs.contains($0) ? $0 : nil }
         phase = .home
+        await refreshCommunityPresentation(
+            communityIDs: session.response.communities.map(\.id)
+        )
 
         let realtime = client.realtime()
         self.realtime = realtime

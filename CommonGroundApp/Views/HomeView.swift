@@ -130,7 +130,10 @@ private struct HomeContent: View {
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {
-                            CommunityMark(name: community.title)
+                            CommunityMark(
+                                name: community.title,
+                                url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                            )
                         }
                         .tag(SidebarItem.community(community.id))
                     }
@@ -369,7 +372,10 @@ private struct OverviewView: View {
                         ForEach(communities) { community in
                             Button { openCommunity(community.id) } label: {
                                 HStack(spacing: 12) {
-                                    CommunityMark(name: community.title)
+                                    CommunityMark(
+                                        name: community.title,
+                                        url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                                    )
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(community.title).fontWeight(.semibold)
                                         Text("\(community.channels.count) channels · \(community.memberCount) members")
@@ -531,6 +537,7 @@ private struct CommunityDiscoveryView: View {
 }
 
 private struct CommunityDiscoveryRow: View {
+    @EnvironmentObject private var model: AppModel
     let community: CommunitySummary
     let isJoined: Bool
     let isJoining: Bool
@@ -539,7 +546,10 @@ private struct CommunityDiscoveryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            CommunityMark(name: community.title)
+            CommunityMark(
+                name: community.title,
+                url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+            )
             VStack(alignment: .leading, spacing: 4) {
                 Text(community.title).fontWeight(.semibold)
                 if let description = community.shortDescription, !description.isEmpty {
@@ -712,8 +722,15 @@ private struct CommunityHomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                if let imageID = community.headerImageId,
+                   let url = model.attachmentURLs[imageID] {
+                    CommunityFeatureImage(url: url, height: 250)
+                }
                 VStack(alignment: .leading, spacing: 7) {
-                    CommunityMark(name: community.title)
+                    CommunityMark(
+                        name: community.title,
+                        url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                    )
                         .scaleEffect(1.35, anchor: .leading)
                         .padding(.bottom, 8)
                     Text(community.title).font(.largeTitle.bold())
@@ -835,6 +852,7 @@ private struct ArticleReaderView: View {
                                 Avatar(
                                     name: creator.displayName,
                                     url: creator.imageID.flatMap { model.attachmentURLs[$0] },
+                                    isBot: creator.isBot,
                                     small: true
                                 )
                                 Text(creator.displayName).fontWeight(.semibold)
@@ -844,10 +862,7 @@ private struct ArticleReaderView: View {
                             Text(preview).font(.title3).foregroundStyle(.secondary)
                         }
                         Divider()
-                        Text(article.plainText)
-                            .font(.body)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        MarkdownArticleText(source: article.markdownSource)
                         if !article.tags.isEmpty {
                             Text(article.tags.map { "#\($0)" }.joined(separator: "  "))
                                 .font(.footnote)
@@ -881,6 +896,7 @@ private struct ArticleReaderView: View {
 }
 
 private struct ChannelListView: View {
+    @EnvironmentObject private var model: AppModel
     @State private var showLeaveConfirmation = false
     @State private var reportTarget: ReportTarget?
     let community: Community
@@ -891,6 +907,14 @@ private struct ChannelListView: View {
 
     var body: some View {
         List {
+            if let imageID = community.logoLargeId,
+               let url = model.attachmentURLs[imageID] {
+                Section {
+                    CommunityFeatureImage(url: url, height: 150)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
+            }
             Section {
                 Button(action: openHome) {
                     HStack {
@@ -1146,7 +1170,7 @@ private struct SearchView: View {
                             ForEach(userResults) { user in
                                 Button { selectedUser = user } label: {
                                     HStack(spacing: 12) {
-                                        Avatar(name: user.displayName, small: true)
+                                        Avatar(name: user.displayName, isBot: user.isBot, small: true)
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text(user.displayName).fontWeight(.semibold)
                                             Text(user.onlineStatus.capitalized)
@@ -1224,7 +1248,8 @@ private struct UserProfileView: View {
                     VStack(spacing: 18) {
                         Avatar(
                             name: user.displayName,
-                            url: user.imageID.flatMap { model.attachmentURLs[$0] }
+                            url: user.imageID.flatMap { model.attachmentURLs[$0] },
+                            isBot: user.isBot
                         )
                             .scaleEffect(1.8)
                             .padding(28)
@@ -1423,16 +1448,6 @@ private struct ConversationView: View {
             let visibleOffset = min(drawerWidth, max(0, baseOffset - participantDrag))
 
             ZStack(alignment: .trailing) {
-                ConversationParticipantsView(
-                    context: context,
-                    store: store,
-                    isVisible: showParticipants,
-                    select: { selectedUser = $0 },
-                    close: { showParticipants = false }
-                )
-                .frame(width: drawerWidth)
-                .offset(x: drawerWidth - visibleOffset)
-
                 conversationBody
                     .offset(x: -visibleOffset)
                     .overlay {
@@ -1443,6 +1458,17 @@ private struct ConversationView: View {
                                 .onTapGesture { showParticipants = false }
                         }
                     }
+
+                ConversationParticipantsView(
+                    context: context,
+                    store: store,
+                    isVisible: showParticipants,
+                    select: { selectedUser = $0 },
+                    close: { showParticipants = false }
+                )
+                .frame(width: drawerWidth)
+                .offset(x: drawerWidth - visibleOffset)
+                .zIndex(1)
             }
             .clipped()
             .animation(.snappy(duration: 0.26), value: showParticipants)
@@ -1801,6 +1827,7 @@ private struct ConversationParticipantsView: View {
                 Avatar(
                     name: participant.user?.displayName ?? "Member",
                     url: participant.user?.imageID.flatMap { model.attachmentURLs[$0] },
+                    isBot: participant.user?.isBot == true,
                     small: true
                 )
                 .overlay(alignment: .bottomTrailing) {
@@ -1879,7 +1906,7 @@ private struct MentionPicker: View {
                     List(users) { user in
                         Button { select(user) } label: {
                             HStack(spacing: 12) {
-                                Avatar(name: user.displayName, small: true)
+                                Avatar(name: user.displayName, isBot: user.isBot, small: true)
                                 Text(user.displayName).fontWeight(.semibold)
                             }
                         }
@@ -1947,7 +1974,12 @@ private struct MessageRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             Button(action: openProfile) {
-                Avatar(name: author?.displayName ?? (isOwn ? "You" : "Member"), url: avatarURL, small: true)
+                Avatar(
+                    name: author?.displayName ?? (isOwn ? "You" : "Member"),
+                    url: avatarURL,
+                    isBot: author?.isBot == true,
+                    small: true
+                )
             }
             .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 5) {
@@ -1957,6 +1989,11 @@ private struct MessageRow: View {
                             .font(.subheadline.weight(.semibold))
                     }
                     .buttonStyle(.plain)
+                    if author?.isBot == true {
+                        Label("Bot", systemImage: "cpu")
+                            .font(.caption2.bold())
+                            .foregroundStyle(AppTheme.accent)
+                    }
                     Text(relativeDate(message.createdAt))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -2272,7 +2309,7 @@ private struct UserArticleComposer: View {
                 Section("Article") {
                     TextField("Title", text: $title)
                     TextField("Short preview", text: $preview, axis: .vertical)
-                    TextField("Write your article…", text: $bodyText, axis: .vertical)
+                    TextField("Write Markdown…", text: $bodyText, axis: .vertical)
                         .lineLimit(8...20)
                 }
                 Section("Tags") {
@@ -2281,7 +2318,7 @@ private struct UserArticleComposer: View {
                 }
                 Section {
                     Label(
-                        "This first native editor publishes plain text. Rich blocks and images can be added without changing the article API.",
+                        "Markdown is supported. Rich media blocks can be added later without changing the article API.",
                         systemImage: "info.circle"
                     )
                     .font(.footnote)
@@ -2328,6 +2365,7 @@ private struct UserArticleComposer: View {
 private struct Avatar: View {
     let name: String
     var url: URL? = nil
+    var isBot = false
     var small = false
 
     var body: some View {
@@ -2348,8 +2386,15 @@ private struct Avatar: View {
     }
 
     private var initials: some View {
-        Text(String(name.prefix(2)).uppercased())
-            .font(small ? .caption.bold() : .subheadline.bold())
+        Group {
+            if isBot {
+                Image(systemName: "cpu")
+                    .font(small ? .caption.bold() : .subheadline.bold())
+            } else {
+                Text(String(name.prefix(2)).uppercased())
+                    .font(small ? .caption.bold() : .subheadline.bold())
+            }
+        }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(.black)
             .background(
@@ -2364,14 +2409,69 @@ private struct Avatar: View {
 
 private struct CommunityMark: View {
     let name: String
+    var url: URL? = nil
 
     var body: some View {
+        Group {
+            if let url {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    fallback
+                }
+            } else {
+                fallback
+            }
+        }
+            .frame(width: 30, height: 30)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityHidden(true)
+    }
+
+    private var fallback: some View {
         Text(String(name.prefix(1)).uppercased())
             .font(.caption.bold())
-            .frame(width: 30, height: 30)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(.white)
-            .background(AppTheme.accent.gradient, in: RoundedRectangle(cornerRadius: 8))
-            .accessibilityHidden(true)
+            .background(AppTheme.accent.gradient)
+    }
+}
+
+private struct CommunityFeatureImage: View {
+    let url: URL
+    let height: CGFloat
+
+    var body: some View {
+        AsyncImage(url: url) { image in
+            image.resizable().scaledToFill()
+        } placeholder: {
+            Rectangle().fill(Color.secondary.opacity(0.1)).overlay { ProgressView() }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .accessibilityLabel("Community image")
+    }
+}
+
+private struct MarkdownArticleText: View {
+    let source: String
+
+    var body: some View {
+        Group {
+            if let rendered = try? AttributedString(
+                markdown: source,
+                options: .init(interpretedSyntax: .full)
+            ) {
+                Text(rendered)
+            } else {
+                Text(source)
+            }
+        }
+        .font(.body)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -253,7 +253,7 @@ final class CommonGroundKitTests: XCTestCase {
                 return Self.response(
                     request,
                     status: 200,
-                    body: #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","url":"ios-builders","title":"iOS Builders","shortDescription":"Native app people","memberCount":"42","tags":["swift"],"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"}]}"#
+                    body: #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","url":"ios-builders","title":"iOS Builders","logoSmallId":"icon-1","logoLargeId":"sidebar-1","headerImageId":"hero-1","shortDescription":"Native app people","memberCount":"42","tags":["swift"],"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"}]}"#
                 )
             case "/api/v2/Community/createCommunity":
                 let body = try XCTUnwrap(Self.bodyData(request))
@@ -281,6 +281,9 @@ final class CommonGroundKitTests: XCTestCase {
         let communities = try await api.list()
         XCTAssertEqual(communities[0].memberCount, 42)
         XCTAssertEqual(communities[0].tags, ["swift"])
+        XCTAssertEqual(communities[0].logoSmallId, "icon-1")
+        XCTAssertEqual(communities[0].logoLargeId, "sidebar-1")
+        XCTAssertEqual(communities[0].headerImageId, "hero-1")
         let created = try await api.create(title: "iOS Builders", tags: ["swift"])
         XCTAssertEqual(created.title, "iOS Builders")
     }
@@ -638,7 +641,7 @@ final class CommonGroundKitTests: XCTestCase {
             )
         )
         let detail = try await api.userArticle(userID: "user-1", articleID: "article-1")
-        XCTAssertEqual(detail.article.plainText, "Heading\nBody")
+        XCTAssertEqual(detail.article.markdownSource, "## Heading\nBody")
     }
 
     func testProfileUpdateContracts() async throws {

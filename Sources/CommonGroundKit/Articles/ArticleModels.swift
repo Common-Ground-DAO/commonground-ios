@@ -51,7 +51,7 @@ public struct ArticleDetail: Decodable, Equatable, Sendable {
     public let content: JSONValue
     public let channelId: String
 
-    public var plainText: String {
+    public var markdownSource: String {
         guard case .object(let root) = content else { return "" }
         if root["version"]?.stringValue == "1" { return root["text"]?.stringValue ?? "" }
         guard case .array(let nodes) = root["content"] else { return "" }
@@ -59,15 +59,27 @@ public struct ArticleDetail: Decodable, Equatable, Sendable {
             guard case .object(let value) = node else { return nil }
             switch value["type"]?.stringValue {
             case "newline": return "\n"
-            case "text", "link", "richTextLink": return value["value"]?.stringValue
+            case "text": return value["value"]?.stringValue
+            case "link":
+                guard let label = value["value"]?.stringValue else { return nil }
+                let destination = label.hasPrefix("http") ? label : "https://\(label)"
+                return "[\(label)](<\(destination)>)"
+            case "richTextLink":
+                guard let label = value["value"]?.stringValue,
+                      let destination = value["url"]?.stringValue else { return nil }
+                return "[\(label)](<\(destination)>)"
             case "header":
                 guard case .array(let parts) = value["value"] else { return nil }
-                return parts.compactMap { $0.objectValue?["value"]?.stringValue }.joined()
-            case "articleImage": return value["caption"]?.stringValue
+                return "## " + parts.compactMap { $0.objectValue?["value"]?.stringValue }.joined()
+            case "articleImage":
+                guard let caption = value["caption"]?.stringValue, !caption.isEmpty else { return nil }
+                return "*\(caption)*"
             default: return nil
             }
         }.joined()
     }
+
+    public var plainText: String { markdownSource }
 
     private enum CodingKeys: String, CodingKey {
         case articleId, title, previewText, thumbnailImageId, headerImageId

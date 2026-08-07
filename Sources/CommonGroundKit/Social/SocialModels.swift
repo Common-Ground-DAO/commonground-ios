@@ -183,6 +183,10 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let url: String
     public let title: String
+    public let logoSmallId: String?
+    public let logoLargeId: String?
+    public let headerImageId: String?
+    public let shortDescription: String?
     public let createdAt: String
     public let updatedAt: String
     public let memberCount: Int
@@ -193,7 +197,8 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
     public let calls: [JSONValue]
 
     private enum CodingKeys: String, CodingKey {
-        case id, url, title, createdAt, updatedAt, memberCount, myRoleIds
+        case id, url, title, logoSmallId, logoLargeId, headerImageId, shortDescription
+        case createdAt, updatedAt, memberCount, myRoleIds
         case channels, areas, roles, calls
     }
 
@@ -202,6 +207,10 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         id = try container.decode(String.self, forKey: .id)
         url = try container.decode(String.self, forKey: .url)
         title = try container.decode(String.self, forKey: .title)
+        logoSmallId = try container.decodeIfPresent(String.self, forKey: .logoSmallId)
+        logoLargeId = try container.decodeIfPresent(String.self, forKey: .logoLargeId)
+        headerImageId = try container.decodeIfPresent(String.self, forKey: .headerImageId)
+        shortDescription = try container.decodeIfPresent(String.self, forKey: .shortDescription)
         createdAt = try container.decode(String.self, forKey: .createdAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
         if let value = try? container.decode(Int.self, forKey: .memberCount) {
@@ -224,6 +233,10 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         try container.encode(id, forKey: .id)
         try container.encode(url, forKey: .url)
         try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(logoSmallId, forKey: .logoSmallId)
+        try container.encodeIfPresent(logoLargeId, forKey: .logoLargeId)
+        try container.encodeIfPresent(headerImageId, forKey: .headerImageId)
+        try container.encodeIfPresent(shortDescription, forKey: .shortDescription)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encode(memberCount, forKey: .memberCount)
@@ -239,6 +252,9 @@ public struct CommunitySummary: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let url: String
     public let title: String
+    public let logoSmallId: String?
+    public let logoLargeId: String?
+    public let headerImageId: String?
     public let shortDescription: String?
     public let memberCount: Int
     public let tags: [String]
@@ -246,7 +262,8 @@ public struct CommunitySummary: Codable, Equatable, Identifiable, Sendable {
     public let updatedAt: String
 
     private enum CodingKeys: String, CodingKey {
-        case id, url, title, shortDescription, memberCount, tags, createdAt, updatedAt
+        case id, url, title, logoSmallId, logoLargeId, headerImageId
+        case shortDescription, memberCount, tags, createdAt, updatedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -254,6 +271,9 @@ public struct CommunitySummary: Codable, Equatable, Identifiable, Sendable {
         id = try container.decode(String.self, forKey: .id)
         url = try container.decode(String.self, forKey: .url)
         title = try container.decode(String.self, forKey: .title)
+        logoSmallId = try container.decodeIfPresent(String.self, forKey: .logoSmallId)
+        logoLargeId = try container.decodeIfPresent(String.self, forKey: .logoLargeId)
+        headerImageId = try container.decodeIfPresent(String.self, forKey: .headerImageId)
         shortDescription = try container.decodeIfPresent(String.self, forKey: .shortDescription)
         if let value = try? container.decode(Int.self, forKey: .memberCount) {
             memberCount = value
