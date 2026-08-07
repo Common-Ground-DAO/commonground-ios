@@ -74,6 +74,9 @@ public struct MessageAPI: Sendable {
     public func send(
         access: MessageAccess,
         text: String,
+        mentions: [String: String] = [:],
+        parentMessageID: String? = nil,
+        imageAttachments: [MessageImageAttachment] = [],
         id: UUID = UUID()
     ) async throws -> Message {
         try await transport.call(
@@ -81,12 +84,56 @@ public struct MessageAPI: Sendable {
             body: CreateMessageRequest(
                 id: id.uuidString.lowercased(),
                 access: access,
-                body: .text(text),
-                parentMessageId: nil,
-                attachments: []
+                body: .composed(text, mentions: mentions),
+                parentMessageId: parentMessageID,
+                attachments: imageAttachments.map(\.jsonValue)
             )
         )
     }
+
+    public func edit(
+        access: MessageAccess,
+        messageID: String,
+        text: String
+    ) async throws -> MessageEditResult {
+        try await transport.call(
+            "Message/editMessage",
+            body: EditMessageRequest(access: access, id: messageID, body: .text(text))
+        )
+    }
+
+    public func delete(access: MessageAccess, messageID: String, creatorID: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Message/deleteMessage",
+            body: DeleteMessageRequest(access: access, messageId: messageID, creatorId: creatorID)
+        )
+    }
+
+    public func setReaction(access: MessageAccess, messageID: String, reaction: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Message/setReaction",
+            body: SetReactionRequest(access: access, messageId: messageID, reaction: reaction)
+        )
+    }
+
+    public func unsetReaction(access: MessageAccess, messageID: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Message/unsetReaction",
+            body: UnsetReactionRequest(access: access, messageId: messageID)
+        )
+    }
+
+    public func setLastRead(access: MessageAccess, date: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Message/setChannelLastRead",
+            body: SetLastReadRequest(access: access, lastRead: date)
+        )
+    }
+}
+
+public struct MessageEditResult: Codable, Equatable, Sendable {
+    public let editedAt: String
+    public let attachments: [JSONValue]?
 }
 
 public struct ChatAPI: Sendable {
@@ -170,4 +217,27 @@ private struct CreateMessageRequest: Encodable, Sendable {
         }
         try container.encode(attachments, forKey: .attachments)
     }
+}
+private struct EditMessageRequest: Encodable, Sendable {
+    let access: MessageAccess
+    let id: String
+    let body: MessageBody
+}
+private struct DeleteMessageRequest: Encodable, Sendable {
+    let access: MessageAccess
+    let messageId: String
+    let creatorId: String
+}
+private struct SetReactionRequest: Encodable, Sendable {
+    let access: MessageAccess
+    let messageId: String
+    let reaction: String
+}
+private struct UnsetReactionRequest: Encodable, Sendable {
+    let access: MessageAccess
+    let messageId: String
+}
+private struct SetLastReadRequest: Encodable, Sendable {
+    let access: MessageAccess
+    let lastRead: String
 }

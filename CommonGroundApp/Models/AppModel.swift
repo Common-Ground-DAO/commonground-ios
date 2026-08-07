@@ -23,6 +23,12 @@ final class AppModel: ObservableObject {
     @Published var selectedChannelID: String?
     @Published var selectedChatID: String?
     @Published var draftMessage = ""
+    @Published private(set) var draftMentions: [String: String] = [:]
+    @Published var replyingTo: Message?
+    @Published var editingMessage: Message?
+    @Published var pendingImageAttachment: MessageImageAttachment?
+    @Published var isUploadingAttachment = false
+    @Published private(set) var attachmentURLs: [String: URL] = [:]
     @Published var isLoadingNotifications = false
     @Published var isSearchingUsers = false
     @Published private(set) var userSearchResultIDs: [String] = []
@@ -150,6 +156,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectChannel(_ id: String?) {
+        resetComposerContext()
         selectedChannelID = id
         selectedChatID = nil
         guard let client else { return }
@@ -157,6 +164,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectChat(_ id: String?) {
+        resetComposerContext()
         selectedChatID = id
         selectedChannelID = nil
         guard let client else { return }
@@ -342,11 +350,113 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func beginReply(to message: Message) {
+        editingMessage = nil
+        replyingTo = message
+    }
+
+    func beginEditing(_ message: Message) {
+        replyingTo = nil
+        pendingImageAttachment = nil
+        editingMessage = message
+        draftMessage = message.body.plainText
+        draftMentions = [:]
+    }
+
+    func cancelComposerContext() {
+        replyingTo = nil
+        editingMessage = nil
+        pendingImageAttachment = nil
+        draftMessage = ""
+        draftMentions = [:]
+    }
+
+    func insertMention(_ user: UserProfile) {
+        let alias = user.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !alias.isEmpty else { return }
+        draftMentions[alias] = user.id
+        if !draftMessage.isEmpty && !draftMessage.hasSuffix(" ") && !draftMessage.hasSuffix("\n") {
+            draftMessage += " "
+        }
+        draftMessage += "@\(alias) "
+    }
+
+    func uploadMessageImage(_ data: Data) async {
+        guard let client, !isUploadingAttachment else { return }
+        guard data.count <= 8 * 1_024 * 1_024 else {
+            errorMessage = "That image is larger than the instance’s 8 MB upload limit."
+            return
+        }
+        isUploadingAttachment = true
+        defer { isUploadingAttachment = false }
+        do {
+            let result = try await client.files.uploadImage(data, type: .channelAttachmentImage)
+            guard let largeImageID = result.largeImageId else {
+                errorMessage = "The instance did not return the large image needed for this attachment."
+                return
+            }
+            pendingImageAttachment = MessageImageAttachment(
+                imageId: result.imageId,
+                largeImageId: largeImageID
+            )
+            await loadAttachmentURLs(objectIDs: [result.imageId, largeImageID])
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func removePendingImage() {
+        pendingImageAttachment = nil
+    }
+
+    func deleteMessage(_ message: Message, access: MessageAccess) async {
+        guard let client else { return }
+        do {
+            try await client.messages.delete(
+                access: access,
+                messageID: message.id,
+                creatorID: message.creatorId
+            )
+            store.applyOwnDelete(messageID: message.id, channelID: message.channelId)
+            if editingMessage?.id == message.id { cancelComposerContext() }
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func setReaction(_ reaction: String?, on message: Message, access: MessageAccess) async {
+        guard let client else { return }
+        do {
+            if let reaction {
+                try await client.messages.setReaction(
+                    access: access,
+                    messageID: message.id,
+                    reaction: reaction
+                )
+            } else {
+                try await client.messages.unsetReaction(access: access, messageID: message.id)
+            }
+            store.applyOwnReaction(
+                messageID: message.id,
+                channelID: message.channelId,
+                reaction: reaction
+            )
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
     private func loadMessages(access: MessageAccess, channelID: String) async {
         guard let client else { return }
         do {
             let messages = try await client.messages.load(access: access)
             store.seed(messages, channelId: channelID)
+            await loadAttachmentURLs(
+                objectIDs: messages.flatMap(\.imageAttachments).flatMap { [$0.imageId, $0.largeImageId] }
+            )
+            if let lastRead = messages.last?.createdAt {
+                try? await client.messages.setLastRead(access: access, date: lastRead)
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -356,15 +466,75 @@ final class AppModel: ObservableObject {
 
     private func sendMessage(access: MessageAccess) async {
         let text = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let client else { return }
+        guard (!text.isEmpty || pendingImageAttachment != nil), let client else { return }
+        if let editingMessage {
+            guard !text.isEmpty else { return }
+            do {
+                let result = try await client.messages.edit(
+                    access: access,
+                    messageID: editingMessage.id,
+                    text: text
+                )
+                store.applyOwnEdit(
+                    messageID: editingMessage.id,
+                    channelID: editingMessage.channelId,
+                    body: .text(text),
+                    editedAt: result.editedAt
+                )
+                resetComposerContext()
+                draftMessage = ""
+            } catch {
+                errorMessage = userMessage(for: error)
+            }
+            return
+        }
+        let reply = replyingTo
+        let attachment = pendingImageAttachment
+        let mentions = draftMentions
         draftMessage = ""
+        draftMentions = [:]
+        replyingTo = nil
+        pendingImageAttachment = nil
         do {
-            let sent = try await client.messages.send(access: access, text: text)
+            let sent = try await client.messages.send(
+                access: access,
+                text: text,
+                mentions: mentions,
+                parentMessageID: reply?.id,
+                imageAttachments: attachment.map { [$0] } ?? []
+            )
             store.applyOwnWrite(sent)
+            await loadAttachmentURLs(
+                objectIDs: sent.imageAttachments.flatMap { [$0.imageId, $0.largeImageId] }
+            )
         } catch {
             draftMessage = text
+            replyingTo = reply
+            pendingImageAttachment = attachment
+            draftMentions = mentions
             errorMessage = userMessage(for: error)
         }
+    }
+
+    private func loadAttachmentURLs(objectIDs: [String]) async {
+        guard let client else { return }
+        let missing = Array(Set(objectIDs)).filter { attachmentURLs[$0] == nil }
+        guard !missing.isEmpty else { return }
+        do {
+            for signed in try await client.files.signedURLs(objectIDs: missing) {
+                if let url = URL(string: signed.url) { attachmentURLs[signed.objectId] = url }
+            }
+        } catch {
+            // A message remains readable when its optional media URL cannot be
+            // refreshed. Pull-to-refresh retries this without hiding the text.
+        }
+    }
+
+    private func resetComposerContext() {
+        replyingTo = nil
+        editingMessage = nil
+        pendingImageAttachment = nil
+        draftMentions = [:]
     }
 
     func logout() async {

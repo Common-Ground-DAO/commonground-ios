@@ -12,9 +12,11 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
   implemented against the reference-client contracts.
 - Public community discovery, creation, joining/leaving, and UGC report submission
   are implemented with native iPhone/iPad surfaces.
+- Rich messaging covers replies, structured mentions, emoji reactions,
+  editing/deletion, image uploads, and signed media downloads.
 - Complete generated models/wrappers for communities, chats, notifications, search, profiles, files, and article reading.
 - Replace the in-memory sync store with GRDB/SQLite and add delta resync/offline reads.
-- Add image upload/download, mentions, reactions, replies, moderator administration, account deletion, accessibility, localization, and full UI test coverage.
+- Add link previews, GIFs, moderator administration, account deletion, accessibility, localization, and full UI test coverage.
 - Add passkeys through AuthenticationServices plus `ASWebAuthenticationSession` fallback for arbitrary instances.
 
 ## M2 — server-coordinated push
