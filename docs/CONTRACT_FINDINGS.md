@@ -31,3 +31,7 @@ The process-wide `HTTPCookieStorage.shared` can blur ownership when several Comm
 ## N-07 — deployed unread count is string-encoded
 
 The TypeScript `User/login` contract declares `unreadNotificationCount` as a number, but the deployed PostgreSQL-backed response currently serializes it as an integer string. `LoginResponse` accepts both forms and normalizes them to `Int`. An opt-in live login test pins the deployed payload in addition to the source-derived fixture tests.
+
+## N-08 — notification and search count fields cross PostgreSQL numeric boundaries
+
+`Notification/getUnreadCount` is backed by SQL `COUNT` and can arrive as an integer string, matching reference-client finding F-08. Search priority is produced by a SQL aggregate and may likewise cross the wire as a string depending on the PostgreSQL driver’s numeric parser. The Swift APIs accept either JSON representation and normalize both to `Int` at the SDK boundary.

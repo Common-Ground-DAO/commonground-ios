@@ -8,6 +8,8 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
 
 - Native adaptive iPhone/iPad navigation, centralized publisher configuration,
   community browsing, and direct-message plumbing are implemented as the M1 foundation.
+- Notification history/read state and public-profile search/follow/DM flows are
+  implemented against the reference-client contracts.
 - Complete generated models/wrappers for communities, chats, notifications, search, profiles, files, and article reading.
 - Replace the in-memory sync store with GRDB/SQLite and add delta resync/offline reads.
 - Add image upload/download, mentions, reactions, replies, moderation/reporting surfaces, account deletion, accessibility, localization, and full UI test coverage.
