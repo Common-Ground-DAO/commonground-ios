@@ -162,6 +162,18 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(response.ownData.displayName, "alice")
         XCTAssertNil(response.communities[0].channels[0].areaId)
         XCTAssertEqual(response.chats[0].unread, 3)
+
+        await MainActor.run {
+            let store = SyncStore()
+            store.hydrate(from: response)
+            XCTAssertEqual(store.chats[response.chats[0].id]?.unread, 3)
+            store.reset()
+            XCTAssertNil(store.ownUser)
+            XCTAssertTrue(store.communities.isEmpty)
+            XCTAssertTrue(store.chats.isEmpty)
+            XCTAssertTrue(store.messages.isEmpty)
+            XCTAssertEqual(store.unreadNotificationCount, 0)
+        }
     }
 
     func testBareInstanceConfig() async throws {

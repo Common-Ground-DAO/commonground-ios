@@ -6,6 +6,7 @@ import Foundation
 public final class SyncStore: ObservableObject {
     @Published public private(set) var ownUser: OwnUser?
     @Published public private(set) var communities: [String: Community] = [:]
+    @Published public private(set) var chats: [String: Chat] = [:]
     @Published public private(set) var messages: [String: [String: Message]] = [:]
     @Published public private(set) var unreadNotificationCount = 0
 
@@ -16,7 +17,17 @@ public final class SyncStore: ObservableObject {
     public func hydrate(from response: LoginResponse) {
         ownUser = response.ownData
         communities = Dictionary(uniqueKeysWithValues: response.communities.map { ($0.id, $0) })
+        chats = Dictionary(uniqueKeysWithValues: response.chats.map { ($0.id, $0) })
         unreadNotificationCount = response.unreadNotificationCount
+    }
+
+    public func reset() {
+        ownUser = nil
+        communities = [:]
+        chats = [:]
+        messages = [:]
+        unreadNotificationCount = 0
+        listenerID = nil
     }
 
     public func seed(_ batch: [Message], channelId: String) {

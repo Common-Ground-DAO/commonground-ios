@@ -6,6 +6,8 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
 
 ## M1 — mobile MVP breadth
 
+- Native adaptive iPhone/iPad navigation, centralized publisher configuration,
+  community browsing, and direct-message plumbing are implemented as the M1 foundation.
 - Complete generated models/wrappers for communities, chats, notifications, search, profiles, files, and article reading.
 - Replace the in-memory sync store with GRDB/SQLite and add delta resync/offline reads.
 - Add image upload/download, mentions, reactions, replies, moderation/reporting surfaces, account deletion, accessibility, localization, and full UI test coverage.

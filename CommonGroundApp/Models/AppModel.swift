@@ -7,13 +7,15 @@ final class AppModel: ObservableObject {
     enum Phase { case instance, authentication, home }
 
     @Published var phase: Phase = .instance
-    @Published var instanceInput = UserDefaults.standard.string(forKey: Keys.instance) ?? "https://cg.mogged.eu"
+    @Published var instanceInput = UserDefaults.standard.string(forKey: Keys.instance) ?? AppConfiguration.defaultInstanceURL
     @Published var instanceConfig: InstanceConfig?
     @Published var isWorking = false
     @Published var activity = ""
     @Published var errorMessage: String?
     @Published var realtimeNotice: String?
+    @Published var selectedCommunityID: String?
     @Published var selectedChannelID: String?
+    @Published var selectedChatID: String?
     @Published var draftMessage = ""
 
     let store = SyncStore()
@@ -107,11 +109,54 @@ final class AppModel: ObservableObject {
     }
 
     func loadMessages(channel: Channel) async {
+        await loadMessages(
+            access: .community(channel.communityId, channelId: channel.channelId),
+            channelID: channel.channelId
+        )
+    }
+
+    func loadMessages(chat: Chat) async {
+        await loadMessages(
+            access: .chat(chat.id, channelId: chat.channelId),
+            channelID: chat.channelId
+        )
+    }
+
+    func sendMessage(channel: Channel) async {
+        await sendMessage(
+            access: .community(channel.communityId, channelId: channel.channelId)
+        )
+    }
+
+    func sendMessage(chat: Chat) async {
+        await sendMessage(access: .chat(chat.id, channelId: chat.channelId))
+    }
+
+    func selectCommunity(_ id: String?) {
+        selectedCommunityID = id
+        guard let client else { return }
+        UserDefaults.standard.set(id, forKey: Keys.communityID(client.instance))
+    }
+
+    func selectChannel(_ id: String?) {
+        selectedChannelID = id
+        selectedChatID = nil
+        guard let client else { return }
+        UserDefaults.standard.set(id, forKey: Keys.channelID(client.instance))
+    }
+
+    func selectChat(_ id: String?) {
+        selectedChatID = id
+        selectedChannelID = nil
+        guard let client else { return }
+        UserDefaults.standard.set(id, forKey: Keys.chatID(client.instance))
+    }
+
+    private func loadMessages(access: MessageAccess, channelID: String) async {
         guard let client else { return }
         do {
-            let access = MessageAccess.community(channel.communityId, channelId: channel.channelId)
             let messages = try await client.messages.load(access: access)
-            store.seed(messages, channelId: channel.channelId)
+            store.seed(messages, channelId: channelID)
         } catch is CancellationError {
             return
         } catch {
@@ -119,12 +164,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func sendMessage(channel: Channel) async {
+    private func sendMessage(access: MessageAccess) async {
         let text = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let client else { return }
         draftMessage = ""
         do {
-            let access = MessageAccess.community(channel.communityId, channelId: channel.channelId)
             let sent = try await client.messages.send(access: access, text: text)
             store.applyOwnWrite(sent)
         } catch {
@@ -143,6 +187,10 @@ final class AppModel: ObservableObject {
             await client.transport.clearCookies()
             UserDefaults.standard.removeObject(forKey: Keys.deviceID(client.instance))
             UserDefaults.standard.removeObject(forKey: Keys.cachedLogin(client.instance))
+            selectedCommunityID = nil
+            selectedChannelID = nil
+            selectedChatID = nil
+            store.reset()
             phase = .authentication
             try DeviceKeyStore.delete(for: client.instance)
             signingKey = try DeviceKeyStore.loadOrCreate(for: client.instance)
@@ -157,6 +205,10 @@ final class AppModel: ObservableObject {
         client = nil
         instanceConfig = nil
         errorMessage = nil
+        selectedCommunityID = nil
+        selectedChannelID = nil
+        selectedChatID = nil
+        store.reset()
         phase = .instance
     }
 
@@ -165,10 +217,15 @@ final class AppModel: ObservableObject {
         store.hydrate(from: session.response)
         UserDefaults.standard.set(session.deviceId, forKey: Keys.deviceID(client.instance))
         saveCachedResponse(session.response, for: client.instance)
-        selectedChannelID = session.response.communities
-            .flatMap(\.channels)
-            .sorted(by: { $0.order < $1.order })
-            .first?.channelId
+        let communityIDs = Set(session.response.communities.map(\.id))
+        let channelIDs = Set(session.response.communities.flatMap(\.channels).map(\.channelId))
+        let chatIDs = Set(session.response.chats.map(\.id))
+        let savedCommunityID = UserDefaults.standard.string(forKey: Keys.communityID(client.instance))
+        let savedChannelID = UserDefaults.standard.string(forKey: Keys.channelID(client.instance))
+        let savedChatID = UserDefaults.standard.string(forKey: Keys.chatID(client.instance))
+        selectedCommunityID = savedCommunityID.flatMap { communityIDs.contains($0) ? $0 : nil }
+        selectedChannelID = savedChannelID.flatMap { channelIDs.contains($0) ? $0 : nil }
+        selectedChatID = savedChatID.flatMap { chatIDs.contains($0) ? $0 : nil }
         phase = .home
 
         let realtime = client.realtime()
@@ -303,6 +360,15 @@ final class AppModel: ObservableObject {
         }
         static func cachedLogin(_ instance: InstanceURL) -> String {
             "cachedLogin.\(instance.description)"
+        }
+        static func communityID(_ instance: InstanceURL) -> String {
+            "communityID.\(instance.description)"
+        }
+        static func channelID(_ instance: InstanceURL) -> String {
+            "channelID.\(instance.description)"
+        }
+        static func chatID(_ instance: InstanceURL) -> String {
+            "chatID.\(instance.description)"
         }
     }
 
