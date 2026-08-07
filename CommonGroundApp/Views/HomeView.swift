@@ -130,7 +130,10 @@ private struct HomeContent: View {
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {
-                            CommunityMark(name: community.title)
+                            CommunityMark(
+                                name: community.title,
+                                url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                            )
                         }
                         .tag(SidebarItem.community(community.id))
                     }
@@ -369,7 +372,10 @@ private struct OverviewView: View {
                         ForEach(communities) { community in
                             Button { openCommunity(community.id) } label: {
                                 HStack(spacing: 12) {
-                                    CommunityMark(name: community.title)
+                                    CommunityMark(
+                                        name: community.title,
+                                        url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                                    )
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(community.title).fontWeight(.semibold)
                                         Text("\(community.channels.count) channels · \(community.memberCount) members")
@@ -531,6 +537,7 @@ private struct CommunityDiscoveryView: View {
 }
 
 private struct CommunityDiscoveryRow: View {
+    @EnvironmentObject private var model: AppModel
     let community: CommunitySummary
     let isJoined: Bool
     let isJoining: Bool
@@ -539,7 +546,10 @@ private struct CommunityDiscoveryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            CommunityMark(name: community.title)
+            CommunityMark(
+                name: community.title,
+                url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+            )
             VStack(alignment: .leading, spacing: 4) {
                 Text(community.title).fontWeight(.semibold)
                 if let description = community.shortDescription, !description.isEmpty {
@@ -712,8 +722,15 @@ private struct CommunityHomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                if let imageID = community.headerImageId,
+                   let url = model.attachmentURLs[imageID] {
+                    CommunityFeatureImage(url: url, height: 250)
+                }
                 VStack(alignment: .leading, spacing: 7) {
-                    CommunityMark(name: community.title)
+                    CommunityMark(
+                        name: community.title,
+                        url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                    )
                         .scaleEffect(1.35, anchor: .leading)
                         .padding(.bottom, 8)
                     Text(community.title).font(.largeTitle.bold())
@@ -835,6 +852,7 @@ private struct ArticleReaderView: View {
                                 Avatar(
                                     name: creator.displayName,
                                     url: creator.imageID.flatMap { model.attachmentURLs[$0] },
+                                    isBot: creator.isBot,
                                     small: true
                                 )
                                 Text(creator.displayName).fontWeight(.semibold)
@@ -844,10 +862,7 @@ private struct ArticleReaderView: View {
                             Text(preview).font(.title3).foregroundStyle(.secondary)
                         }
                         Divider()
-                        Text(article.plainText)
-                            .font(.body)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        MarkdownArticleText(source: article.markdownSource)
                         if !article.tags.isEmpty {
                             Text(article.tags.map { "#\($0)" }.joined(separator: "  "))
                                 .font(.footnote)
@@ -881,6 +896,7 @@ private struct ArticleReaderView: View {
 }
 
 private struct ChannelListView: View {
+    @EnvironmentObject private var model: AppModel
     @State private var showLeaveConfirmation = false
     @State private var reportTarget: ReportTarget?
     let community: Community
@@ -891,6 +907,14 @@ private struct ChannelListView: View {
 
     var body: some View {
         List {
+            if let imageID = community.logoLargeId,
+               let url = model.attachmentURLs[imageID] {
+                Section {
+                    CommunityFeatureImage(url: url, height: 150)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
+            }
             Section {
                 Button(action: openHome) {
                     HStack {
@@ -1146,7 +1170,7 @@ private struct SearchView: View {
                             ForEach(userResults) { user in
                                 Button { selectedUser = user } label: {
                                     HStack(spacing: 12) {
-                                        Avatar(name: user.displayName, small: true)
+                                        Avatar(name: user.displayName, isBot: user.isBot, small: true)
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text(user.displayName).fontWeight(.semibold)
                                             Text(user.onlineStatus.capitalized)
@@ -1224,7 +1248,8 @@ private struct UserProfileView: View {
                     VStack(spacing: 18) {
                         Avatar(
                             name: user.displayName,
-                            url: user.imageID.flatMap { model.attachmentURLs[$0] }
+                            url: user.imageID.flatMap { model.attachmentURLs[$0] },
+                            isBot: user.isBot
                         )
                             .scaleEffect(1.8)
                             .padding(28)
@@ -1409,12 +1434,117 @@ private struct ConversationView: View {
     @State private var deleteTarget: Message?
     @State private var showMentionPicker = false
     @State private var selectedUser: UserProfile?
+    @State private var showParticipants = ProcessInfo.processInfo.arguments.contains("-showParticipants")
+    @GestureState private var participantDrag: CGFloat = 0
 
     private var messages: [Message] {
         store.orderedMessages(channelId: context.channelID)
     }
 
     var body: some View {
+        GeometryReader { proxy in
+            let drawerWidth = min(max(proxy.size.width * 0.82, 280), 370)
+            let baseOffset = showParticipants ? drawerWidth : 0
+            let visibleOffset = min(drawerWidth, max(0, baseOffset - participantDrag))
+
+            ZStack(alignment: .trailing) {
+                conversationBody
+                    .offset(x: -visibleOffset)
+                    .overlay {
+                        if visibleOffset > 1 {
+                            Color.black
+                                .opacity(0.18 * visibleOffset / drawerWidth)
+                                .contentShape(Rectangle())
+                                .onTapGesture { showParticipants = false }
+                        }
+                    }
+
+                ConversationParticipantsView(
+                    context: context,
+                    store: store,
+                    isVisible: showParticipants,
+                    select: { selectedUser = $0 },
+                    close: { showParticipants = false }
+                )
+                .frame(width: drawerWidth)
+                .offset(x: drawerWidth - visibleOffset)
+                .zIndex(1)
+            }
+            .clipped()
+            .animation(.snappy(duration: 0.26), value: showParticipants)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 18)
+                    .updating($participantDrag) { value, state, _ in
+                        if abs(value.translation.width) > abs(value.translation.height) {
+                            state = value.translation.width
+                        }
+                    }
+                    .onEnded { value in
+                        guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                        if value.translation.width < -55 {
+                            showParticipants = true
+                        } else if value.translation.width > 55 {
+                            showParticipants = false
+                        }
+                    }
+            )
+        }
+        .navigationTitle(context.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Channel participants", systemImage: "person.2") {
+                    showParticipants.toggle()
+                }
+                .accessibilityHint("Swipe left in the conversation to reveal this panel")
+            }
+        }
+        .task(id: context.channelID) { await load() }
+        .sheet(item: $reportTarget) { ReportSheet(target: $0) }
+        .sheet(item: $selectedUser) { user in
+            UserProfileView(userID: user.id, store: store) { chatID in
+                selectedUser = nil
+                model.selectChat(chatID)
+            }
+        }
+        .sheet(isPresented: $showMentionPicker) {
+            MentionPicker(store: store) { user in
+                model.insertMention(user)
+                showMentionPicker = false
+            }
+            .presentationDetents([.medium, .large])
+        }
+        .onChange(of: selectedPhoto) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    await model.uploadMessageImage(data)
+                } else {
+                    model.errorMessage = "That image could not be loaded from the photo library."
+                }
+                selectedPhoto = nil
+            }
+        }
+        .confirmationDialog(
+            "Delete this message?",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete message", role: .destructive) {
+                guard let message = deleteTarget else { return }
+                deleteTarget = nil
+                Task { await model.deleteMessage(message, access: context.access) }
+            }
+            Button("Cancel", role: .cancel) { deleteTarget = nil }
+        } message: {
+            Text("This cannot be undone.")
+        }
+    }
+
+    private var conversationBody: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -1546,51 +1676,6 @@ private struct ConversationView: View {
             .padding(12)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle(context.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .task(id: context.channelID) { await load() }
-        .sheet(item: $reportTarget) { ReportSheet(target: $0) }
-        .sheet(item: $selectedUser) { user in
-            UserProfileView(userID: user.id, store: store) { chatID in
-                selectedUser = nil
-                model.selectChat(chatID)
-            }
-        }
-        .sheet(isPresented: $showMentionPicker) {
-            MentionPicker(store: store) { user in
-                model.insertMention(user)
-                showMentionPicker = false
-            }
-            .presentationDetents([.medium, .large])
-        }
-        .onChange(of: selectedPhoto) { _, item in
-            guard let item else { return }
-            Task {
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    await model.uploadMessageImage(data)
-                } else {
-                    model.errorMessage = "That image could not be loaded from the photo library."
-                }
-                selectedPhoto = nil
-            }
-        }
-        .confirmationDialog(
-            "Delete this message?",
-            isPresented: Binding(
-                get: { deleteTarget != nil },
-                set: { if !$0 { deleteTarget = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete message", role: .destructive) {
-                guard let message = deleteTarget else { return }
-                deleteTarget = nil
-                Task { await model.deleteMessage(message, access: context.access) }
-            }
-            Button("Cancel", role: .cancel) { deleteTarget = nil }
-        } message: {
-            Text("This cannot be undone.")
-        }
     }
 
     private func load() async {
@@ -1604,6 +1689,193 @@ private struct ConversationView: View {
         switch context {
         case .channel(let channel): await model.sendMessage(channel: channel)
         case .chat(let chat): await model.sendMessage(chat: chat)
+        }
+    }
+}
+
+private struct ConversationParticipantsView: View {
+    @EnvironmentObject private var model: AppModel
+    let context: ConversationContext
+    @ObservedObject var store: SyncStore
+    let isVisible: Bool
+    let select: (UserProfile) -> Void
+    let close: () -> Void
+    @State private var query = ""
+
+    private struct Participant: Identifiable {
+        let id: String
+        let user: UserProfile?
+        let isOnline: Bool
+        let role: String
+    }
+
+    private var participants: [Participant] {
+        switch context {
+        case .channel(let channel):
+            guard let members = model.channelMembers[channel.channelId] else { return [] }
+            let onlineIDs = Set(members.online.map(\.userId))
+            return members.all.map { entry in
+                Participant(
+                    id: entry.userId,
+                    user: store.users[entry.userId],
+                    isOnline: onlineIDs.contains(entry.userId),
+                    role: role(for: entry.userId, in: members)
+                )
+            }
+        case .chat(let chat):
+            return chat.userIds.map { userID in
+                let user = store.users[userID]
+                let status = user?.onlineStatus ?? "offline"
+                return Participant(
+                    id: userID,
+                    user: user,
+                    isOnline: status != "offline" && status != "invisible",
+                    role: userID == store.ownUser?.id ? "You" : "Participant"
+                )
+            }
+        }
+    }
+
+    private var filtered: [Participant] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return participants }
+        return participants.filter {
+            ($0.user?.displayName ?? "").localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
+    private var online: [Participant] {
+        filtered.filter(\.isOnline).sorted(by: participantSort)
+    }
+
+    private var other: [Participant] {
+        filtered.filter { !$0.isOnline }.sorted(by: participantSort)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(contextParticipantTitle).font(.headline)
+                    Text("\(participants.count) participants · \(participants.filter(\.isOnline).count) online")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close participants", systemImage: "xmark") { close() }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+            }
+            .padding(16)
+
+            HStack(spacing: 9) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Find a member", text: $query)
+                    .textInputAutocapitalization(.never)
+                if !query.isEmpty {
+                    Button("Clear search", systemImage: "xmark.circle.fill") { query = "" }
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+
+            List {
+                if !online.isEmpty {
+                    Section("Online now · \(online.count)") {
+                        ForEach(online) { participantRow($0) }
+                    }
+                }
+                Section(other.isEmpty ? "All members" : "Other members · \(other.count)") {
+                    if filtered.isEmpty {
+                        ContentUnavailableView.search(text: query)
+                            .listRowBackground(Color.clear)
+                    } else {
+                        ForEach(other) { participantRow($0) }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .refreshable { await refresh() }
+        }
+        .background(.regularMaterial)
+        .overlay(alignment: .leading) { Divider() }
+        .task(id: isVisible) {
+            guard isVisible else { return }
+            while !Task.isCancelled {
+                await refresh()
+                do {
+                    try await Task.sleep(for: .seconds(20))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func participantRow(_ participant: Participant) -> some View {
+        Button {
+            if let user = participant.user { select(user) }
+        } label: {
+            HStack(spacing: 11) {
+                Avatar(
+                    name: participant.user?.displayName ?? "Member",
+                    url: participant.user?.imageID.flatMap { model.attachmentURLs[$0] },
+                    isBot: participant.user?.isBot == true,
+                    small: true
+                )
+                .overlay(alignment: .bottomTrailing) {
+                    Circle()
+                        .fill(participant.isOnline ? Color.green : Color.secondary.opacity(0.45))
+                        .frame(width: 11, height: 11)
+                        .overlay(Circle().stroke(.background, lineWidth: 2))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(participant.user?.displayName ?? "Loading member…")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                    Text(participant.isOnline ? "Online · \(participant.role)" : participant.role)
+                        .font(.caption)
+                        .foregroundStyle(participant.isOnline ? Color.green : Color.secondary)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(participant.user == nil)
+    }
+
+    private var contextParticipantTitle: String {
+        switch context {
+        case .channel: "Channel members"
+        case .chat: "Conversation"
+        }
+    }
+
+    private func role(for userID: String, in members: ChannelMemberList) -> String {
+        if members.admin.contains(where: { $0.userId == userID }) { return "Admin" }
+        if members.moderator.contains(where: { $0.userId == userID }) { return "Moderator" }
+        if members.writer.contains(where: { $0.userId == userID }) { return "Writer" }
+        return "Member"
+    }
+
+    private func participantSort(_ lhs: Participant, _ rhs: Participant) -> Bool {
+        (lhs.user?.displayName ?? lhs.id).localizedCaseInsensitiveCompare(
+            rhs.user?.displayName ?? rhs.id
+        ) == .orderedAscending
+    }
+
+    private func refresh() async {
+        switch context {
+        case .channel(let channel): await model.loadChannelMembers(channel: channel)
+        case .chat(let chat): await model.loadChatMembers(chat: chat)
         }
     }
 }
@@ -1634,7 +1906,7 @@ private struct MentionPicker: View {
                     List(users) { user in
                         Button { select(user) } label: {
                             HStack(spacing: 12) {
-                                Avatar(name: user.displayName, small: true)
+                                Avatar(name: user.displayName, isBot: user.isBot, small: true)
                                 Text(user.displayName).fontWeight(.semibold)
                             }
                         }
@@ -1702,7 +1974,12 @@ private struct MessageRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             Button(action: openProfile) {
-                Avatar(name: author?.displayName ?? (isOwn ? "You" : "Member"), url: avatarURL, small: true)
+                Avatar(
+                    name: author?.displayName ?? (isOwn ? "You" : "Member"),
+                    url: avatarURL,
+                    isBot: author?.isBot == true,
+                    small: true
+                )
             }
             .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 5) {
@@ -1712,6 +1989,11 @@ private struct MessageRow: View {
                             .font(.subheadline.weight(.semibold))
                     }
                     .buttonStyle(.plain)
+                    if author?.isBot == true {
+                        Label("Bot", systemImage: "cpu")
+                            .font(.caption2.bold())
+                            .foregroundStyle(AppTheme.accent)
+                    }
                     Text(relativeDate(message.createdAt))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -2027,7 +2309,7 @@ private struct UserArticleComposer: View {
                 Section("Article") {
                     TextField("Title", text: $title)
                     TextField("Short preview", text: $preview, axis: .vertical)
-                    TextField("Write your article…", text: $bodyText, axis: .vertical)
+                    TextField("Write Markdown…", text: $bodyText, axis: .vertical)
                         .lineLimit(8...20)
                 }
                 Section("Tags") {
@@ -2036,7 +2318,7 @@ private struct UserArticleComposer: View {
                 }
                 Section {
                     Label(
-                        "This first native editor publishes plain text. Rich blocks and images can be added without changing the article API.",
+                        "Markdown is supported. Rich media blocks can be added later without changing the article API.",
                         systemImage: "info.circle"
                     )
                     .font(.footnote)
@@ -2083,6 +2365,7 @@ private struct UserArticleComposer: View {
 private struct Avatar: View {
     let name: String
     var url: URL? = nil
+    var isBot = false
     var small = false
 
     var body: some View {
@@ -2103,8 +2386,15 @@ private struct Avatar: View {
     }
 
     private var initials: some View {
-        Text(String(name.prefix(2)).uppercased())
-            .font(small ? .caption.bold() : .subheadline.bold())
+        Group {
+            if isBot {
+                Image(systemName: "cpu")
+                    .font(small ? .caption.bold() : .subheadline.bold())
+            } else {
+                Text(String(name.prefix(2)).uppercased())
+                    .font(small ? .caption.bold() : .subheadline.bold())
+            }
+        }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(.black)
             .background(
@@ -2119,14 +2409,69 @@ private struct Avatar: View {
 
 private struct CommunityMark: View {
     let name: String
+    var url: URL? = nil
 
     var body: some View {
+        Group {
+            if let url {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    fallback
+                }
+            } else {
+                fallback
+            }
+        }
+            .frame(width: 30, height: 30)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityHidden(true)
+    }
+
+    private var fallback: some View {
         Text(String(name.prefix(1)).uppercased())
             .font(.caption.bold())
-            .frame(width: 30, height: 30)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(.white)
-            .background(AppTheme.accent.gradient, in: RoundedRectangle(cornerRadius: 8))
-            .accessibilityHidden(true)
+            .background(AppTheme.accent.gradient)
+    }
+}
+
+private struct CommunityFeatureImage: View {
+    let url: URL
+    let height: CGFloat
+
+    var body: some View {
+        AsyncImage(url: url) { image in
+            image.resizable().scaledToFill()
+        } placeholder: {
+            Rectangle().fill(Color.secondary.opacity(0.1)).overlay { ProgressView() }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .accessibilityLabel("Community image")
+    }
+}
+
+private struct MarkdownArticleText: View {
+    let source: String
+
+    var body: some View {
+        Group {
+            if let rendered = try? AttributedString(
+                markdown: source,
+                options: .init(interpretedSyntax: .full)
+            ) {
+                Text(rendered)
+            } else {
+                Text(source)
+            }
+        }
+        .font(.body)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

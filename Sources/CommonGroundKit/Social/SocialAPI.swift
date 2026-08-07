@@ -50,6 +50,25 @@ public struct CommunityAPI: Sendable {
             )
         )
     }
+
+    public func channelMembers(
+        communityID: String,
+        channelID: String,
+        offset: Int = 0,
+        limit: Int = 100,
+        search: String? = nil
+    ) async throws -> ChannelMemberList {
+        try await transport.call(
+            "Community/getChannelMemberList",
+            body: ChannelMemberListRequest(
+                communityId: communityID,
+                channelId: channelID,
+                offset: offset,
+                limit: limit,
+                search: search
+            )
+        )
+    }
 }
 
 public enum CommunitySort: String, Encodable, Sendable {
@@ -189,6 +208,13 @@ private struct CreateCommunityRequest: Encodable, Sendable {
         try container.encode([String](), forKey: .links)
         try container.encode(tags, forKey: .tags)
     }
+}
+private struct ChannelMemberListRequest: Encodable, Sendable {
+    let communityId: String
+    let channelId: String
+    let offset: Int
+    let limit: Int
+    let search: String?
 }
 private struct OtherUserRequest: Encodable, Sendable { let otherUserId: String }
 private struct ChatIDRequest: Encodable, Sendable { let chatId: String }

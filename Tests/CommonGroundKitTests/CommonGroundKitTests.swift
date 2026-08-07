@@ -253,7 +253,7 @@ final class CommonGroundKitTests: XCTestCase {
                 return Self.response(
                     request,
                     status: 200,
-                    body: #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","url":"ios-builders","title":"iOS Builders","shortDescription":"Native app people","memberCount":"42","tags":["swift"],"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"}]}"#
+                    body: #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","url":"ios-builders","title":"iOS Builders","logoSmallId":"icon-1","logoLargeId":"sidebar-1","headerImageId":"hero-1","shortDescription":"Native app people","memberCount":"42","tags":["swift"],"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"}]}"#
                 )
             case "/api/v2/Community/createCommunity":
                 let body = try XCTUnwrap(Self.bodyData(request))
@@ -281,8 +281,42 @@ final class CommonGroundKitTests: XCTestCase {
         let communities = try await api.list()
         XCTAssertEqual(communities[0].memberCount, 42)
         XCTAssertEqual(communities[0].tags, ["swift"])
+        XCTAssertEqual(communities[0].logoSmallId, "icon-1")
+        XCTAssertEqual(communities[0].logoLargeId, "sidebar-1")
+        XCTAssertEqual(communities[0].headerImageId, "hero-1")
         let created = try await api.create(title: "iOS Builders", tags: ["swift"])
         XCTAssertEqual(created.title, "iOS Builders")
+    }
+
+    func testChannelMemberListSeparatesOnlineAndOfflineMembers() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Community/getChannelMemberList")
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(object["communityId"] as? String, "community-1")
+            XCTAssertEqual(object["channelId"] as? String, "channel-1")
+            XCTAssertEqual(object["offset"] as? Int, 0)
+            XCTAssertEqual(object["limit"] as? Int, 100)
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":{"count":3,"adminCount":1,"moderatorCount":0,"writerCount":1,"readerCount":0,"offlineCount":1,"admin":[["user-online-admin",["role-admin"]]],"moderator":[],"writer":[["user-online-writer",["role-writer"]]],"reader":[],"offline":[["user-offline",["role-member"]]]}}"#
+            )
+        }
+        let api = CommunityAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let members = try await api.channelMembers(
+            communityID: "community-1",
+            channelID: "channel-1"
+        )
+        XCTAssertEqual(members.count, 3)
+        XCTAssertEqual(members.online.map(\.userId), ["user-online-admin", "user-online-writer"])
+        XCTAssertEqual(members.offline.map(\.userId), ["user-offline"])
+        XCTAssertEqual(members.all.count, 3)
     }
 
     func testReportContractUsesModerationRouteAndReasonCode() async throws {
@@ -607,7 +641,7 @@ final class CommonGroundKitTests: XCTestCase {
             )
         )
         let detail = try await api.userArticle(userID: "user-1", articleID: "article-1")
-        XCTAssertEqual(detail.article.plainText, "Heading\nBody")
+        XCTAssertEqual(detail.article.markdownSource, "## Heading\nBody")
     }
 
     func testProfileUpdateContracts() async throws {
