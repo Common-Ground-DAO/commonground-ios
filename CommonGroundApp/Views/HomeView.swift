@@ -1420,9 +1420,9 @@ private struct ConversationView: View {
         GeometryReader { proxy in
             let drawerWidth = min(max(proxy.size.width * 0.82, 280), 370)
             let baseOffset = showParticipants ? drawerWidth : 0
-            let visibleOffset = min(drawerWidth, max(0, baseOffset + participantDrag))
+            let visibleOffset = min(drawerWidth, max(0, baseOffset - participantDrag))
 
-            ZStack(alignment: .leading) {
+            ZStack(alignment: .trailing) {
                 ConversationParticipantsView(
                     context: context,
                     store: store,
@@ -1431,10 +1431,10 @@ private struct ConversationView: View {
                     close: { showParticipants = false }
                 )
                 .frame(width: drawerWidth)
-                .offset(x: visibleOffset - drawerWidth)
+                .offset(x: drawerWidth - visibleOffset)
 
                 conversationBody
-                    .offset(x: visibleOffset)
+                    .offset(x: -visibleOffset)
                     .overlay {
                         if visibleOffset > 1 {
                             Color.black
@@ -1455,9 +1455,9 @@ private struct ConversationView: View {
                     }
                     .onEnded { value in
                         guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                        if value.translation.width > 55 {
+                        if value.translation.width < -55 {
                             showParticipants = true
-                        } else if value.translation.width < -55 {
+                        } else if value.translation.width > 55 {
                             showParticipants = false
                         }
                     }
@@ -1470,7 +1470,7 @@ private struct ConversationView: View {
                 Button("Channel participants", systemImage: "person.2") {
                     showParticipants.toggle()
                 }
-                .accessibilityHint("Swipe right in the conversation to reveal this panel")
+                .accessibilityHint("Swipe left in the conversation to reveal this panel")
             }
         }
         .task(id: context.channelID) { await load() }
@@ -1778,7 +1778,7 @@ private struct ConversationParticipantsView: View {
             .refreshable { await refresh() }
         }
         .background(.regularMaterial)
-        .overlay(alignment: .trailing) { Divider() }
+        .overlay(alignment: .leading) { Divider() }
         .task(id: isVisible) {
             guard isVisible else { return }
             while !Task.isCancelled {
