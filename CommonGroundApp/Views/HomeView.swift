@@ -9,64 +9,56 @@ struct HomeView: View {
     }
 }
 
+private enum SidebarItem: Hashable {
+    case overview
+    case directMessages
+    case notifications
+    case search
+    case community(String)
+}
+
 private struct HomeContent: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
+    @State private var sidebarSelection: SidebarItem? = .overview
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var showAccount = false
 
     private var communities: [Community] {
-        store.communities.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        let order = store.ownUser?.communityOrder ?? []
+        return store.communities.values.sorted { lhs, rhs in
+            let left = order.firstIndex(of: lhs.id)
+            let right = order.firstIndex(of: rhs.id)
+            switch (left, right) {
+            case let (.some(left), .some(right)): return left < right
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none):
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+        }
     }
 
-    private var selectedChannel: Channel? {
-        communities.flatMap(\.channels).first { $0.channelId == model.selectedChannelID }
+    private var chats: [Chat] {
+        store.chats.values.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $model.selectedChannelID) {
-                Section {
-                    Button { showAccount = true } label: {
-                        HStack(spacing: 12) {
-                            Avatar(name: store.ownUser?.displayName ?? "CG")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(store.ownUser?.displayName ?? "Member").fontWeight(.semibold)
-                                Text(model.instanceHost).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                ForEach(communities) { community in
-                    Section(community.title.uppercased()) {
-                        ForEach(community.channels.sorted(by: { $0.order < $1.order })) { channel in
-                            Label(channel.title, systemImage: "number")
-                                .tag(channel.channelId)
-                        }
-                    }
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(Color.black.opacity(0.12))
-            .navigationTitle("Common Ground")
+        NavigationSplitView(
+            columnVisibility: $columnVisibility,
+            preferredCompactColumn: $preferredCompactColumn
+        ) {
+            sidebar
+        } content: {
+            contentColumn
         } detail: {
-            if let channel = selectedChannel {
-                ChannelView(channel: channel, store: store)
-            } else {
-                VStack(spacing: 12) {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 38))
-                        .foregroundStyle(.orange)
-                    Text("Choose a conversation").font(.title3.bold())
-                    Text("Your communities and channels appear in the sidebar.")
-                        .foregroundStyle(.secondary)
-                }
-            }
+            detailColumn
         }
+        .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $showAccount) {
             AccountView(store: store)
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large])
         }
         .overlay(alignment: .top) {
             if let notice = model.realtimeNotice {
@@ -76,17 +68,469 @@ private struct HomeContent: View {
                     .padding(.vertical, 8)
                     .background(.ultraThinMaterial, in: Capsule())
                     .padding(.top, 8)
+                    .accessibilityLabel("Connection notice: \(notice)")
             }
+        }
+        .onAppear(perform: restoreNavigation)
+        .onChange(of: sidebarSelection) { _, selection in
+            if case .community(let id) = selection {
+                model.selectCommunity(id)
+            }
+        }
+    }
+
+    private var sidebar: some View {
+        List(selection: $sidebarSelection) {
+            Section {
+                sidebarRow("Overview", systemImage: "square.grid.2x2", item: .overview)
+                sidebarRow("Messages", systemImage: "bubble.left.and.bubble.right", item: .directMessages)
+                sidebarRow(
+                    "Notifications",
+                    systemImage: "bell",
+                    item: .notifications,
+                    badge: store.unreadNotificationCount
+                )
+                sidebarRow("Search", systemImage: "magnifyingglass", item: .search)
+            }
+
+            Section("Communities") {
+                if communities.isEmpty {
+                    Text("No communities yet")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(communities) { community in
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(community.title)
+                                Text("\(community.memberCount) members")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            CommunityMark(name: community.title)
+                        }
+                        .tag(SidebarItem.community(community.id))
+                    }
+                }
+            }
+
+            Section {
+                Button { showAccount = true } label: {
+                    HStack(spacing: 12) {
+                        Avatar(name: store.ownUser?.displayName ?? "CG")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(store.ownUser?.displayName ?? "Member")
+                                .fontWeight(.semibold)
+                            Text(model.instanceHost)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .navigationTitle(AppConfiguration.productName)
+    }
+
+    private func sidebarRow(
+        _ title: String,
+        systemImage: String,
+        item: SidebarItem,
+        badge: Int = 0
+    ) -> some View {
+        Label {
+            HStack {
+                Text(title)
+                Spacer()
+                if badge > 0 {
+                    Text(badge, format: .number)
+                        .font(.caption2.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(AppTheme.accent, in: Capsule())
+                        .accessibilityLabel("\(badge) unread")
+                }
+            }
+        } icon: {
+            Image(systemName: systemImage)
+        }
+        .tag(item)
+    }
+
+    @ViewBuilder
+    private var contentColumn: some View {
+        switch sidebarSelection ?? .overview {
+        case .overview:
+            OverviewView(
+                communities: communities,
+                chatCount: chats.count,
+                unreadCount: store.unreadNotificationCount,
+                openCommunity: openCommunity,
+                openMessages: { sidebarSelection = .directMessages }
+            )
+        case .directMessages:
+            ChatListView(
+                chats: chats,
+                ownUserID: store.ownUser?.id,
+                selectedChatID: model.selectedChatID,
+                select: openChat
+            )
+        case .notifications:
+            NotificationsView(unreadCount: store.unreadNotificationCount)
+        case .search:
+            SearchView(communities: communities, openChannel: openChannel)
+        case .community(let id):
+            if let community = store.communities[id] {
+                ChannelListView(
+                    community: community,
+                    selectedChannelID: model.selectedChannelID,
+                    select: { openChannel($0, communityID: community.id) }
+                )
+            } else {
+                ContentUnavailableView("Community unavailable", systemImage: "person.3")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var detailColumn: some View {
+        switch sidebarSelection ?? .overview {
+        case .community(let communityID):
+            if let channel = store.communities[communityID]?.channels.first(where: {
+                $0.channelId == model.selectedChannelID
+            }) {
+                ConversationView(context: .channel(channel), store: store)
+            } else {
+                ConversationPlaceholder(
+                    title: "Choose a channel",
+                    message: "Channels in this community appear in the middle column.",
+                    systemImage: "number"
+                )
+            }
+        case .directMessages:
+            if let chatID = model.selectedChatID, let chat = store.chats[chatID] {
+                ConversationView(context: .chat(chat), store: store)
+            } else {
+                ConversationPlaceholder(
+                    title: "Choose a message",
+                    message: "Your direct conversations appear in the middle column.",
+                    systemImage: "bubble.left.and.bubble.right"
+                )
+            }
+        case .overview:
+            ConversationPlaceholder(
+                title: "Welcome back",
+                message: "Choose a community or conversation to get started.",
+                systemImage: "sparkles"
+            )
+        case .notifications:
+            ConversationPlaceholder(
+                title: "Notification details",
+                message: "Select a notification to see its context here.",
+                systemImage: "bell"
+            )
+        case .search:
+            ConversationPlaceholder(
+                title: "Search Common Ground",
+                message: "Find a channel in the middle column to open it here.",
+                systemImage: "magnifyingglass"
+            )
+        }
+    }
+
+    private func restoreNavigation() {
+        guard let id = model.selectedCommunityID, store.communities[id] != nil else { return }
+        sidebarSelection = .community(id)
+    }
+
+    private func openCommunity(_ id: String) {
+        model.selectCommunity(id)
+        sidebarSelection = .community(id)
+        preferredCompactColumn = .content
+    }
+
+    private func openChannel(_ channelID: String, communityID: String) {
+        model.selectCommunity(communityID)
+        model.selectChannel(channelID)
+        sidebarSelection = .community(communityID)
+        preferredCompactColumn = .detail
+    }
+
+    private func openChat(_ id: String) {
+        model.selectChat(id)
+        sidebarSelection = .directMessages
+        preferredCompactColumn = .detail
+    }
+}
+
+private struct OverviewView: View {
+    let communities: [Community]
+    let chatCount: Int
+    let unreadCount: Int
+    let openCommunity: (String) -> Void
+    let openMessages: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Your Common Ground")
+                        .font(.title2.bold())
+                    Text("Pick up where you left off without being dropped into an arbitrary room.")
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 12) {
+                    MetricCard(value: communities.count, label: "Communities", systemImage: "person.3")
+                    MetricCard(value: chatCount, label: "Messages", systemImage: "bubble.left.and.bubble.right")
+                    MetricCard(value: unreadCount, label: "Unread", systemImage: "bell")
+                }
+
+                if communities.isEmpty {
+                    ContentUnavailableView(
+                        "No communities yet",
+                        systemImage: "person.3",
+                        description: Text("Communities you join on this instance will appear here.")
+                    )
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("COMMUNITIES")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        ForEach(communities) { community in
+                            Button { openCommunity(community.id) } label: {
+                                HStack(spacing: 12) {
+                                    CommunityMark(name: community.title)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(community.title).fontWeight(.semibold)
+                                        Text("\(community.channels.count) channels · \(community.memberCount) members")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(12)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Button(action: openMessages) {
+                    Label("Open direct messages", systemImage: "bubble.left.and.bubble.right")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(20)
+        }
+        .navigationTitle("Overview")
+    }
+}
+
+private struct MetricCard: View {
+    let value: Int
+    let label: String
+    let systemImage: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundStyle(AppTheme.accent)
+            Text(value, format: .number)
+                .font(.title3.bold())
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+private struct ChannelListView: View {
+    let community: Community
+    let selectedChannelID: String?
+    let select: (String) -> Void
+
+    var body: some View {
+        List {
+            if let description = community.channels.first?.description, !description.isEmpty {
+                Section {
+                    Text(description)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("Channels") {
+                ForEach(community.channels.sorted(by: { $0.order < $1.order })) { channel in
+                    Button { select(channel.channelId) } label: {
+                        HStack {
+                            Label(channel.title, systemImage: "number")
+                            Spacer()
+                            if selectedChannelID == channel.channelId {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(AppTheme.accent)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .navigationTitle(community.title)
+    }
+}
+
+private struct ChatListView: View {
+    let chats: [Chat]
+    let ownUserID: String?
+    let selectedChatID: String?
+    let select: (String) -> Void
+
+    var body: some View {
+        Group {
+            if chats.isEmpty {
+                ContentUnavailableView(
+                    "No direct messages",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Your conversations on this instance will appear here.")
+                )
+            } else {
+                List(chats) { chat in
+                    Button { select(chat.id) } label: {
+                        HStack(spacing: 12) {
+                            Avatar(name: chat.displayTitle(excluding: ownUserID), small: true)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(chat.displayTitle(excluding: ownUserID))
+                                    .fontWeight(.semibold)
+                                Text(chat.lastMessage?.body.plainText ?? "No messages yet")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            if let unread = chat.unread, unread > 0 {
+                                Text(unread, format: .number)
+                                    .font(.caption2.bold())
+                                    .padding(6)
+                                    .background(AppTheme.accent, in: Circle())
+                                    .foregroundStyle(.white)
+                            } else if selectedChatID == chat.id {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(AppTheme.accent)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .navigationTitle("Messages")
+    }
+}
+
+private struct NotificationsView: View {
+    let unreadCount: Int
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Notifications", systemImage: unreadCount > 0 ? "bell.badge" : "bell")
+        } description: {
+            Text(unreadCount > 0
+                 ? "You have \(unreadCount) unread notifications. The notification timeline is the next API-backed surface."
+                 : "You’re all caught up. New activity will appear here.")
+        }
+        .navigationTitle("Notifications")
+    }
+}
+
+private struct SearchView: View {
+    let communities: [Community]
+    let openChannel: (String, String) -> Void
+    @State private var query = ""
+
+    private var results: [(Community, Channel)] {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        return communities.flatMap { community in
+            community.channels
+                .filter {
+                    $0.title.localizedCaseInsensitiveContains(query)
+                        || community.title.localizedCaseInsensitiveContains(query)
+                }
+                .map { (community, $0) }
+        }
+    }
+
+    var body: some View {
+        Group {
+            if query.isEmpty {
+                ContentUnavailableView(
+                    "Search this instance",
+                    systemImage: "magnifyingglass",
+                    description: Text("Start with a community or channel name.")
+                )
+            } else if results.isEmpty {
+                ContentUnavailableView.search(text: query)
+            } else {
+                List(results, id: \.1.channelId) { community, channel in
+                    Button { openChannel(channel.channelId, community.id) } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label(channel.title, systemImage: "number")
+                            Text(community.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .navigationTitle("Search")
+        .searchable(text: $query, prompt: "Communities and channels")
+    }
+}
+
+private enum ConversationContext {
+    case channel(Channel)
+    case chat(Chat)
+
+    var channelID: String {
+        switch self {
+        case .channel(let channel): channel.channelId
+        case .chat(let chat): chat.channelId
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .channel(let channel): channel.title
+        case .chat: "Direct message"
+        }
+    }
+
+    var composerPrompt: String {
+        switch self {
+        case .channel(let channel): "Message #\(channel.title)"
+        case .chat: "Write a message"
         }
     }
 }
 
-private struct ChannelView: View {
+private struct ConversationView: View {
     @EnvironmentObject private var model: AppModel
-    let channel: Channel
+    let context: ConversationContext
     @ObservedObject var store: SyncStore
 
-    private var messages: [Message] { store.orderedMessages(channelId: channel.channelId) }
+    private var messages: [Message] {
+        store.orderedMessages(channelId: context.channelID)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -94,48 +538,75 @@ private struct ChannelView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         if messages.isEmpty {
-                            VStack(spacing: 10) {
-                                Image(systemName: "sparkles").font(.title).foregroundStyle(.orange)
-                                Text("This is the beginning of #\(channel.title).")
-                                    .font(.headline)
-                            }
+                            ContentUnavailableView(
+                                "Start the conversation",
+                                systemImage: "sparkles",
+                                description: Text("Messages sent here are delivered to the selected conversation.")
+                            )
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 70)
+                            .padding(.vertical, 60)
                         }
                         ForEach(messages) { message in
-                            MessageRow(message: message, isOwn: message.creatorId == store.ownUser?.id)
-                                .id(message.id)
+                            MessageRow(
+                                message: message,
+                                isOwn: message.creatorId == store.ownUser?.id
+                            )
+                            .id(message.id)
                         }
                     }
+                    .frame(maxWidth: 760)
                     .padding(20)
+                    .frame(maxWidth: .infinity)
                 }
-                .refreshable { await model.loadMessages(channel: channel) }
-                .onChange(of: messages.count) { _ in
-                    if let id = messages.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } }
+                .refreshable { await load() }
+                .onChange(of: messages.count) { _, _ in
+                    if let id = messages.last?.id {
+                        withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                    }
                 }
             }
 
-            Divider().opacity(0.5)
+            Divider()
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Message #\(channel.title)", text: $model.draftMessage, axis: .vertical)
+                TextField(context.composerPrompt, text: $model.draftMessage, axis: .vertical)
                     .lineLimit(1...5)
+                    .textFieldStyle(.plain)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 11)
-                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 18))
-                Button { Task { await model.sendMessage(channel: channel) } } label: {
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                    .submitLabel(.send)
+                    .onSubmit { Task { await send() } }
+                Button { Task { await send() } } label: {
                     Image(systemName: "arrow.up")
                         .fontWeight(.bold)
                         .frame(width: 42, height: 42)
-                        .foregroundStyle(.black)
-                        .background(.orange, in: Circle())
+                        .foregroundStyle(.white)
+                        .background(AppTheme.accent, in: Circle())
                 }
                 .disabled(model.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Send message")
             }
+            .frame(maxWidth: 760)
             .padding(12)
+            .frame(maxWidth: .infinity)
         }
-        .navigationTitle(channel.title)
+        .navigationTitle(context.title)
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: channel.channelId) { await model.loadMessages(channel: channel) }
+        .task(id: context.channelID) { await load() }
+    }
+
+    private func load() async {
+        switch context {
+        case .channel(let channel): await model.loadMessages(channel: channel)
+        case .chat(let chat): await model.loadMessages(chat: chat)
+        }
+    }
+
+    private func send() async {
+        switch context {
+        case .channel(let channel): await model.sendMessage(channel: channel)
+        case .chat(let chat): await model.sendMessage(chat: chat)
+        }
     }
 }
 
@@ -159,11 +630,26 @@ private struct MessageRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .accessibilityElement(children: .combine)
     }
 
     private func relativeDate(_ value: String) -> String {
         guard let date = ISO8601DateFormatter().date(from: value) else { return "" }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+private struct ConversationPlaceholder: View {
+    let title: String
+    let message: String
+    let systemImage: String
+
+    var body: some View {
+        ContentUnavailableView(
+            title,
+            systemImage: systemImage,
+            description: Text(message)
+        )
     }
 }
 
@@ -174,25 +660,49 @@ private struct AccountView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                Avatar(name: store.ownUser?.displayName ?? "CG")
-                    .scaleEffect(1.6)
-                    .padding(20)
-                Text(store.ownUser?.displayName ?? "Member").font(.title2.bold())
-                Text(store.ownUser?.email ?? model.instanceHost).foregroundStyle(.secondary)
-                Spacer()
-                Button(role: .destructive) {
-                    dismiss()
-                    Task { await model.logout() }
-                } label: {
-                    Label("Log out and remove this device", systemImage: "rectangle.portrait.and.arrow.right")
-                        .frame(maxWidth: .infinity)
+            List {
+                Section {
+                    HStack(spacing: 16) {
+                        Avatar(name: store.ownUser?.displayName ?? "CG")
+                            .scaleEffect(1.25)
+                            .padding(8)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(store.ownUser?.displayName ?? "Member")
+                                .font(.title3.bold())
+                            Text(store.ownUser?.email ?? model.instanceHost)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
-                .buttonStyle(.bordered)
+
+                Section("Instance") {
+                    LabeledContent("Connected to", value: model.instanceHost)
+                    Button("Choose another instance", systemImage: "network") {
+                        dismiss()
+                        model.chooseAnotherInstance()
+                    }
+                }
+
+                Section("About") {
+                    Link("Privacy policy", destination: AppConfiguration.privacyURL)
+                    Link("Contact support", destination: URL(string: "mailto:\(AppConfiguration.supportEmail)")!)
+                }
+
+                Section {
+                    Button(role: .destructive) {
+                        dismiss()
+                        Task { await model.logout() }
+                    } label: {
+                        Label("Log out and remove this device", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                }
             }
-            .padding(24)
             .navigationTitle("Account")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }
@@ -207,8 +717,34 @@ private struct Avatar: View {
             .frame(width: small ? 34 : 42, height: small ? 34 : 42)
             .foregroundStyle(.black)
             .background(
-                LinearGradient(colors: [.orange, .yellow], startPoint: .topLeading, endPoint: .bottomTrailing),
+                LinearGradient(
+                    colors: [AppTheme.accent, AppTheme.secondaryAccent],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
                 in: Circle()
             )
+            .accessibilityHidden(true)
+    }
+}
+
+private struct CommunityMark: View {
+    let name: String
+
+    var body: some View {
+        Text(String(name.prefix(1)).uppercased())
+            .font(.caption.bold())
+            .frame(width: 30, height: 30)
+            .foregroundStyle(.white)
+            .background(AppTheme.accent.gradient, in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityHidden(true)
+    }
+}
+
+private extension Chat {
+    func displayTitle(excluding ownUserID: String?) -> String {
+        let others = userIds.filter { $0 != ownUserID }
+        guard !others.isEmpty else { return "Direct message" }
+        return others.map { "Member \($0.prefix(4))" }.joined(separator: ", ")
     }
 }

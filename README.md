@@ -19,6 +19,8 @@ The first protocol spine is implemented end-to-end:
 - stale device identities fall back to password login and superseded devices are retired when possible;
 - Socket.IO connects at `/api/ws/`, retries transient initial failures, performs in-band device login, and routes all 17 `cli*` events;
 - community channel history and structured text-message sends back the initial SwiftUI experience;
+- adaptive native navigation uses compact iPhone flows and a three-column iPad layout;
+- communities and direct-message sessions are distinct navigation surfaces, with explicit selection restoration;
 - own REST writes are applied locally because the server deliberately sends no same-device echo.
 
 The SDK is a standalone Swift package in `Sources/CommonGroundKit`; views contain no protocol code.
@@ -26,7 +28,7 @@ The SDK is a standalone Swift package in `Sources/CommonGroundKit`; views contai
 ## Open and test
 
 1. Open `CommonGroundApp.xcodeproj` in Xcode 16 or newer.
-2. Select the `CommonGround` scheme and an iOS 16+ simulator or device.
+2. Select the `CommonGround` scheme and an iOS 17+ iPhone or iPad simulator/device.
 3. Build and run.
 
 Run the headless SDK tests with:
@@ -59,4 +61,6 @@ CommonGroundKit (Swift package)
         └── Typed social domain APIs
 ```
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the deliberate milestone boundaries and [docs/CONTRACT_FINDINGS.md](docs/CONTRACT_FINDINGS.md) for mobile-specific decisions.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the deliberate milestone boundaries,
+[docs/CONTRACT_FINDINGS.md](docs/CONTRACT_FINDINGS.md) for mobile-specific decisions,
+and [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the centralized publisher placeholders.

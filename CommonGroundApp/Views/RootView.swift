@@ -27,15 +27,11 @@ struct RootView: View {
 
 struct BrandBackground: View {
     var body: some View {
-        LinearGradient(
-            colors: [Color(red: 0.07, green: 0.045, blue: 0.13), Color(red: 0.12, green: 0.07, blue: 0.18)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        AppTheme.background
         .ignoresSafeArea()
         .overlay(alignment: .topTrailing) {
             Circle()
-                .fill(Color.orange.opacity(0.14))
+                .fill(AppTheme.accent.opacity(0.14))
                 .frame(width: 360, height: 360)
                 .blur(radius: 8)
                 .offset(x: 140, y: -170)

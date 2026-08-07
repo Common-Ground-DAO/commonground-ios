@@ -8,7 +8,7 @@ struct CommonGroundApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(model)
-                .preferredColorScheme(.dark)
+                .tint(AppTheme.accent)
         }
     }
 }
