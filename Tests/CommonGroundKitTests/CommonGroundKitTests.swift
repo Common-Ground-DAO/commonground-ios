@@ -553,6 +553,94 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(messages[0].reactions, [:])
     }
 
+    func testArticleListsAndStructuredDetailMatchBackendContract() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            routes.append(path)
+            let requestBody = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
+            XCTAssertEqual(object["limit"] as? Int, 30)
+            XCTAssertEqual(object["order"] as? String, "DESC")
+            XCTAssertEqual(object["orderBy"] as? String, "published")
+            if path.hasPrefix("/api/v2/Community") {
+                XCTAssertEqual(object["communityId"] as? String, "community-1")
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":[{"communityArticle":{"communityId":"community-1","articleId":"article-1","url":"hello","published":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","rolePermissions":[],"sentAsNewsletter":null,"markAsNewsletter":false},"article":{"articleId":"article-1","title":"Hello","previewText":"Preview","thumbnailImageId":null,"headerImageId":null,"creatorId":"user-1","tags":["news"],"commentCount":"2","latestCommentTimestamp":null}}]}"#
+                )
+            }
+            XCTAssertEqual(object["userId"] as? String, "user-1")
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":[{"userArticle":{"userId":"user-1","articleId":"article-2","url":null,"published":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"},"article":{"articleId":"article-2","title":"Profile post","previewText":null,"thumbnailImageId":null,"headerImageId":null,"creatorId":"user-1","tags":[],"commentCount":0,"latestCommentTimestamp":null}}]}"#
+            )
+        }
+        let api = ArticleAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let community = try await api.communityArticles(communityID: "community-1")
+        let user = try await api.userArticles(userID: "user-1")
+        XCTAssertEqual(community.first?.article.commentCount, 2)
+        XCTAssertEqual(user.first?.article.title, "Profile post")
+        XCTAssertEqual(routes, ["/api/v2/Community/getArticleList", "/api/v2/User/getArticleList"])
+    }
+
+    func testArticleDetailFlattensStructuredContent() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/User/getArticleDetailView")
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":{"userArticle":{"userId":"user-1","articleId":"article-1","url":null,"published":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"},"article":{"articleId":"article-1","title":"Hello","previewText":"Preview","thumbnailImageId":null,"headerImageId":null,"creatorId":"user-1","tags":[],"commentCount":0,"latestCommentTimestamp":null,"content":{"version":"2","content":[{"type":"header","value":[{"type":"text","value":"Heading"}]},{"type":"newline"},{"type":"text","value":"Body"}]},"channelId":"channel-1"}}}"#
+            )
+        }
+        let api = ArticleAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let detail = try await api.userArticle(userID: "user-1", articleID: "article-1")
+        XCTAssertEqual(detail.article.plainText, "Heading\nBody")
+    }
+
+    func testProfileUpdateContracts() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            routes.append(request.url?.path ?? "")
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            if request.url?.path.hasSuffix("updateUserAccount") == true {
+                XCTAssertEqual(object["type"] as? String, "cg")
+                XCTAssertEqual(object["displayName"] as? String, "Alice")
+                XCTAssertEqual(object["description"] as? String, "Hello")
+            } else {
+                XCTAssertEqual(object["email"] as? String, "alice@example.org")
+                XCTAssertEqual(object["dmNotifications"] as? Bool, false)
+            }
+            return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+        }
+        let api = ProfileAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        try await api.updateCGAccount(
+            displayName: "Alice",
+            description: "Hello",
+            homepage: "https://example.org"
+        )
+        try await api.updateOwnData(email: "alice@example.org", dmNotifications: false)
+        XCTAssertEqual(routes, ["/api/v2/User/updateUserAccount", "/api/v2/User/updateOwnData"])
+    }
+
     /// Opt-in compatibility probe for the deployed development instance. It
     /// creates a disposable account, logs out, then exercises password login
     /// against the real response payload. It is skipped during normal tests.

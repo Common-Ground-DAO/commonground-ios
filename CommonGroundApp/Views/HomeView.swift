@@ -32,6 +32,7 @@ private struct HomeContent: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var showAccount = false
+    @State private var showCreateCommunity = false
 
     private var communities: [Community] {
         let order = store.ownUser?.communityOrder ?? []
@@ -68,6 +69,12 @@ private struct HomeContent: View {
             AccountView(store: store)
                 .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showCreateCommunity) {
+            CreateCommunityView { communityID in
+                showCreateCommunity = false
+                openCommunity(communityID)
+            }
+        }
         .overlay(alignment: .top) {
             if let notice = model.realtimeNotice {
                 Label(notice, systemImage: "bolt.slash")
@@ -103,6 +110,13 @@ private struct HomeContent: View {
             }
 
             Section("Communities") {
+                Button {
+                    showCreateCommunity = true
+                } label: {
+                    Label("Create community", systemImage: "plus.circle.fill")
+                        .foregroundStyle(AppTheme.accent)
+                        .fontWeight(.semibold)
+                }
                 if communities.isEmpty {
                     Text("No communities yet")
                         .foregroundStyle(.secondary)
@@ -126,7 +140,14 @@ private struct HomeContent: View {
             Section {
                 Button { showAccount = true } label: {
                     HStack(spacing: 12) {
-                        Avatar(name: store.ownUser?.displayName ?? "CG")
+                        Avatar(
+                            name: store.users[store.ownUser?.id ?? ""]?.displayName
+                                ?? store.ownUser?.displayName
+                                ?? "CG",
+                            url: store.users[store.ownUser?.id ?? ""]
+                                .flatMap { $0.imageID }
+                                .flatMap { model.attachmentURLs[$0] }
+                        )
                         VStack(alignment: .leading, spacing: 2) {
                             Text(store.ownUser?.displayName ?? "Member")
                                 .fontWeight(.semibold)
@@ -178,7 +199,8 @@ private struct HomeContent: View {
                 unreadCount: store.unreadNotificationCount,
                 openCommunity: openCommunity,
                 openMessages: { sidebarSelection = .directMessages },
-                discover: { sidebarSelection = .discover }
+                discover: { sidebarSelection = .discover },
+                createCommunity: { showCreateCommunity = true }
             )
         case .directMessages:
             ChatListView(
@@ -203,6 +225,10 @@ private struct HomeContent: View {
                 ChannelListView(
                     community: community,
                     selectedChannelID: model.selectedChannelID,
+                    openHome: {
+                        model.selectChannel(nil)
+                        preferredCompactColumn = .detail
+                    },
                     select: { openChannel($0, communityID: community.id) },
                     leave: {
                         Task {
@@ -227,6 +253,8 @@ private struct HomeContent: View {
                 $0.channelId == model.selectedChannelID
             }) {
                 ConversationView(context: .channel(channel), store: store)
+            } else if let community = store.communities[communityID] {
+                CommunityHomeView(community: community, store: store)
             } else {
                 ConversationPlaceholder(
                     title: "Choose a channel",
@@ -282,6 +310,7 @@ private struct HomeContent: View {
 
     private func openCommunity(_ id: String) {
         model.selectCommunity(id)
+        model.selectChannel(nil)
         sidebarSelection = .community(id)
         preferredCompactColumn = .content
     }
@@ -308,6 +337,7 @@ private struct OverviewView: View {
     let openCommunity: (String) -> Void
     let openMessages: () -> Void
     let discover: () -> Void
+    let createCommunity: () -> Void
 
     var body: some View {
         ScrollView {
@@ -369,6 +399,12 @@ private struct OverviewView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+
+                Button(action: createCommunity) {
+                    Label("Create a community", systemImage: "plus.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
             .padding(20)
         }
@@ -663,16 +699,210 @@ private struct ReportSheet: View {
     }
 }
 
+private struct CommunityHomeView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @ObservedObject var store: SyncStore
+    @State private var selectedArticle: ArticlePreview?
+
+    private var articles: [CommunityArticlePreview] {
+        model.communityArticles[community.id] ?? []
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 7) {
+                    CommunityMark(name: community.title)
+                        .scaleEffect(1.35, anchor: .leading)
+                        .padding(.bottom, 8)
+                    Text(community.title).font(.largeTitle.bold())
+                    Text("\(community.memberCount) members · \(community.channels.count) channels")
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+                HStack {
+                    Text("Latest articles").font(.title2.bold())
+                    Spacer()
+                    Image(systemName: "newspaper").foregroundStyle(AppTheme.accent)
+                }
+
+                if articles.isEmpty {
+                    ContentUnavailableView(
+                        "No published articles yet",
+                        systemImage: "doc.text",
+                        description: Text("Community articles and announcements will appear here.")
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 30)
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(articles) { item in
+                            ArticleCard(
+                                article: item.article,
+                                author: store.users[item.article.creatorId],
+                                imageURL: item.article.thumbnailImageId.flatMap { model.attachmentURLs[$0] }
+                            ) { selectedArticle = item.article }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(24)
+            .frame(maxWidth: .infinity)
+        }
+        .navigationTitle(community.title)
+        .refreshable { await model.loadCommunityArticles(communityID: community.id) }
+        .task(id: community.id) { await model.loadCommunityArticles(communityID: community.id) }
+        .sheet(item: $selectedArticle) { article in
+            ArticleReaderView(articleID: article.id, source: .community(community.id), store: store)
+        }
+    }
+}
+
+private enum ArticleSource {
+    case community(String)
+    case user(String)
+}
+
+private struct ArticleCard: View {
+    let article: ArticlePreview
+    let author: UserProfile?
+    let imageURL: URL?
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 14) {
+                if let imageURL {
+                    AsyncImage(url: imageURL) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        Color.secondary.opacity(0.12)
+                    }
+                    .frame(width: 92, height: 76)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(article.title).font(.headline).foregroundStyle(.primary)
+                    if let preview = article.previewText, !preview.isEmpty {
+                        Text(preview).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    HStack {
+                        Text(author?.displayName ?? "Common Ground member")
+                        Spacer()
+                        Label("\(article.commentCount)", systemImage: "bubble.left")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 15))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ArticleReaderView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let articleID: String
+    let source: ArticleSource
+    @ObservedObject var store: SyncStore
+
+    private var article: ArticleDetail? { model.articleDetails[articleID] }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let article {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if let imageID = article.headerImageId,
+                           let url = model.attachmentURLs[imageID] {
+                            AsyncImage(url: url) { image in
+                                image.resizable().scaledToFit()
+                            } placeholder: {
+                                ProgressView()
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                        }
+                        Text(article.title).font(.largeTitle.bold())
+                        if let creator = store.users[article.creatorId] {
+                            HStack {
+                                Avatar(
+                                    name: creator.displayName,
+                                    url: creator.imageID.flatMap { model.attachmentURLs[$0] },
+                                    small: true
+                                )
+                                Text(creator.displayName).fontWeight(.semibold)
+                            }
+                        }
+                        if let preview = article.previewText, !preview.isEmpty {
+                            Text(preview).font(.title3).foregroundStyle(.secondary)
+                        }
+                        Divider()
+                        Text(article.plainText)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !article.tags.isEmpty {
+                            Text(article.tags.map { "#\($0)" }.joined(separator: "  "))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: 720, alignment: .leading)
+                    .padding(24)
+                    .frame(maxWidth: .infinity)
+                } else {
+                    ProgressView("Loading article…").padding(50)
+                }
+            }
+            .navigationTitle("Article")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task(id: articleID) {
+                switch source {
+                case .community(let id):
+                    await model.loadCommunityArticle(communityID: id, articleID: articleID)
+                case .user(let id):
+                    await model.loadUserArticle(userID: id, articleID: articleID)
+                }
+            }
+        }
+    }
+}
+
 private struct ChannelListView: View {
     @State private var showLeaveConfirmation = false
     @State private var reportTarget: ReportTarget?
     let community: Community
     let selectedChannelID: String?
+    let openHome: () -> Void
     let select: (String) -> Void
     let leave: () -> Void
 
     var body: some View {
         List {
+            Section {
+                Button(action: openHome) {
+                    HStack {
+                        Label("Community Home", systemImage: "newspaper")
+                        Spacer()
+                        if selectedChannelID == nil {
+                            Image(systemName: "checkmark").foregroundStyle(AppTheme.accent)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
             if let description = community.channels.first?.description, !description.isEmpty {
                 Section {
                     Text(description)
@@ -974,15 +1204,28 @@ private struct UserProfileView: View {
     @ObservedObject var store: SyncStore
     let openChat: (String) -> Void
     @State private var reportTarget: ReportTarget?
+    @State private var selectedArticle: ArticlePreview?
+    @State private var showComposer = false
 
     private var user: UserProfile? { store.users[userID] }
+    private var articles: [UserArticlePreview] { model.userArticles[userID] ?? [] }
+    private var cgDetails: [String: JSONValue] {
+        model.profileDetails[userID]?
+            .detailledProfiles
+            .first(where: { $0.type == "cg" })?
+            .extraData?
+            .objectValue ?? [:]
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 if let user {
                     VStack(spacing: 18) {
-                        Avatar(name: user.displayName)
+                        Avatar(
+                            name: user.displayName,
+                            url: user.imageID.flatMap { model.attachmentURLs[$0] }
+                        )
                             .scaleEffect(1.8)
                             .padding(28)
                         VStack(spacing: 5) {
@@ -995,6 +1238,19 @@ private struct UserProfileView: View {
                         HStack(spacing: 36) {
                             profileMetric(user.followerCount, "Followers")
                             profileMetric(user.followingCount, "Following")
+                        }
+
+                        if let description = cgDetails["description"]?.stringValue,
+                           !description.isEmpty {
+                            Text(description)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if let homepage = cgDetails["homepage"]?.stringValue,
+                           let url = URL(string: homepage), !homepage.isEmpty {
+                            Link(destination: url) {
+                                Label(homepage, systemImage: "link")
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
 
                         if user.id != store.ownUser?.id {
@@ -1036,6 +1292,37 @@ private struct UserProfileView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
+
+                        Divider().padding(.top, 4)
+                        HStack {
+                            Text("Articles").font(.title2.bold())
+                            Spacer()
+                            if user.id == store.ownUser?.id {
+                                Button("New article", systemImage: "square.and.pencil") {
+                                    showComposer = true
+                                }
+                            }
+                        }
+                        if articles.isEmpty {
+                            ContentUnavailableView(
+                                user.id == store.ownUser?.id ? "You haven’t published yet" : "No articles yet",
+                                systemImage: "doc.text"
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                        } else {
+                            ForEach(articles) { item in
+                                ArticleCard(
+                                    article: item.article,
+                                    author: user,
+                                    imageURL: item.article.thumbnailImageId.flatMap {
+                                        model.attachmentURLs[$0]
+                                    }
+                                ) {
+                                    selectedArticle = item.article
+                                }
+                            }
+                        }
                     }
                     .frame(maxWidth: 480)
                     .padding(24)
@@ -1046,6 +1333,7 @@ private struct UserProfileView: View {
             }
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.inline)
+            .task(id: userID) { await model.loadUserProfile(userID: userID) }
             .toolbar {
                 if let user, user.id != store.ownUser?.id {
                     ToolbarItem(placement: .primaryAction) {
@@ -1059,6 +1347,15 @@ private struct UserProfileView: View {
                 }
             }
             .sheet(item: $reportTarget) { ReportSheet(target: $0) }
+            .sheet(item: $selectedArticle) { article in
+                ArticleReaderView(articleID: article.id, source: .user(userID), store: store)
+            }
+            .sheet(isPresented: $showComposer) {
+                UserArticleComposer {
+                    showComposer = false
+                    Task { await model.loadUserProfile(userID: userID) }
+                }
+            }
         }
     }
 
@@ -1111,6 +1408,7 @@ private struct ConversationView: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var deleteTarget: Message?
     @State private var showMentionPicker = false
+    @State private var selectedUser: UserProfile?
 
     private var messages: [Message] {
         store.orderedMessages(channelId: context.channelID)
@@ -1134,11 +1432,18 @@ private struct ConversationView: View {
                             MessageRow(
                                 message: message,
                                 isOwn: message.creatorId == store.ownUser?.id,
+                                author: store.users[message.creatorId],
+                                avatarURL: store.users[message.creatorId]?
+                                    .imageID
+                                    .flatMap { model.attachmentURLs[$0] },
                                 parent: message.parentMessageId.flatMap { parentID in
                                     messages.first { $0.id == parentID }
                                 },
                                 attachmentURL: message.imageAttachments.first.flatMap {
                                     model.attachmentURLs[$0.largeImageId] ?? model.attachmentURLs[$0.imageId]
+                                },
+                                openProfile: {
+                                    selectedUser = store.users[message.creatorId]
                                 },
                                 reply: { model.beginReply(to: message) },
                                 edit: { model.beginEditing(message) },
@@ -1152,7 +1457,7 @@ private struct ConversationView: View {
                                     reportTarget = ReportTarget(
                                         type: .message,
                                         id: message.id,
-                                        subject: "Message from \(String(message.creatorId.prefix(8)))"
+                                        subject: "Message from \(store.users[message.creatorId]?.displayName ?? "member")"
                                     )
                                 }
                             )
@@ -1245,6 +1550,12 @@ private struct ConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: context.channelID) { await load() }
         .sheet(item: $reportTarget) { ReportSheet(target: $0) }
+        .sheet(item: $selectedUser) { user in
+            UserProfileView(userID: user.id, store: store) { chatID in
+                selectedUser = nil
+                model.selectChat(chatID)
+            }
+        }
         .sheet(isPresented: $showMentionPicker) {
             MentionPicker(store: store) { user in
                 model.insertMention(user)
@@ -1377,8 +1688,11 @@ private struct ComposerContextBanner: View {
 private struct MessageRow: View {
     let message: Message
     let isOwn: Bool
+    let author: UserProfile?
+    let avatarURL: URL?
     let parent: Message?
     let attachmentURL: URL?
+    let openProfile: () -> Void
     let reply: () -> Void
     let edit: () -> Void
     let delete: () -> Void
@@ -1387,11 +1701,17 @@ private struct MessageRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
-            Avatar(name: isOwn ? "You" : String(message.creatorId.prefix(4)), small: true)
+            Button(action: openProfile) {
+                Avatar(name: author?.displayName ?? (isOwn ? "You" : "Member"), url: avatarURL, small: true)
+            }
+            .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
-                    Text(isOwn ? "You" : "Member")
-                        .font(.subheadline.weight(.semibold))
+                    Button(action: openProfile) {
+                        Text(author?.displayName ?? (isOwn ? "You" : "Member"))
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
                     Text(relativeDate(message.createdAt))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -1495,22 +1815,50 @@ private struct AccountView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: SyncStore
+    @State private var showProfile = false
+    @State private var showEditor = false
+
+    private var ownProfile: UserProfile? {
+        guard let id = store.ownUser?.id else { return nil }
+        return store.users[id]
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     HStack(spacing: 16) {
-                        Avatar(name: store.ownUser?.displayName ?? "CG")
+                        Avatar(
+                            name: ownProfile?.displayName ?? store.ownUser?.displayName ?? "CG",
+                            url: ownProfile?.imageID.flatMap { model.attachmentURLs[$0] }
+                        )
                             .scaleEffect(1.25)
                             .padding(8)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(store.ownUser?.displayName ?? "Member")
+                            Text(ownProfile?.displayName ?? store.ownUser?.displayName ?? "Member")
                                 .font(.title3.bold())
                             Text(store.ownUser?.email ?? model.instanceHost)
                                 .foregroundStyle(.secondary)
                         }
                     }
+                }
+
+                Section("Profile") {
+                    Button("View my public profile", systemImage: "person.crop.circle") {
+                        showProfile = true
+                    }
+                    Button("Edit account and profile", systemImage: "pencil") {
+                        showEditor = true
+                    }
+                }
+
+                Section("Appearance") {
+                    Picker("Color scheme", selection: $model.appearance) {
+                        ForEach(AppearancePreference.allCases) { preference in
+                            Text(preference.title).tag(preference)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
 
                 Section("Instance") {
@@ -1541,28 +1889,231 @@ private struct AccountView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .sheet(isPresented: $showProfile) {
+                if let id = store.ownUser?.id {
+                    UserProfileView(userID: id, store: store) { _ in }
+                }
+            }
+            .sheet(isPresented: $showEditor) {
+                AccountEditorView(store: store)
+            }
+        }
+    }
+}
+
+private struct AccountEditorView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: SyncStore
+    @State private var displayName = ""
+    @State private var bio = ""
+    @State private var homepage = ""
+    @State private var email = ""
+    @State private var dmNotifications = true
+    @State private var newPassword = ""
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var isUploadingAvatar = false
+    @State private var isSaving = false
+
+    private var ownID: String? { store.ownUser?.id }
+    private var ownProfile: UserProfile? { ownID.flatMap { store.users[$0] } }
+    private var cgDetails: [String: JSONValue] {
+        guard let ownID else { return [:] }
+        return model.profileDetails[ownID]?
+            .detailledProfiles
+            .first(where: { $0.type == "cg" })?
+            .extraData?
+            .objectValue ?? [:]
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Photo") {
+                    HStack(spacing: 16) {
+                        Avatar(
+                            name: ownProfile?.displayName ?? displayName,
+                            url: ownProfile?.imageID.flatMap { model.attachmentURLs[$0] }
+                        )
+                        PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                            Label("Choose profile photo", systemImage: "photo")
+                        }
+                        .disabled(isUploadingAvatar)
+                        if isUploadingAvatar { ProgressView() }
+                    }
+                }
+                Section("Public profile") {
+                    TextField("Display name", text: $displayName)
+                    TextField("Bio", text: $bio, axis: .vertical).lineLimit(3...8)
+                    TextField("Homepage", text: $homepage)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                }
+                Section("Account") {
+                    TextField("Email", text: $email)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                    Toggle("Direct-message notifications", isOn: $dmNotifications)
+                    SecureField("New password (optional)", text: $newPassword)
+                        .textContentType(.newPassword)
+                }
+            }
+            .navigationTitle("Edit Account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        isSaving = true
+                        Task {
+                            if await model.updateAccount(
+                                displayName: displayName,
+                                description: bio,
+                                homepage: homepage,
+                                email: email,
+                                dmNotifications: dmNotifications,
+                                newPassword: newPassword
+                            ) {
+                                dismiss()
+                            }
+                            isSaving = false
+                        }
+                    }
+                    .disabled(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
+                }
+            }
+            .overlay { if isSaving { ProgressView() } }
+            .onChange(of: selectedPhoto) { _, item in
+                guard let item else { return }
+                isUploadingAvatar = true
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        _ = await model.uploadProfileImage(data)
+                    } else {
+                        model.errorMessage = "That image could not be loaded from the photo library."
+                    }
+                    isUploadingAvatar = false
+                    selectedPhoto = nil
+                }
+            }
+            .task {
+                guard let ownID else { return }
+                await model.loadUserProfile(userID: ownID)
+                displayName = ownProfile?.displayName ?? store.ownUser?.displayName ?? ""
+                bio = cgDetails["description"]?.stringValue ?? ""
+                homepage = cgDetails["homepage"]?.stringValue ?? ""
+                email = store.ownUser?.email ?? ""
+                dmNotifications = store.ownUser?.dmNotifications ?? true
+            }
+        }
+    }
+}
+
+private struct UserArticleComposer: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let didPublish: () -> Void
+    @State private var title = ""
+    @State private var preview = ""
+    @State private var bodyText = ""
+    @State private var tags = ""
+    @State private var isPublishing = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Article") {
+                    TextField("Title", text: $title)
+                    TextField("Short preview", text: $preview, axis: .vertical)
+                    TextField("Write your article…", text: $bodyText, axis: .vertical)
+                        .lineLimit(8...20)
+                }
+                Section("Tags") {
+                    TextField("Comma-separated tags", text: $tags)
+                        .textInputAutocapitalization(.never)
+                }
+                Section {
+                    Label(
+                        "This first native editor publishes plain text. Rich blocks and images can be added without changing the article API.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("New Article")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Publish") {
+                        isPublishing = true
+                        Task {
+                            let parsedTags = tags.split(separator: ",")
+                                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                .filter { !$0.isEmpty }
+                            if await model.publishUserArticle(
+                                title: title,
+                                preview: preview,
+                                text: bodyText,
+                                tags: parsedTags
+                            ) {
+                                didPublish()
+                                dismiss()
+                            }
+                            isPublishing = false
+                        }
+                    }
+                    .disabled(
+                        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || isPublishing
+                    )
+                }
+            }
+            .overlay { if isPublishing { ProgressView() } }
         }
     }
 }
 
 private struct Avatar: View {
     let name: String
+    var url: URL? = nil
     var small = false
 
     var body: some View {
+        Group {
+            if let url {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    initials
+                }
+            } else {
+                initials
+            }
+        }
+            .frame(width: small ? 34 : 42, height: small ? 34 : 42)
+            .clipShape(Circle())
+            .accessibilityHidden(true)
+    }
+
+    private var initials: some View {
         Text(String(name.prefix(2)).uppercased())
             .font(small ? .caption.bold() : .subheadline.bold())
-            .frame(width: small ? 34 : 42, height: small ? 34 : 42)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(.black)
             .background(
                 LinearGradient(
                     colors: [AppTheme.accent, AppTheme.secondaryAccent],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
-                ),
-                in: Circle()
+                )
             )
-            .accessibilityHidden(true)
     }
 }
 

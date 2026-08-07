@@ -12,6 +12,7 @@ struct RootView: View {
             case .home: HomeView()
             }
         }
+        .preferredColorScheme(model.appearance.colorScheme)
         .overlay(alignment: .top) {
             if let message = model.errorMessage {
                 ErrorBanner(message: message) { model.errorMessage = nil }
