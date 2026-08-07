@@ -48,6 +48,14 @@ public final class SyncStore: ObservableObject {
         chats[chat.id] = chat
     }
 
+    public func seed(community: Community) {
+        communities[community.id] = community
+    }
+
+    public func removeCommunity(id: String) {
+        communities.removeValue(forKey: id)
+    }
+
     public func replaceNotifications(_ batch: [AppNotification], unreadCount: Int) {
         notifications = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0) })
         unreadNotificationCount = unreadCount

@@ -14,7 +14,14 @@ private enum SidebarItem: Hashable {
     case directMessages
     case notifications
     case search
+    case discover
     case community(String)
+}
+
+private struct ReportTarget: Identifiable {
+    let type: ReportType
+    let id: String
+    let subject: String
 }
 
 private struct HomeContent: View {
@@ -91,6 +98,7 @@ private struct HomeContent: View {
                     badge: store.unreadNotificationCount
                 )
                 sidebarRow("Search", systemImage: "magnifyingglass", item: .search)
+                sidebarRow("Discover", systemImage: "safari", item: .discover)
             }
 
             Section("Communities") {
@@ -168,7 +176,8 @@ private struct HomeContent: View {
                 chatCount: chats.count,
                 unreadCount: store.unreadNotificationCount,
                 openCommunity: openCommunity,
-                openMessages: { sidebarSelection = .directMessages }
+                openMessages: { sidebarSelection = .directMessages },
+                discover: { sidebarSelection = .discover }
             )
         case .directMessages:
             ChatListView(
@@ -186,12 +195,22 @@ private struct HomeContent: View {
                 openChannel: openChannel,
                 openChat: openChat
             )
+        case .discover:
+            CommunityDiscoveryView(store: store, openCommunity: openCommunity)
         case .community(let id):
             if let community = store.communities[id] {
                 ChannelListView(
                     community: community,
                     selectedChannelID: model.selectedChannelID,
-                    select: { openChannel($0, communityID: community.id) }
+                    select: { openChannel($0, communityID: community.id) },
+                    leave: {
+                        Task {
+                            if await model.leaveCommunity(id: community.id) {
+                                sidebarSelection = .overview
+                                preferredCompactColumn = .sidebar
+                            }
+                        }
+                    }
                 )
             } else {
                 ContentUnavailableView("Community unavailable", systemImage: "person.3")
@@ -242,6 +261,12 @@ private struct HomeContent: View {
                 message: "Find a channel in the middle column to open it here.",
                 systemImage: "magnifyingglass"
             )
+        case .discover:
+            ConversationPlaceholder(
+                title: "Find your people",
+                message: "Browse public communities or create a new space.",
+                systemImage: "safari"
+            )
         }
     }
 
@@ -277,6 +302,7 @@ private struct OverviewView: View {
     let unreadCount: Int
     let openCommunity: (String) -> Void
     let openMessages: () -> Void
+    let discover: () -> Void
 
     var body: some View {
         ScrollView {
@@ -332,6 +358,12 @@ private struct OverviewView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
+
+                Button(action: discover) {
+                    Label("Discover communities", systemImage: "safari")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
             }
             .padding(20)
         }
@@ -361,10 +393,278 @@ private struct MetricCard: View {
     }
 }
 
+private struct CommunityDiscoveryView: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var store: SyncStore
+    let openCommunity: (String) -> Void
+    @State private var query = ""
+    @State private var joiningIDs: Set<String> = []
+    @State private var showCreate = false
+    @State private var approvalCommunity: CommunitySummary?
+    @State private var reportCommunity: CommunitySummary?
+
+    var body: some View {
+        Group {
+            if model.isLoadingCommunities && model.communityResults.isEmpty {
+                ProgressView("Finding communities…")
+            } else if model.communityResults.isEmpty {
+                ContentUnavailableView(
+                    query.isEmpty ? "No public communities" : "No communities found",
+                    systemImage: "person.3.sequence",
+                    description: Text(
+                        query.isEmpty
+                            ? "Create the first community on this instance."
+                            : "Try a different name or tag."
+                    )
+                )
+            } else {
+                List(model.communityResults) { community in
+                    CommunityDiscoveryRow(
+                        community: community,
+                        isJoined: store.communities[community.id] != nil,
+                        isJoining: joiningIDs.contains(community.id),
+                        open: { openCommunity(community.id) },
+                        join: { join(community) }
+                    )
+                    .contextMenu {
+                        Button("Report community", systemImage: "exclamationmark.bubble", role: .destructive) {
+                            reportCommunity = community
+                        }
+                    }
+                }
+                .refreshable { await model.discoverCommunities(query: query) }
+            }
+        }
+        .navigationTitle("Discover")
+        .searchable(text: $query, prompt: "Community name or tag")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Create community", systemImage: "plus") { showCreate = true }
+            }
+        }
+        .task(id: query) {
+            do {
+                try await Task.sleep(for: .milliseconds(query.isEmpty ? 0 : 350))
+                await model.discoverCommunities(query: query)
+            } catch {
+                // A newer search superseded this request.
+            }
+        }
+        .sheet(isPresented: $showCreate) {
+            CreateCommunityView { communityID in
+                showCreate = false
+                openCommunity(communityID)
+            }
+        }
+        .sheet(item: $reportCommunity) { community in
+            ReportSheet(
+                target: ReportTarget(type: .community, id: community.id, subject: community.title)
+            )
+        }
+        .alert("Join request submitted", isPresented: pendingAlert) {
+            Button("OK") { approvalCommunity = nil }
+        } message: {
+            Text("A community moderator needs to approve your request before its channels become available.")
+        }
+    }
+
+    private var pendingAlert: Binding<Bool> {
+        Binding(
+            get: { approvalCommunity != nil },
+            set: { if !$0 { approvalCommunity = nil } }
+        )
+    }
+
+    private func join(_ community: CommunitySummary) {
+        joiningIDs.insert(community.id)
+        Task {
+            let outcome = await model.joinCommunity(id: community.id)
+            joiningIDs.remove(community.id)
+            switch outcome {
+            case .joined: openCommunity(community.id)
+            case .pending: approvalCommunity = community
+            case .failed: break
+            }
+        }
+    }
+}
+
+private struct CommunityDiscoveryRow: View {
+    let community: CommunitySummary
+    let isJoined: Bool
+    let isJoining: Bool
+    let open: () -> Void
+    let join: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            CommunityMark(name: community.title)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(community.title).fontWeight(.semibold)
+                if let description = community.shortDescription, !description.isEmpty {
+                    Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                HStack(spacing: 8) {
+                    Label("\(community.memberCount)", systemImage: "person.2")
+                    if !community.tags.isEmpty {
+                        Text(community.tags.prefix(3).map { "#\($0)" }.joined(separator: " "))
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isJoining {
+                ProgressView().controlSize(.small)
+            } else if isJoined {
+                Button("Open", action: open).buttonStyle(.bordered)
+            } else {
+                Button("Join", action: join).buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct CreateCommunityView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let created: (String) -> Void
+    @State private var title = ""
+    @State private var shortDescription = ""
+    @State private var description = ""
+    @State private var tags = ""
+    @State private var isCreating = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Community") {
+                    TextField("Name", text: $title)
+                    TextField("Short description", text: $shortDescription)
+                    TextField("Full description", text: $description, axis: .vertical)
+                        .lineLimit(3...8)
+                }
+                Section("Tags") {
+                    TextField("swift, design, berlin", text: $tags)
+                    Text("Separate tags with commas. You can update imagery and richer settings later.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("New community")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") { create() }
+                        .disabled(trimmedTitle.isEmpty || isCreating)
+                }
+            }
+            .overlay { if isCreating { ProgressView() } }
+        }
+    }
+
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func create() {
+        isCreating = true
+        Task {
+            let normalizedTags = tags
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }
+                .filter { !$0.isEmpty }
+            if let community = await model.createCommunity(
+                title: trimmedTitle,
+                shortDescription: String(shortDescription.prefix(50)),
+                description: String(description.prefix(1_000)),
+                tags: Array(normalizedTags.prefix(10))
+            ) {
+                created(community.id)
+            }
+            isCreating = false
+        }
+    }
+}
+
+private struct ReportSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let target: ReportTarget
+    @State private var reason: ReportReason = .spam
+    @State private var details = ""
+    @State private var isSending = false
+    @State private var sent = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(target.subject).fontWeight(.semibold)
+                    Text("Reports are reviewed by the instance moderation team.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Reason") {
+                    Picker("Reason", selection: $reason) {
+                        ForEach(ReportReason.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+                Section("Additional details (optional)") {
+                    TextField("What should moderators know?", text: $details, axis: .vertical)
+                        .lineLimit(3...8)
+                        .onChange(of: details) { _, value in
+                            if value.count > 2_000 { details = String(value.prefix(2_000)) }
+                        }
+                }
+            }
+            .navigationTitle("Report content")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Send") { send() }.disabled(isSending)
+                }
+            }
+            .overlay { if isSending { ProgressView() } }
+            .alert("Report sent", isPresented: $sent) {
+                Button("Done") { dismiss() }
+            } message: {
+                Text("Thank you. The moderation team will review it.")
+            }
+        }
+    }
+
+    private func send() {
+        isSending = true
+        Task {
+            sent = await model.report(
+                type: target.type,
+                targetID: target.id,
+                reason: reason,
+                message: details
+            )
+            isSending = false
+        }
+    }
+}
+
 private struct ChannelListView: View {
+    @State private var showLeaveConfirmation = false
+    @State private var reportTarget: ReportTarget?
     let community: Community
     let selectedChannelID: String?
     let select: (String) -> Void
+    let leave: () -> Void
 
     var body: some View {
         List {
@@ -392,6 +692,39 @@ private struct ChannelListView: View {
             }
         }
         .navigationTitle(community.title)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Report community", systemImage: "exclamationmark.bubble") {
+                        reportTarget = ReportTarget(
+                            type: .community,
+                            id: community.id,
+                            subject: community.title
+                        )
+                    }
+                    Button(
+                        "Leave community",
+                        systemImage: "rectangle.portrait.and.arrow.right",
+                        role: .destructive
+                    ) {
+                        showLeaveConfirmation = true
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
+        .confirmationDialog(
+            "Leave \(community.title)?",
+            isPresented: $showLeaveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Leave community", role: .destructive, action: leave)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You can join again later if the community remains public.")
+        }
+        .sheet(item: $reportTarget) { ReportSheet(target: $0) }
     }
 }
 
@@ -635,6 +968,7 @@ private struct UserProfileView: View {
     let userID: String
     @ObservedObject var store: SyncStore
     let openChat: (String) -> Void
+    @State private var reportTarget: ReportTarget?
 
     private var user: UserProfile? { store.users[userID] }
 
@@ -708,10 +1042,18 @@ private struct UserProfileView: View {
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if let user, user.id != store.ownUser?.id {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Report user", systemImage: "exclamationmark.bubble") {
+                            reportTarget = ReportTarget(type: .user, id: user.id, subject: user.displayName)
+                        }
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
             }
+            .sheet(item: $reportTarget) { ReportSheet(target: $0) }
         }
     }
 
@@ -753,6 +1095,7 @@ private struct ConversationView: View {
     @EnvironmentObject private var model: AppModel
     let context: ConversationContext
     @ObservedObject var store: SyncStore
+    @State private var reportTarget: ReportTarget?
 
     private var messages: [Message] {
         store.orderedMessages(channelId: context.channelID)
@@ -775,7 +1118,14 @@ private struct ConversationView: View {
                         ForEach(messages) { message in
                             MessageRow(
                                 message: message,
-                                isOwn: message.creatorId == store.ownUser?.id
+                                isOwn: message.creatorId == store.ownUser?.id,
+                                report: {
+                                    reportTarget = ReportTarget(
+                                        type: .message,
+                                        id: message.id,
+                                        subject: "Message from \(String(message.creatorId.prefix(8)))"
+                                    )
+                                }
                             )
                             .id(message.id)
                         }
@@ -819,6 +1169,7 @@ private struct ConversationView: View {
         .navigationTitle(context.title)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: context.channelID) { await load() }
+        .sheet(item: $reportTarget) { ReportSheet(target: $0) }
     }
 
     private func load() async {
@@ -839,6 +1190,7 @@ private struct ConversationView: View {
 private struct MessageRow: View {
     let message: Message
     let isOwn: Bool
+    let report: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
@@ -857,6 +1209,13 @@ private struct MessageRow: View {
             }
         }
         .accessibilityElement(children: .combine)
+        .contextMenu {
+            if !isOwn {
+                Button("Report message", systemImage: "exclamationmark.bubble", role: .destructive) {
+                    report()
+                }
+            }
+        }
     }
 
     private func relativeDate(_ value: String) -> String {

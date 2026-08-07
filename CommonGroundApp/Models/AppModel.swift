@@ -2,6 +2,12 @@ import CommonGroundKit
 import Foundation
 import SwiftUI
 
+enum CommunityJoinOutcome {
+    case joined
+    case pending
+    case failed
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase { case instance, authentication, home }
@@ -20,6 +26,8 @@ final class AppModel: ObservableObject {
     @Published var isLoadingNotifications = false
     @Published var isSearchingUsers = false
     @Published private(set) var userSearchResultIDs: [String] = []
+    @Published var isLoadingCommunities = false
+    @Published private(set) var communityResults: [CommunitySummary] = []
 
     let store = SyncStore()
     private(set) var client: CommonGroundClient?
@@ -243,6 +251,97 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func discoverCommunities(query: String = "") async {
+        guard let client, !isLoadingCommunities else { return }
+        isLoadingCommunities = true
+        defer { isLoadingCommunities = false }
+        do {
+            let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            communityResults = try await client.communities.list(
+                search: value.isEmpty ? nil : value,
+                sort: value.isEmpty ? .popular : .new
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func joinCommunity(id: String) async -> CommunityJoinOutcome {
+        guard let client else { return .failed }
+        do {
+            guard let community = try await client.communities.join(id: id) else { return .pending }
+            store.seed(community: community)
+            selectCommunity(community.id)
+            return .joined
+        } catch {
+            errorMessage = userMessage(for: error)
+            return .failed
+        }
+    }
+
+    func createCommunity(
+        title: String,
+        shortDescription: String,
+        description: String,
+        tags: [String]
+    ) async -> Community? {
+        guard let client else { return nil }
+        do {
+            let community = try await client.communities.create(
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                shortDescription: shortDescription.trimmingCharacters(in: .whitespacesAndNewlines),
+                description: description.trimmingCharacters(in: .whitespacesAndNewlines),
+                tags: tags
+            )
+            store.seed(community: community)
+            selectCommunity(community.id)
+            return community
+        } catch {
+            errorMessage = userMessage(for: error)
+            return nil
+        }
+    }
+
+    func leaveCommunity(id: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            _ = try await client.communities.leave(id: id)
+            store.removeCommunity(id: id)
+            if selectedCommunityID == id {
+                selectCommunity(nil)
+                selectChannel(nil)
+            }
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func report(
+        type: ReportType,
+        targetID: String,
+        reason: ReportReason,
+        message: String
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            let details = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            try await client.reports.create(
+                type: type,
+                targetID: targetID,
+                reason: reason,
+                message: details.isEmpty ? nil : details
+            )
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
     private func loadMessages(access: MessageAccess, channelID: String) async {
         guard let client else { return }
         do {
@@ -331,6 +430,10 @@ final class AppModel: ObservableObject {
             // a later lifecycle pass without invalidating the authenticated UI.
             realtimeNotice = "Live updates are temporarily unavailable. Pull to refresh."
         }
+        // Warm the read-only public directory after authentication so Discover
+        // opens immediately and restored sessions continuously smoke-test the
+        // deployed community-list contract.
+        await discoverCommunities()
     }
 
     private func restoreSession(
