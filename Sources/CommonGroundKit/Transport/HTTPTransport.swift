@@ -87,6 +87,56 @@ public actor HTTPTransport {
         }
     }
 
+    public func callMultipart<Response: Decodable & Sendable>(
+        _ route: String,
+        fields: [String: String],
+        fileField: String,
+        filename: String,
+        mimeType: String,
+        fileData: Data,
+        as responseType: Response.Type = Response.self
+    ) async throws -> Response {
+        let boundary = "CommonGround-\(UUID().uuidString)"
+        var body = Data()
+        for (name, value) in fields.sorted(by: { $0.key < $1.key }) {
+            body.appendMultipart("--\(boundary)\r\n")
+            body.appendMultipart("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+            body.appendMultipart(value)
+            body.appendMultipart("\r\n")
+        }
+        let safeFilename = filename.replacingOccurrences(of: "\"", with: "")
+        body.appendMultipart("--\(boundary)\r\n")
+        body.appendMultipart(
+            "Content-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(safeFilename)\"\r\n"
+        )
+        body.appendMultipart("Content-Type: \(mimeType)\r\n\r\n")
+        body.append(fileData)
+        body.appendMultipart("\r\n--\(boundary)--\r\n")
+
+        var request = URLRequest(url: try endpoint(route))
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        applyExtraHeaders(to: &request)
+        request.httpBody = body
+        let (data, response) = try await perform(request, route: route)
+
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw TransportError("response is not JSON", route: route, httpStatus: response.statusCode)
+        }
+        if let envelope = object as? [String: Any], let status = envelope["status"] as? String {
+            if status == "ERROR", let code = envelope["error"] as? String {
+                throw APIError(code: code, route: route, httpStatus: response.statusCode)
+            }
+            if status == "OK", let payload = envelope["data"] {
+                return try Self.decode(payload, route: route, response: response, as: responseType)
+            }
+        }
+        return try Self.decode(object, route: route, response: response, as: responseType)
+    }
+
     public func cookieHeader() -> String? {
         let cookies = cookieStorage.cookies(for: baseURL) ?? []
         guard !cookies.isEmpty else { return nil }
@@ -211,6 +261,24 @@ public actor HTTPTransport {
         }
     }
 
+    private static func decode<Response: Decodable>(
+        _ object: Any,
+        route: String,
+        response: HTTPURLResponse,
+        as type: Response.Type
+    ) throws -> Response {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed])
+            return try decoder.decode(Response.self, from: data)
+        } catch {
+            throw TransportError(
+                "response data does not match the contract: \(decodingDescription(error))",
+                route: route,
+                httpStatus: response.statusCode
+            )
+        }
+    }
+
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
@@ -221,3 +289,9 @@ public actor HTTPTransport {
 }
 
 private struct EmptyRequest: Encodable, Sendable {}
+
+private extension Data {
+    mutating func appendMultipart(_ value: String) {
+        append(Data(value.utf8))
+    }
+}

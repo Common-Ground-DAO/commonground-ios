@@ -1,4 +1,5 @@
 import CommonGroundKit
+import PhotosUI
 import SwiftUI
 
 struct HomeView: View {
@@ -273,6 +274,10 @@ private struct HomeContent: View {
     private func restoreNavigation() {
         guard let id = model.selectedCommunityID, store.communities[id] != nil else { return }
         sidebarSelection = .community(id)
+        if let channelID = model.selectedChannelID,
+           store.communities[id]?.channels.contains(where: { $0.channelId == channelID }) == true {
+            preferredCompactColumn = .detail
+        }
     }
 
     private func openCommunity(_ id: String) {
@@ -1089,6 +1094,13 @@ private enum ConversationContext {
         case .chat: "Write a message"
         }
     }
+
+    var access: MessageAccess {
+        switch self {
+        case .channel(let channel): .community(channel.communityId, channelId: channel.channelId)
+        case .chat(let chat): .chat(chat.id, channelId: chat.channelId)
+        }
+    }
 }
 
 private struct ConversationView: View {
@@ -1096,6 +1108,9 @@ private struct ConversationView: View {
     let context: ConversationContext
     @ObservedObject var store: SyncStore
     @State private var reportTarget: ReportTarget?
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var deleteTarget: Message?
+    @State private var showMentionPicker = false
 
     private var messages: [Message] {
         store.orderedMessages(channelId: context.channelID)
@@ -1119,6 +1134,20 @@ private struct ConversationView: View {
                             MessageRow(
                                 message: message,
                                 isOwn: message.creatorId == store.ownUser?.id,
+                                parent: message.parentMessageId.flatMap { parentID in
+                                    messages.first { $0.id == parentID }
+                                },
+                                attachmentURL: message.imageAttachments.first.flatMap {
+                                    model.attachmentURLs[$0.largeImageId] ?? model.attachmentURLs[$0.imageId]
+                                },
+                                reply: { model.beginReply(to: message) },
+                                edit: { model.beginEditing(message) },
+                                delete: { deleteTarget = message },
+                                react: { reaction in
+                                    Task {
+                                        await model.setReaction(reaction, on: message, access: context.access)
+                                    }
+                                },
                                 report: {
                                     reportTarget = ReportTarget(
                                         type: .message,
@@ -1143,24 +1172,70 @@ private struct ConversationView: View {
             }
 
             Divider()
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField(context.composerPrompt, text: $model.draftMessage, axis: .vertical)
-                    .lineLimit(1...5)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
-                    .submitLabel(.send)
-                    .onSubmit { Task { await send() } }
-                Button { Task { await send() } } label: {
-                    Image(systemName: "arrow.up")
-                        .fontWeight(.bold)
-                        .frame(width: 42, height: 42)
-                        .foregroundStyle(.white)
-                        .background(AppTheme.accent, in: Circle())
+            VStack(spacing: 8) {
+                if let editing = model.editingMessage {
+                    ComposerContextBanner(
+                        title: "Editing message",
+                        preview: editing.body.plainText,
+                        systemImage: "pencil",
+                        close: model.cancelComposerContext
+                    )
+                } else if let reply = model.replyingTo {
+                    ComposerContextBanner(
+                        title: "Replying",
+                        preview: reply.body.plainText,
+                        systemImage: "arrowshape.turn.up.left",
+                        close: model.cancelComposerContext
+                    )
                 }
-                .disabled(model.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Send message")
+
+                if model.pendingImageAttachment != nil {
+                    HStack {
+                        Label("Image attached", systemImage: "photo")
+                            .font(.caption)
+                        Spacer()
+                        Button("Remove", systemImage: "xmark.circle", action: model.removePendingImage)
+                            .labelStyle(.iconOnly)
+                    }
+                    .padding(.horizontal, 8)
+                }
+
+                HStack(alignment: .bottom, spacing: 10) {
+                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                        Image(systemName: "photo")
+                            .frame(width: 34, height: 42)
+                    }
+                    .disabled(model.editingMessage != nil || model.isUploadingAttachment)
+                    .accessibilityLabel("Attach image")
+
+                    Button("Mention someone", systemImage: "at") {
+                        showMentionPicker = true
+                    }
+                    .labelStyle(.iconOnly)
+                    .frame(width: 30, height: 42)
+
+                    TextField(context.composerPrompt, text: $model.draftMessage, axis: .vertical)
+                        .lineLimit(1...5)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                        .submitLabel(.send)
+                        .onSubmit { Task { await send() } }
+                    Button { Task { await send() } } label: {
+                        Image(systemName: model.editingMessage == nil ? "arrow.up" : "checkmark")
+                            .fontWeight(.bold)
+                            .frame(width: 42, height: 42)
+                            .foregroundStyle(.white)
+                            .background(AppTheme.accent, in: Circle())
+                    }
+                    .disabled(
+                        model.isUploadingAttachment
+                            || (model.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                && model.pendingImageAttachment == nil)
+                    )
+                    .accessibilityLabel(model.editingMessage == nil ? "Send message" : "Save edit")
+                }
             }
             .frame(maxWidth: 760)
             .padding(12)
@@ -1170,6 +1245,41 @@ private struct ConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: context.channelID) { await load() }
         .sheet(item: $reportTarget) { ReportSheet(target: $0) }
+        .sheet(isPresented: $showMentionPicker) {
+            MentionPicker(store: store) { user in
+                model.insertMention(user)
+                showMentionPicker = false
+            }
+            .presentationDetents([.medium, .large])
+        }
+        .onChange(of: selectedPhoto) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    await model.uploadMessageImage(data)
+                } else {
+                    model.errorMessage = "That image could not be loaded from the photo library."
+                }
+                selectedPhoto = nil
+            }
+        }
+        .confirmationDialog(
+            "Delete this message?",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete message", role: .destructive) {
+                guard let message = deleteTarget else { return }
+                deleteTarget = nil
+                Task { await model.deleteMessage(message, access: context.access) }
+            }
+            Button("Cancel", role: .cancel) { deleteTarget = nil }
+        } message: {
+            Text("This cannot be undone.")
+        }
     }
 
     private func load() async {
@@ -1187,9 +1297,92 @@ private struct ConversationView: View {
     }
 }
 
+private struct MentionPicker: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: SyncStore
+    let select: (UserProfile) -> Void
+    @State private var query = ""
+
+    private var users: [UserProfile] {
+        model.userSearchResultIDs.compactMap { store.users[$0] }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if query.isEmpty {
+                    ContentUnavailableView(
+                        "Mention someone",
+                        systemImage: "at",
+                        description: Text("Search this instance by display name.")
+                    )
+                } else if users.isEmpty && !model.isSearchingUsers {
+                    ContentUnavailableView.search(text: query)
+                } else {
+                    List(users) { user in
+                        Button { select(user) } label: {
+                            HStack(spacing: 12) {
+                                Avatar(name: user.displayName, small: true)
+                                Text(user.displayName).fontWeight(.semibold)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .overlay { if model.isSearchingUsers { ProgressView() } }
+                }
+            }
+            .navigationTitle("Mention")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $query, prompt: "Display name")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .task(id: query) {
+                do {
+                    try await Task.sleep(for: .milliseconds(300))
+                    await model.searchUsers(query: query)
+                } catch {
+                    // A newer query superseded this one.
+                }
+            }
+        }
+    }
+}
+
+private struct ComposerContextBanner: View {
+    let title: String
+    let preview: String
+    let systemImage: String
+    let close: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage).foregroundStyle(AppTheme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.caption.bold())
+                Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Button("Cancel", systemImage: "xmark.circle.fill", action: close)
+                .labelStyle(.iconOnly)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+    }
+}
+
 private struct MessageRow: View {
     let message: Message
     let isOwn: Bool
+    let parent: Message?
+    let attachmentURL: URL?
+    let reply: () -> Void
+    let edit: () -> Void
+    let delete: () -> Void
+    let react: (String?) -> Void
     let report: () -> Void
 
     var body: some View {
@@ -1202,14 +1395,74 @@ private struct MessageRow: View {
                     Text(relativeDate(message.createdAt))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                    if message.editedAt != nil {
+                        Text("edited").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                if let parent {
+                    HStack(spacing: 6) {
+                        Rectangle().fill(AppTheme.accent).frame(width: 2)
+                        Text(parent.body.plainText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    .padding(.vertical, 2)
+                } else if message.parentMessageId != nil {
+                    Label("Earlier message", systemImage: "arrowshape.turn.up.left")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Text(message.body.plainText)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if let attachmentURL {
+                    AsyncImage(url: attachmentURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFit()
+                        case .failure:
+                            ContentUnavailableView("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                        default:
+                            ProgressView()
+                        }
+                    }
+                    .frame(maxWidth: 420, minHeight: 100, maxHeight: 320)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                if !message.reactions.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(message.reactions.keys.sorted(), id: \.self) { reaction in
+                            Button {
+                                react(message.ownReaction == reaction ? nil : reaction)
+                            } label: {
+                                Text("\(reaction) \(message.reactions[reaction] ?? 0)")
+                                    .font(.caption)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        message.ownReaction == reaction ? AppTheme.accent.opacity(0.2) : Color.secondary.opacity(0.1),
+                                        in: Capsule()
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
             }
         }
         .accessibilityElement(children: .combine)
         .contextMenu {
+            Button("Reply", systemImage: "arrowshape.turn.up.left", action: reply)
+            Menu("React", systemImage: "face.smiling") {
+                ForEach(["👍", "❤️", "😂", "🎉", "👀"], id: \.self) { emoji in
+                    Button(emoji) { react(message.ownReaction == emoji ? nil : emoji) }
+                }
+            }
+            if isOwn {
+                Button("Edit", systemImage: "pencil", action: edit)
+                Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+            }
             if !isOwn {
                 Button("Report message", systemImage: "exclamationmark.bubble", role: .destructive) {
                     report()

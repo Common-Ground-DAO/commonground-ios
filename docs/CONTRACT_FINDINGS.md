@@ -39,3 +39,7 @@ The TypeScript `User/login` contract declares `unreadNotificationCount` as a num
 ## N-09 — community counts and required creation nulls
 
 Community list/detail member counts can cross the PostgreSQL boundary as strings, while `Community/createCommunity` strictly requires the three image-id keys even before images are selected. The Swift client normalizes either count representation and explicitly encodes the required `null` image values.
+
+## N-10 — image upload success is not an API envelope
+
+`File/uploadImage` is the sole multipart route and returns its upload result as a bare JSON object, while failures retain the normal `{status:"ERROR"}` envelope. `HTTPTransport.callMultipart` handles both shapes, preserves the instance cookie lifecycle, and leaves signed attachment downloads unauthenticated as designed.

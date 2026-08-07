@@ -409,6 +409,128 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(message.body.plainText, "hello")
     }
 
+    func testReplyMentionAndImageAttachmentRequestShape() async throws {
+        MockURLProtocol.handler = { request in
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(object["parentMessageId"] as? String, "55555555-5555-5555-5555-555555555555")
+            let content = try XCTUnwrap((object["body"] as? [String: Any])?["content"] as? [[String: Any]])
+            XCTAssertEqual(content.first(where: { $0["type"] as? String == "mention" })?["userId"] as? String, "66666666-6666-6666-6666-666666666666")
+            let attachments = try XCTUnwrap(object["attachments"] as? [[String: Any]])
+            XCTAssertEqual(attachments[0]["type"] as? String, "image")
+            let response = #"{"status":"OK","data":{"id":"11111111-1111-1111-1111-111111111111","creatorId":"22222222-2222-2222-2222-222222222222","channelId":"33333333-3333-3333-3333-333333333333","body":{"version":"1","content":[{"type":"mention","userId":"66666666-6666-6666-6666-666666666666","alias":"alice"},{"type":"text","value":" hello"}]},"attachments":[{"type":"image","imageId":"77777777-7777-7777-7777-777777777777","largeImageId":"88888888-8888-8888-8888-888888888888"}],"editedAt":null,"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","reactions":{},"ownReaction":null,"parentMessageId":"55555555-5555-5555-5555-555555555555"}}"#
+            return Self.response(request, status: 200, body: response)
+        }
+        let api = MessageAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let message = try await api.send(
+            access: .community(
+                "44444444-4444-4444-4444-444444444444",
+                channelId: "33333333-3333-3333-3333-333333333333"
+            ),
+            text: "@alice hello",
+            mentions: ["alice": "66666666-6666-6666-6666-666666666666"],
+            parentMessageID: "55555555-5555-5555-5555-555555555555",
+            imageAttachments: [
+                MessageImageAttachment(
+                    imageId: "77777777-7777-7777-7777-777777777777",
+                    largeImageId: "88888888-8888-8888-8888-888888888888"
+                )
+            ]
+        )
+        XCTAssertEqual(message.parentMessageId, "55555555-5555-5555-5555-555555555555")
+        XCTAssertEqual(message.imageAttachments.count, 1)
+        XCTAssertEqual(message.body.plainText, "@alice hello")
+    }
+
+    func testRichMessageMutationContracts() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            routes.append(path)
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(
+                (object["access"] as? [String: Any])?["channelId"] as? String,
+                "33333333-3333-3333-3333-333333333333"
+            )
+            switch path {
+            case "/api/v2/Message/editMessage":
+                XCTAssertEqual(object["id"] as? String, "11111111-1111-1111-1111-111111111111")
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":{"editedAt":"2026-08-07T01:00:00.000Z"}}"#
+                )
+            case "/api/v2/Message/deleteMessage":
+                XCTAssertEqual(object["creatorId"] as? String, "22222222-2222-2222-2222-222222222222")
+            case "/api/v2/Message/setReaction":
+                XCTAssertEqual(object["reaction"] as? String, "👍")
+            case "/api/v2/Message/unsetReaction":
+                XCTAssertNil(object["reaction"])
+            default:
+                XCTFail("Unexpected route \(path)")
+            }
+            return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+        }
+        let api = MessageAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let access = MessageAccess.community(
+            "44444444-4444-4444-4444-444444444444",
+            channelId: "33333333-3333-3333-3333-333333333333"
+        )
+        let messageID = "11111111-1111-1111-1111-111111111111"
+        let edit = try await api.edit(access: access, messageID: messageID, text: "edited")
+        XCTAssertEqual(edit.editedAt, "2026-08-07T01:00:00.000Z")
+        try await api.delete(
+            access: access,
+            messageID: messageID,
+            creatorID: "22222222-2222-2222-2222-222222222222"
+        )
+        try await api.setReaction(access: access, messageID: messageID, reaction: "👍")
+        try await api.unsetReaction(access: access, messageID: messageID)
+        XCTAssertEqual(routes.count, 4)
+    }
+
+    func testImageUploadUsesMultipartAndAcceptsBareSuccess() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/File/uploadImage")
+            XCTAssertTrue(request.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("multipart/form-data; boundary=") == true)
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let string = String(decoding: body, as: UTF8.self)
+            XCTAssertTrue(string.contains("name=\"uploaded\"; filename=\"photo.jpg\""))
+            XCTAssertTrue(string.contains("name=\"options\""))
+            XCTAssertTrue(string.contains("channelAttachmentImage"))
+            XCTAssertTrue(body.range(of: Data([0x01, 0x02, 0x03])) != nil)
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"imageId":"11111111-1111-1111-1111-111111111111","largeImageId":"22222222-2222-2222-2222-222222222222"}"#
+            )
+        }
+        let api = FileAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+
+        let result = try await api.uploadImage(
+            Data([0x01, 0x02, 0x03]),
+            type: .channelAttachmentImage,
+            filename: "photo.jpg"
+        )
+        XCTAssertEqual(result.largeImageId, "22222222-2222-2222-2222-222222222222")
+    }
+
     func testMessageLoadTreatsNullReactionsAsEmpty() async throws {
         MockURLProtocol.handler = { request in
             let response = #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","creatorId":"22222222-2222-2222-2222-222222222222","channelId":"33333333-3333-3333-3333-333333333333","body":{"version":"1","content":[{"type":"text","value":"legacy"}]},"attachments":[],"editedAt":null,"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","reactions":null,"ownReaction":null,"parentMessageId":null}]}"#

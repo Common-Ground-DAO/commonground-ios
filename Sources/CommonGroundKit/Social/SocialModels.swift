@@ -10,11 +10,35 @@ public struct MessageBody: Codable, Equatable, Sendable {
     }
 
     public static func text(_ text: String) -> MessageBody {
+        composed(text, mentions: [:])
+    }
+
+    public static func composed(_ text: String, mentions: [String: String]) -> MessageBody {
         var nodes: [JSONValue] = []
         for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             if index > 0 { nodes.append(.object(["type": .string("newline")])) }
-            if !line.isEmpty {
-                nodes.append(.object(["type": .string("text"), "value": .string(String(line))]))
+            var remaining = String(line)
+            while !remaining.isEmpty {
+                let match = mentions.compactMap { alias, userID -> (Range<String.Index>, String, String)? in
+                    guard let range = remaining.range(of: "@\(alias)") else { return nil }
+                    return (range, alias, userID)
+                }.min { lhs, rhs in
+                    lhs.0.lowerBound < rhs.0.lowerBound
+                }
+                guard let match else {
+                    nodes.append(.object(["type": .string("text"), "value": .string(remaining)]))
+                    break
+                }
+                let prefix = String(remaining[..<match.0.lowerBound])
+                if !prefix.isEmpty {
+                    nodes.append(.object(["type": .string("text"), "value": .string(prefix)]))
+                }
+                nodes.append(.object([
+                    "type": .string("mention"),
+                    "userId": .string(match.2),
+                    "alias": .string(match.1),
+                ]))
+                remaining = String(remaining[match.0.upperBound...])
             }
         }
         return MessageBody(content: nodes)
@@ -34,6 +58,24 @@ public struct MessageBody: Codable, Equatable, Sendable {
     }
 }
 
+public struct MessageImageAttachment: Codable, Equatable, Sendable {
+    public let imageId: String
+    public let largeImageId: String
+
+    public init(imageId: String, largeImageId: String) {
+        self.imageId = imageId
+        self.largeImageId = largeImageId
+    }
+
+    public var jsonValue: JSONValue {
+        .object([
+            "type": .string("image"),
+            "imageId": .string(imageId),
+            "largeImageId": .string(largeImageId),
+        ])
+    }
+}
+
 public struct Message: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let creatorId: String
@@ -50,6 +92,32 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, creatorId, channelId, body, attachments, editedAt, createdAt, updatedAt
         case reactions, ownReaction, parentMessageId
+    }
+
+    public init(
+        id: String,
+        creatorId: String,
+        channelId: String,
+        body: MessageBody,
+        attachments: [JSONValue],
+        editedAt: String?,
+        createdAt: String,
+        updatedAt: String,
+        reactions: [String: Int],
+        ownReaction: String?,
+        parentMessageId: String?
+    ) {
+        self.id = id
+        self.creatorId = creatorId
+        self.channelId = channelId
+        self.body = body
+        self.attachments = attachments
+        self.editedAt = editedAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.reactions = reactions
+        self.ownReaction = ownReaction
+        self.parentMessageId = parentMessageId
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,6 +148,16 @@ public struct Message: Codable, Equatable, Identifiable, Sendable {
         try container.encode(reactions, forKey: .reactions)
         try container.encodeIfPresent(ownReaction, forKey: .ownReaction)
         try container.encodeIfPresent(parentMessageId, forKey: .parentMessageId)
+    }
+
+    public var imageAttachments: [MessageImageAttachment] {
+        attachments.compactMap { value in
+            guard let object = value.objectValue,
+                  object["type"]?.stringValue == "image",
+                  let imageId = object["imageId"]?.stringValue,
+                  let largeImageId = object["largeImageId"]?.stringValue else { return nil }
+            return MessageImageAttachment(imageId: imageId, largeImageId: largeImageId)
+        }
     }
 }
 

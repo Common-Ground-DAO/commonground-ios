@@ -11,6 +11,7 @@ public final class CommonGroundClient: @unchecked Sendable {
     public let notifications: NotificationAPI
     public let profiles: ProfileAPI
     public let reports: ReportAPI
+    public let files: FileAPI
 
     public init(instance: InstanceURL, sessionConfiguration: URLSessionConfiguration? = nil) {
         self.instance = instance
@@ -27,6 +28,7 @@ public final class CommonGroundClient: @unchecked Sendable {
         self.notifications = NotificationAPI(transport: transport)
         self.profiles = ProfileAPI(transport: transport)
         self.reports = ReportAPI(transport: transport)
+        self.files = FileAPI(transport: transport)
     }
 
     @MainActor
