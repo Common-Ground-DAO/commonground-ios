@@ -113,6 +113,82 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
     public let areas: [JSONValue]
     public let roles: [JSONValue]
     public let calls: [JSONValue]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, url, title, createdAt, updatedAt, memberCount, myRoleIds
+        case channels, areas, roles, calls
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        url = try container.decode(String.self, forKey: .url)
+        title = try container.decode(String.self, forKey: .title)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        if let value = try? container.decode(Int.self, forKey: .memberCount) {
+            memberCount = value
+        } else if let value = try? container.decode(String.self, forKey: .memberCount),
+                  let number = Int(value) {
+            memberCount = number
+        } else {
+            memberCount = 0
+        }
+        myRoleIds = try container.decodeIfPresent([String].self, forKey: .myRoleIds) ?? []
+        channels = try container.decodeIfPresent([Channel].self, forKey: .channels) ?? []
+        areas = try container.decodeIfPresent([JSONValue].self, forKey: .areas) ?? []
+        roles = try container.decodeIfPresent([JSONValue].self, forKey: .roles) ?? []
+        calls = try container.decodeIfPresent([JSONValue].self, forKey: .calls) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(url, forKey: .url)
+        try container.encode(title, forKey: .title)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(memberCount, forKey: .memberCount)
+        try container.encode(myRoleIds, forKey: .myRoleIds)
+        try container.encode(channels, forKey: .channels)
+        try container.encode(areas, forKey: .areas)
+        try container.encode(roles, forKey: .roles)
+        try container.encode(calls, forKey: .calls)
+    }
+}
+
+public struct CommunitySummary: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let url: String
+    public let title: String
+    public let shortDescription: String?
+    public let memberCount: Int
+    public let tags: [String]
+    public let createdAt: String
+    public let updatedAt: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, url, title, shortDescription, memberCount, tags, createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        url = try container.decode(String.self, forKey: .url)
+        title = try container.decode(String.self, forKey: .title)
+        shortDescription = try container.decodeIfPresent(String.self, forKey: .shortDescription)
+        if let value = try? container.decode(Int.self, forKey: .memberCount) {
+            memberCount = value
+        } else if let value = try? container.decode(String.self, forKey: .memberCount),
+                  let number = Int(value) {
+            memberCount = number
+        } else {
+            memberCount = 0
+        }
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+    }
 }
 
 public struct Chat: Codable, Equatable, Identifiable, Sendable {

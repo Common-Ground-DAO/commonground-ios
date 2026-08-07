@@ -10,9 +10,11 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
   community browsing, and direct-message plumbing are implemented as the M1 foundation.
 - Notification history/read state and public-profile search/follow/DM flows are
   implemented against the reference-client contracts.
+- Public community discovery, creation, joining/leaving, and UGC report submission
+  are implemented with native iPhone/iPad surfaces.
 - Complete generated models/wrappers for communities, chats, notifications, search, profiles, files, and article reading.
 - Replace the in-memory sync store with GRDB/SQLite and add delta resync/offline reads.
-- Add image upload/download, mentions, reactions, replies, moderation/reporting surfaces, account deletion, accessibility, localization, and full UI test coverage.
+- Add image upload/download, mentions, reactions, replies, moderator administration, account deletion, accessibility, localization, and full UI test coverage.
 - Add passkeys through AuthenticationServices plus `ASWebAuthenticationSession` fallback for arbitrary instances.
 
 ## M2 — server-coordinated push

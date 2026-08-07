@@ -241,6 +241,75 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(users[0].tags, ["swift"])
     }
 
+    func testCommunityDiscoveryNormalizesCountAndCreateSendsRequiredNullImages() async throws {
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/v2/Community/getCommunityList":
+                let body = try XCTUnwrap(Self.bodyData(request))
+                let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                XCTAssertEqual(object["offset"] as? Int, 0)
+                XCTAssertEqual(object["sort"] as? String, "popular")
+                XCTAssertEqual(object["limit"] as? Int, 50)
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","url":"ios-builders","title":"iOS Builders","shortDescription":"Native app people","memberCount":"42","tags":["swift"],"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"}]}"#
+                )
+            case "/api/v2/Community/createCommunity":
+                let body = try XCTUnwrap(Self.bodyData(request))
+                let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                XCTAssertTrue(object["logoSmallId"] is NSNull)
+                XCTAssertTrue(object["logoLargeId"] is NSNull)
+                XCTAssertTrue(object["headerImageId"] is NSNull)
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":{"id":"11111111-1111-1111-1111-111111111111","url":"ios-builders","title":"iOS Builders","createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","memberCount":"1","myRoleIds":[],"channels":[],"areas":[],"roles":[],"calls":[]}}"#
+                )
+            default:
+                XCTFail("Unexpected route \(request.url?.path ?? "nil")")
+                return Self.response(request, status: 500, body: #"{"status":"ERROR","error":"UNKNOWN"}"#)
+            }
+        }
+        let api = CommunityAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+
+        let communities = try await api.list()
+        XCTAssertEqual(communities[0].memberCount, 42)
+        XCTAssertEqual(communities[0].tags, ["swift"])
+        let created = try await api.create(title: "iOS Builders", tags: ["swift"])
+        XCTAssertEqual(created.title, "iOS Builders")
+    }
+
+    func testReportContractUsesModerationRouteAndReasonCode() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Report/createReport")
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(object["type"] as? String, "MESSAGE")
+            XCTAssertEqual(object["reason"] as? String, "abusive-content")
+            XCTAssertEqual(object["message"] as? String, "details")
+            return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+        }
+        let api = ReportAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+
+        try await api.create(
+            type: .message,
+            targetID: "11111111-1111-1111-1111-111111111111",
+            reason: .abusiveContent,
+            message: "details"
+        )
+    }
+
     func testBareInstanceConfig() async throws {
         MockURLProtocol.handler = { request in
             XCTAssertEqual(request.httpMethod, "GET")
@@ -441,6 +510,7 @@ final class CommonGroundKitTests: XCTestCase {
             .max(by: { $0.createdAt < $1.createdAt })
         let notifications = try await client.notifications.load()
         let unreadCount = try await client.notifications.unreadCount()
+        let publicCommunities = try await client.communities.list(limit: 10)
         let hits = try await client.profiles.searchUsers(query: login.response.ownData.displayName)
         let profiles = try await client.profiles.users(ids: [login.response.ownData.id])
         XCTAssertTrue(hits.contains(where: { $0.id == login.response.ownData.id }))
@@ -450,7 +520,8 @@ final class CommonGroundKitTests: XCTestCase {
             "communityID=\(selectedCommunity.id) channel=\(selectedChannel.title) " +
             "channelID=\(selectedChannel.channelId) messages=\(messages.count) " +
             "latestOwnID=\(latestOwn?.id ?? "none") latestOwnAt=\(latestOwn?.createdAt ?? "none") " +
-            "notifications=\(notifications.count) unread=\(unreadCount)"
+            "notifications=\(notifications.count) unread=\(unreadCount) " +
+            "publicCommunities=\(publicCommunities.count)"
         )
         try await client.auth.logout()
     }

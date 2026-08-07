@@ -11,6 +11,50 @@ public struct CommunityAPI: Sendable {
     public func join(id: String) async throws -> Community? {
         try await transport.call("Community/joinCommunity", body: IDRequest(id: id))
     }
+
+    public func leave(id: String) async throws -> Community {
+        try await transport.call("Community/leaveCommunity", body: IDRequest(id: id))
+    }
+
+    public func list(
+        search: String? = nil,
+        sort: CommunitySort = .popular,
+        offset: Int = 0,
+        limit: Int = 50
+    ) async throws -> [CommunitySummary] {
+        try await transport.call(
+            "Community/getCommunityList",
+            body: CommunityListRequest(
+                offset: offset,
+                sort: sort,
+                tags: [],
+                limit: limit,
+                search: search
+            )
+        )
+    }
+
+    public func create(
+        title: String,
+        shortDescription: String = "",
+        description: String = "",
+        tags: [String] = []
+    ) async throws -> Community {
+        try await transport.call(
+            "Community/createCommunity",
+            body: CreateCommunityRequest(
+                title: title,
+                shortDescription: shortDescription,
+                description: description,
+                tags: tags
+            )
+        )
+    }
+}
+
+public enum CommunitySort: String, Encodable, Sendable {
+    case new
+    case popular
 }
 
 public struct MessageAPI: Sendable {
@@ -69,6 +113,36 @@ public struct ChatAPI: Sendable {
 }
 
 private struct IDRequest: Encodable, Sendable { let id: String }
+private struct CommunityListRequest: Encodable, Sendable {
+    let offset: Int
+    let sort: CommunitySort
+    let tags: [String]
+    let limit: Int
+    let search: String?
+}
+private struct CreateCommunityRequest: Encodable, Sendable {
+    let title: String
+    let shortDescription: String
+    let description: String
+    let tags: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case title, logoSmallId, logoLargeId, headerImageId
+        case shortDescription, description, links, tags
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(title, forKey: .title)
+        try container.encodeNil(forKey: .logoSmallId)
+        try container.encodeNil(forKey: .logoLargeId)
+        try container.encodeNil(forKey: .headerImageId)
+        try container.encode(shortDescription, forKey: .shortDescription)
+        try container.encode(description, forKey: .description)
+        try container.encode([String](), forKey: .links)
+        try container.encode(tags, forKey: .tags)
+    }
+}
 private struct OtherUserRequest: Encodable, Sendable { let otherUserId: String }
 private struct ChatIDRequest: Encodable, Sendable { let chatId: String }
 private struct LoadMessagesRequest: Encodable, Sendable {

@@ -35,3 +35,7 @@ The TypeScript `User/login` contract declares `unreadNotificationCount` as a num
 ## N-08 — notification and search count fields cross PostgreSQL numeric boundaries
 
 `Notification/getUnreadCount` is backed by SQL `COUNT` and can arrive as an integer string, matching reference-client finding F-08. Search priority is produced by a SQL aggregate and may likewise cross the wire as a string depending on the PostgreSQL driver’s numeric parser. The Swift APIs accept either JSON representation and normalize both to `Int` at the SDK boundary.
+
+## N-09 — community counts and required creation nulls
+
+Community list/detail member counts can cross the PostgreSQL boundary as strings, while `Community/createCommunity` strictly requires the three image-id keys even before images are selected. The Swift client normalizes either count representation and explicitly encodes the required `null` image values.
