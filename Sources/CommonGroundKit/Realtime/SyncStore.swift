@@ -56,6 +56,14 @@ public final class SyncStore: ObservableObject {
         communities.removeValue(forKey: id)
     }
 
+    public func applyCommunityFields(id: String, fields: [String: JSONValue]) {
+        guard let community = communities[id] else { return }
+        var patch = fields
+        patch["id"] = .string(id)
+        guard let updated: Community = applying(patch, to: community) else { return }
+        communities[id] = updated
+    }
+
     public func replaceNotifications(_ batch: [AppNotification], unreadCount: Int) {
         notifications = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0) })
         unreadNotificationCount = unreadCount

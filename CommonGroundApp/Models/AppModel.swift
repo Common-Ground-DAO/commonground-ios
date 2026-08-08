@@ -49,6 +49,7 @@ final class AppModel: ObservableObject {
     @Published var pendingImageAttachment: MessageImageAttachment?
     @Published var isUploadingAttachment = false
     @Published private(set) var attachmentURLs: [String: URL] = [:]
+    private var attachmentURLExpirations: [String: Date] = [:]
     @Published var isLoadingNotifications = false
     @Published var isSearchingUsers = false
     @Published private(set) var userSearchResultIDs: [String] = []
@@ -851,25 +852,40 @@ final class AppModel: ObservableObject {
                 links: links
             )
             if let iconData {
-                _ = try await client.files.uploadImage(
+                let upload = try await client.files.uploadImage(
                     iconData,
                     type: .communityLogoSmall,
                     communityID: community.id
                 )
+                store.applyCommunityFields(
+                    id: community.id,
+                    fields: ["logoSmallId": .string(upload.imageId)]
+                )
+                await loadAttachmentURLs(objectIDs: [upload.imageId], force: true)
             }
             if let sidebarImageData {
-                _ = try await client.files.uploadImage(
+                let upload = try await client.files.uploadImage(
                     sidebarImageData,
                     type: .communityLogoLarge,
                     communityID: community.id
                 )
+                store.applyCommunityFields(
+                    id: community.id,
+                    fields: ["logoLargeId": .string(upload.imageId)]
+                )
+                await loadAttachmentURLs(objectIDs: [upload.imageId], force: true)
             }
             if let heroImageData {
-                _ = try await client.files.uploadImage(
+                let upload = try await client.files.uploadImage(
                     heroImageData,
                     type: .communityHeaderImage,
                     communityID: community.id
                 )
+                store.applyCommunityFields(
+                    id: community.id,
+                    fields: ["headerImageId": .string(upload.imageId)]
+                )
+                await loadAttachmentURLs(objectIDs: [upload.imageId], force: true)
             }
             guard let refreshed = try? await client.communities.detail(id: community.id) else { return true }
             store.seed(community: refreshed)
@@ -1237,6 +1253,11 @@ final class AppModel: ObservableObject {
         await loadCommunityMedia([refreshed])
     }
 
+    func refreshCommunityHome(communityID: String) async {
+        await refreshCommunity(communityID)
+        await loadCommunityArticles(communityID: communityID)
+    }
+
     func leaveCommunity(id: String) async -> Bool {
         guard let client else { return false }
         do {
@@ -1472,18 +1493,31 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func loadAttachmentURLs(objectIDs: [String]) async {
+    private func loadAttachmentURLs(objectIDs: [String], force: Bool = false) async {
         guard let client else { return }
-        let missing = Array(Set(objectIDs)).filter { attachmentURLs[$0] == nil }
+        let now = Date()
+        let missing = Array(Set(objectIDs)).filter { id in
+            force || attachmentURLs[id] == nil || (attachmentURLExpirations[id] ?? .distantPast) <= now
+        }
         guard !missing.isEmpty else { return }
         do {
             for signed in try await client.files.signedURLs(objectIDs: missing) {
-                if let url = URL(string: signed.url) { attachmentURLs[signed.objectId] = url }
+                if let url = URL(string: signed.url) {
+                    attachmentURLs[signed.objectId] = url
+                    attachmentURLExpirations[signed.objectId] = Self.parseISODate(signed.validUntil)
+                        ?? now.addingTimeInterval(300)
+                }
             }
         } catch {
             // A message remains readable when its optional media URL cannot be
             // refreshed. Pull-to-refresh retries this without hiding the text.
         }
+    }
+
+    private static func parseISODate(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
     private func loadCommunityMedia(_ communities: [Community]) async {
@@ -1555,6 +1589,8 @@ final class AppModel: ObservableObject {
             selectedCommunityID = nil
             selectedChannelID = nil
             selectedChatID = nil
+            attachmentURLs = [:]
+            attachmentURLExpirations = [:]
             store.reset()
             phase = .authentication
             try DeviceKeyStore.delete(for: client.instance)
@@ -1576,6 +1612,8 @@ final class AppModel: ObservableObject {
         selectedCommunityID = nil
         selectedChannelID = nil
         selectedChatID = nil
+        attachmentURLs = [:]
+        attachmentURLExpirations = [:]
         store.reset()
         phase = .instance
     }

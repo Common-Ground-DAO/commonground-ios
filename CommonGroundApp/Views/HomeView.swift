@@ -2169,7 +2169,7 @@ private struct CommunityHomeView: View {
             .frame(maxWidth: .infinity)
         }
         .navigationTitle(community.title)
-        .refreshable { await model.loadCommunityArticles(communityID: community.id) }
+        .refreshable { await model.refreshCommunityHome(communityID: community.id) }
         .task(id: community.id) { await model.loadCommunityArticles(communityID: community.id) }
         .sheet(item: $selectedArticle) { article in
             ArticleReaderView(
@@ -4396,6 +4396,7 @@ private struct CommunityMark: View {
 private struct CommunityFeatureImage: View {
     let url: URL
     let height: CGFloat
+    @State private var retryID = 0
 
     var body: some View {
         AsyncImage(url: url) { phase in
@@ -4412,11 +4413,23 @@ private struct CommunityFeatureImage: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: height)
             case .failure:
-                EmptyView()
+                VStack(spacing: 8) {
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .font(.title2)
+                    Text("Image unavailable")
+                        .font(.caption)
+                    Button("Try again") { retryID += 1 }
+                        .buttonStyle(.bordered)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .frame(height: height)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
             @unknown default:
                 EmptyView()
             }
         }
+        .id("\(url.absoluteString):\(retryID)")
         .accessibilityLabel("Community image")
     }
 }

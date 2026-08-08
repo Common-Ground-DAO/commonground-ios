@@ -181,6 +181,14 @@ final class CommonGroundKitTests: XCTestCase {
                 )
             )
             XCTAssertEqual(store.communities[response.communities[0].id]?.pointBalance, 12_345)
+            store.applyCommunityFields(
+                id: response.communities[0].id,
+                fields: ["headerImageId": .string("fresh-hero")]
+            )
+            XCTAssertEqual(
+                store.communities[response.communities[0].id]?.headerImageId,
+                "fresh-hero"
+            )
             store.apply(
                 RealtimeEvent(
                     type: .userOwnData,
