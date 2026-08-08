@@ -670,6 +670,42 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(routes, ["/api/v2/Community/getArticleList", "/api/v2/User/getArticleList"])
     }
 
+    func testCreateUserArticleEncodesRequiredNullFields() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/User/createArticle")
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let userArticle = try XCTUnwrap(object["userArticle"] as? [String: Any])
+            let article = try XCTUnwrap(object["article"] as? [String: Any])
+            XCTAssertTrue(userArticle["url"] is NSNull)
+            XCTAssertEqual(userArticle["published"] as? String, "2026-08-08T00:00:00.000Z")
+            XCTAssertTrue(article["thumbnailImageId"] is NSNull)
+            XCTAssertTrue(article["headerImageId"] is NSNull)
+            XCTAssertEqual(article["previewText"] as? String, "A short preview")
+            let content = try XCTUnwrap(article["content"] as? [String: Any])
+            XCTAssertEqual(content["version"] as? String, "2")
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":{"userArticle":{"userId":"11111111-1111-4111-8111-111111111111","articleId":"22222222-2222-4222-8222-222222222222","url":null,"published":"2026-08-08T00:00:00.000Z","updatedAt":"2026-08-08T00:00:00.000Z"},"article":{"articleId":"22222222-2222-4222-8222-222222222222","title":"Native publishing","previewText":"A short preview","thumbnailImageId":null,"headerImageId":null,"creatorId":"11111111-1111-4111-8111-111111111111","tags":["ios"],"commentCount":0,"latestCommentTimestamp":null,"content":{"version":"2","content":[{"type":"text","value":"Hello"}]},"channelId":"33333333-3333-4333-8333-333333333333"}}}"#
+            )
+        }
+        let api = ArticleAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let result = try await api.createUserArticle(
+            title: "Native publishing",
+            previewText: "A short preview",
+            text: "Hello",
+            tags: ["ios"],
+            published: "2026-08-08T00:00:00.000Z"
+        )
+        XCTAssertEqual(result.article.title, "Native publishing")
+    }
+
     func testArticleDetailFlattensStructuredContent() async throws {
         MockURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.path, "/api/v2/User/getArticleDetailView")

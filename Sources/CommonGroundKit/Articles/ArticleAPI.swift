@@ -87,6 +87,16 @@ private struct CreateUserArticleRequest: Encodable, Sendable {
     struct UserData: Encodable, Sendable {
         let url: String?
         let published: String?
+
+        private enum CodingKeys: String, CodingKey { case url, published }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            if let url { try container.encode(url, forKey: .url) }
+            else { try container.encodeNil(forKey: .url) }
+            if let published { try container.encode(published, forKey: .published) }
+            else { try container.encodeNil(forKey: .published) }
+        }
     }
     struct ArticleData: Encodable, Sendable {
         let title: String
@@ -95,6 +105,22 @@ private struct CreateUserArticleRequest: Encodable, Sendable {
         let headerImageId: String?
         let content: JSONValue
         let tags: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case title, previewText, thumbnailImageId, headerImageId, content, tags
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(title, forKey: .title)
+            try container.encode(previewText, forKey: .previewText)
+            if let thumbnailImageId { try container.encode(thumbnailImageId, forKey: .thumbnailImageId) }
+            else { try container.encodeNil(forKey: .thumbnailImageId) }
+            if let headerImageId { try container.encode(headerImageId, forKey: .headerImageId) }
+            else { try container.encodeNil(forKey: .headerImageId) }
+            try container.encode(content, forKey: .content)
+            try container.encode(tags, forKey: .tags)
+        }
     }
     let userArticle: UserData
     let article: ArticleData

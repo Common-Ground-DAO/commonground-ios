@@ -2589,6 +2589,12 @@ private struct UserArticleComposer: View {
                 Section("Article") {
                     TextField("Title", text: $title)
                     TextField("Short preview", text: $preview, axis: .vertical)
+                        .onChange(of: preview) { _, value in
+                            if value.count > 150 { preview = String(value.prefix(150)) }
+                        }
+                    Text("\(preview.count)/150")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     TextField("Write Markdown…", text: $bodyText, axis: .vertical)
                         .lineLimit(8...20)
                 }
