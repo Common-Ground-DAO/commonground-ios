@@ -922,6 +922,13 @@ final class CommonGroundKitTests: XCTestCase {
                 XCTAssertEqual(object["communityId"] as? String, "community-1")
                 XCTAssertEqual(object["amount"] as? Int, 5_000)
                 return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/updateNotificationState":
+                let data = try XCTUnwrap(object["data"] as? [[String: Any]])
+                XCTAssertEqual(data.first?["communityId"] as? String, "community-1")
+                XCTAssertEqual(data.first?["notifyMentions"] as? Bool, true)
+                XCTAssertEqual(data.first?["notifyPosts"] as? Bool, false)
+                XCTAssertEqual(data.first?["notifyCalls"] as? Bool, false)
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
             case "/api/v2/Community/createChannel":
                 XCTAssertTrue(object["url"] is NSNull)
                 let permissions = try XCTUnwrap(object["rolePermissions"] as? [[String: Any]])
@@ -956,6 +963,16 @@ final class CommonGroundKitTests: XCTestCase {
         try await api.setPersonalNewsletter(communityID: "community-1", enabled: true)
         try await api.setAllowUserBots(communityID: "community-1", allowed: false)
         try await api.giveSpark(communityID: "community-1", amount: 5_000)
+        try await api.updateNotificationState(
+            communityID: "community-1",
+            state: CommunityNotificationState(
+                notifyMentions: true,
+                notifyReplies: true,
+                notifyPosts: false,
+                notifyEvents: true,
+                notifyCalls: false
+            )
+        )
         try await api.createChannel(
             communityID: "community-1",
             areaID: "area-1",
@@ -977,7 +994,19 @@ final class CommonGroundKitTests: XCTestCase {
                 )
             ]
         )
-        XCTAssertEqual(routes.count, 11)
+        XCTAssertEqual(routes.count, 12)
+    }
+
+    func testEmptyCommunityNotificationStateUsesServerDefaults() throws {
+        let state = try JSONDecoder().decode(
+            CommunityNotificationState.self,
+            from: Data("{}".utf8)
+        )
+        XCTAssertTrue(state.notifyMentions)
+        XCTAssertTrue(state.notifyReplies)
+        XCTAssertTrue(state.notifyPosts)
+        XCTAssertTrue(state.notifyEvents)
+        XCTAssertTrue(state.notifyCalls)
     }
 
     func testProfileUpdateContracts() async throws {

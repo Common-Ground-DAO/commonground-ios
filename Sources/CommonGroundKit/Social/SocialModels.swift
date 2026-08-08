@@ -256,6 +256,7 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
     public let enablePersonalNewsletter: Bool
     public let allowUserBots: Bool
     public let plugins: [JSONValue]
+    public let notificationState: CommunityNotificationState
 
     private enum CodingKeys: String, CodingKey {
         case id, url, title, logoSmallId, logoLargeId, headerImageId, shortDescription
@@ -263,6 +264,7 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         case createdAt, updatedAt, memberCount, myRoleIds
         case channels, areas, roles, calls, official, premium, tokens, pointBalance
         case onboardingOptions, membersPendingApproval, enablePersonalNewsletter, allowUserBots, plugins
+        case notificationState
     }
 
     public init(from decoder: Decoder) throws {
@@ -302,6 +304,10 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         enablePersonalNewsletter = try container.decodeIfPresent(Bool.self, forKey: .enablePersonalNewsletter) ?? false
         allowUserBots = try container.decodeIfPresent(Bool.self, forKey: .allowUserBots) ?? false
         plugins = try container.decodeIfPresent([JSONValue].self, forKey: .plugins) ?? []
+        notificationState = try container.decodeIfPresent(
+            CommunityNotificationState.self,
+            forKey: .notificationState
+        ) ?? CommunityNotificationState()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -334,6 +340,7 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         try container.encode(enablePersonalNewsletter, forKey: .enablePersonalNewsletter)
         try container.encode(allowUserBots, forKey: .allowUserBots)
         try container.encode(plugins, forKey: .plugins)
+        try container.encode(notificationState, forKey: .notificationState)
     }
 
     public var managementPermissions: Set<String> {
@@ -397,6 +404,41 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
                   title == "Member" else { return nil }
             return ArticleRolePermission(roleId: id, roleTitle: title, permissions: visible)
         }
+    }
+}
+
+public struct CommunityNotificationState: Codable, Equatable, Sendable {
+    public let notifyMentions: Bool
+    public let notifyReplies: Bool
+    public let notifyPosts: Bool
+    public let notifyEvents: Bool
+    public let notifyCalls: Bool
+
+    public init(
+        notifyMentions: Bool = true,
+        notifyReplies: Bool = true,
+        notifyPosts: Bool = true,
+        notifyEvents: Bool = true,
+        notifyCalls: Bool = true
+    ) {
+        self.notifyMentions = notifyMentions
+        self.notifyReplies = notifyReplies
+        self.notifyPosts = notifyPosts
+        self.notifyEvents = notifyEvents
+        self.notifyCalls = notifyCalls
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case notifyMentions, notifyReplies, notifyPosts, notifyEvents, notifyCalls
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        notifyMentions = try container.decodeIfPresent(Bool.self, forKey: .notifyMentions) ?? true
+        notifyReplies = try container.decodeIfPresent(Bool.self, forKey: .notifyReplies) ?? true
+        notifyPosts = try container.decodeIfPresent(Bool.self, forKey: .notifyPosts) ?? true
+        notifyEvents = try container.decodeIfPresent(Bool.self, forKey: .notifyEvents) ?? true
+        notifyCalls = try container.decodeIfPresent(Bool.self, forKey: .notifyCalls) ?? true
     }
 }
 

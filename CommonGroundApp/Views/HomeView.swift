@@ -2602,6 +2602,7 @@ private struct ChannelListView: View {
     @State private var showLeaveConfirmation = false
     @State private var reportTarget: ReportTarget?
     @State private var showCommunitySettings = false
+    @State private var showNotificationSettings = false
     let community: Community
     let selectedChannelID: String?
     let openHome: () -> Void
@@ -2668,6 +2669,9 @@ private struct ChannelListView: View {
                             Label("Share community", systemImage: "square.and.arrow.up")
                         }
                     }
+                    Button("Notification settings", systemImage: "bell.badge") {
+                        showNotificationSettings = true
+                    }
                     if !community.managementPermissions.isEmpty
                         || community.creatorId == model.store.ownUser?.id {
                         Button("Community settings", systemImage: "gearshape") {
@@ -2707,6 +2711,80 @@ private struct ChannelListView: View {
         .sheet(item: $reportTarget) { ReportSheet(target: $0) }
         .sheet(isPresented: $showCommunitySettings) {
             CommunitySettingsView(community: community)
+        }
+        .sheet(isPresented: $showNotificationSettings) {
+            CommunityNotificationSettingsView(community: community)
+        }
+    }
+}
+
+private struct CommunityNotificationSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    @State private var mentions: Bool
+    @State private var replies: Bool
+    @State private var posts: Bool
+    @State private var events: Bool
+    @State private var calls: Bool
+    @State private var isSaving = false
+
+    init(community: Community) {
+        self.community = community
+        let state = community.notificationState
+        _mentions = State(initialValue: state.notifyMentions)
+        _replies = State(initialValue: state.notifyReplies)
+        _posts = State(initialValue: state.notifyPosts)
+        _events = State(initialValue: state.notifyEvents)
+        _calls = State(initialValue: state.notifyCalls)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Mentions", isOn: $mentions)
+                    Toggle("Replies", isOn: $replies)
+                    Toggle("New posts", isOn: $posts)
+                    Toggle("Events", isOn: $events)
+                    Toggle("Calls", isOn: $calls)
+                } footer: {
+                    Text("These preferences apply to notifications from \(community.title) on this Common Ground instance.")
+                }
+            }
+            .navigationTitle("Notifications")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }.disabled(isSaving || !hasChanges)
+                }
+            }
+            .overlay { if isSaving { ProgressView() } }
+        }
+    }
+
+    private var state: CommunityNotificationState {
+        CommunityNotificationState(
+            notifyMentions: mentions,
+            notifyReplies: replies,
+            notifyPosts: posts,
+            notifyEvents: events,
+            notifyCalls: calls
+        )
+    }
+
+    private var hasChanges: Bool { state != community.notificationState }
+
+    private func save() {
+        isSaving = true
+        Task {
+            if await model.setCommunityNotifications(communityID: community.id, state: state) {
+                dismiss()
+            }
+            isSaving = false
         }
     }
 }

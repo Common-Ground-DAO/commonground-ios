@@ -210,6 +210,18 @@ public struct CommunityAPI: Sendable {
         )
     }
 
+    public func updateNotificationState(
+        communityID: String,
+        state: CommunityNotificationState
+    ) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/updateNotificationState",
+            body: UpdateCommunityNotificationStateRequest(
+                data: [CommunityNotificationStateEntry(communityId: communityID, state: state)]
+            )
+        )
+    }
+
     public func createRole(communityID: String, title: String) async throws -> String {
         let response: RoleIDResponse = try await transport.call(
             "Community/createRole",
@@ -595,6 +607,26 @@ private struct GiveSparkRequest: Encodable, Sendable {
 private struct AllowUserBotsRequest: Encodable, Sendable {
     let id: String
     let allowUserBots: Bool
+}
+private struct UpdateCommunityNotificationStateRequest: Encodable, Sendable {
+    let data: [CommunityNotificationStateEntry]
+}
+private struct CommunityNotificationStateEntry: Encodable, Sendable {
+    let communityId: String
+    let notifyMentions: Bool
+    let notifyReplies: Bool
+    let notifyPosts: Bool
+    let notifyEvents: Bool
+    let notifyCalls: Bool
+
+    init(communityId: String, state: CommunityNotificationState) {
+        self.communityId = communityId
+        notifyMentions = state.notifyMentions
+        notifyReplies = state.notifyReplies
+        notifyPosts = state.notifyPosts
+        notifyEvents = state.notifyEvents
+        notifyCalls = state.notifyCalls
+    }
 }
 private struct RoleIDResponse: Decodable, Sendable { let id: String }
 private struct CreateRoleRequest: Encodable, Sendable {

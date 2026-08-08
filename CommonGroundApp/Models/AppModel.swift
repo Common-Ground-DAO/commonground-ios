@@ -1029,6 +1029,24 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func setCommunityNotifications(
+        communityID: String,
+        state: CommunityNotificationState
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.updateNotificationState(
+                communityID: communityID,
+                state: state
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
     func createCommunityRole(communityID: String, title: String) async -> Bool {
         guard let client else { return false }
         do {
