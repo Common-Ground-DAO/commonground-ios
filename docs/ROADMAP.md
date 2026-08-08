@@ -4,7 +4,7 @@
 
 Transport, instance discovery, Secure Enclave identity, native ALTCHA, registration/login/logout, Socket.IO authentication/event routing, normalized memory store, and a usable channel/message shell.
 
-## M1 — mobile MVP breadth
+## M1 — mobile MVP breadth (implemented)
 
 - Native adaptive iPhone/iPad navigation, centralized publisher configuration,
   community browsing, and direct-message plumbing are implemented as the M1 foundation.
@@ -14,10 +14,23 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
   are implemented with native iPhone/iPad surfaces.
 - Rich messaging covers replies, structured mentions, emoji reactions,
   editing/deletion, image uploads, and signed media downloads.
-- Complete generated models/wrappers for communities, chats, notifications, search, profiles, files, and article reading.
-- Replace the in-memory sync store with GRDB/SQLite and add delta resync/offline reads.
-- Add link previews, GIFs, moderator administration, account deletion, accessibility, localization, and full UI test coverage.
+- Native SQLite persists account-scoped communities, chats, messages, users, and notifications,
+  plus durable per-conversation drafts and a retryable send outbox. Offline launch hydrates directly
+  from this cache and reconnect reconciles message deltas before falling back to a full load.
+- Community administration covers general metadata/assets, premium renewal, onboarding and pending
+  applications, newsletters, members, timed moderation, bans, areas/channels, roles/permissions,
+  tokens, bots, and plugin discovery/installation/permission management/removal.
+- Messaging includes local search, saved/pinned messages, unread markers, reply-thread navigation,
+  URL previews, instance-configured GIPHY search, and an image attachment gallery.
+
+## M1.1 — release hardening
+
+- Add account deletion when the server resolves the policy/API backlog.
+- Add user blocking when the server resolves the policy/API backlog.
+- Consume realtime typing presence after backend issue #57 defines the authenticated ephemeral contract.
+- Add arbitrary file picking/browsing after backend issue #58 defines generic attachment metadata.
 - Add passkeys through AuthenticationServices plus `ASWebAuthenticationSession` fallback for arbitrary instances.
+- Complete localization, VoiceOver/UI automation, privacy manifests, and the supported-instance compatibility matrix.
 
 ## M2 — server-coordinated push
 

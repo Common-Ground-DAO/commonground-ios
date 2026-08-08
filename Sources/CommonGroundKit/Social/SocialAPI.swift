@@ -196,6 +196,24 @@ public struct CommunityAPI: Sendable {
         )
     }
 
+    public func newsletterHistory(
+        communityID: String,
+        timeframe: String
+    ) async throws -> [CommunityNewsletterEntry] {
+        let response: NewsletterHistoryResponse = try await transport.call(
+            "Community/getNewsletterHistory",
+            body: NewsletterHistoryRequest(communityId: communityID, timeframe: timeframe)
+        )
+        return response.entries
+    }
+
+    public func sendArticleAsNewsletter(communityID: String, articleID: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/sendArticleAsEmail",
+            body: CommunityArticleIDRequest(communityId: communityID, articleId: articleID)
+        )
+    }
+
     public func giveSpark(communityID: String, amount: Int) async throws {
         let _: EmptyResponse = try await transport.call(
             "Community/givePointsToCommunity",
@@ -243,7 +261,9 @@ public struct CommunityAPI: Sendable {
         roleID: String,
         title: String?,
         description: String?,
-        permissions: [String]?
+        permissions: [String]?,
+        type: String? = nil,
+        assignmentRules: JSONValue? = nil
     ) async throws {
         let _: EmptyResponse = try await transport.call(
             "Community/updateRole",
@@ -252,7 +272,9 @@ public struct CommunityAPI: Sendable {
                 communityId: communityID,
                 title: title,
                 description: description,
-                permissions: permissions
+                permissions: permissions,
+                type: type,
+                assignmentRules: assignmentRules
             )
         )
     }
@@ -287,10 +309,15 @@ public struct CommunityAPI: Sendable {
         )
     }
 
-    public func updateArea(communityID: String, areaID: String, title: String) async throws {
+    public func updateArea(
+        communityID: String,
+        areaID: String,
+        title: String? = nil,
+        order: Int? = nil
+    ) async throws {
         let _: EmptyResponse = try await transport.call(
             "Community/updateArea",
-            body: UpdateAreaRequest(id: areaID, communityId: communityID, title: title)
+            body: UpdateAreaRequest(id: areaID, communityId: communityID, title: title, order: order)
         )
     }
 
@@ -363,6 +390,69 @@ public struct CommunityAPI: Sendable {
             body: DeleteChannelRequest(channelId: channelID, communityId: communityID)
         )
     }
+
+    public func setPinnedMessages(
+        communityID: String,
+        channelID: String,
+        messageIDs: [String]
+    ) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/updateChannel",
+            body: PinnedMessagesRequest(
+                communityId: communityID,
+                channelId: channelID,
+                pinnedMessageIds: Array(messageIDs.prefix(2))
+            )
+        )
+    }
+
+    public func addToken(communityID: String, contractID: String, order: Int) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/addCommunityToken",
+            body: CommunityTokenRequest(
+                communityId: communityID,
+                contractId: contractID,
+                order: order
+            )
+        )
+    }
+
+    public func removeToken(communityID: String, contractID: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/removeCommunityToken",
+            body: RemoveCommunityTokenRequest(communityId: communityID, contractId: contractID)
+        )
+    }
+
+    public func buyPremium(
+        communityID: String,
+        feature: String,
+        duration: String
+    ) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/buyCommunityPremiumFeature",
+            body: BuyCommunityPremiumRequest(
+                communityId: communityID,
+                featureName: feature,
+                duration: duration
+            )
+        )
+    }
+
+    public func setPremiumAutoRenew(
+        communityID: String,
+        feature: String,
+        autoRenew: String?
+    ) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/setPremiumFeatureAutoRenew",
+            body: PremiumAutoRenewRequest(
+                communityId: communityID,
+                featureName: feature,
+                autoRenew: autoRenew
+            )
+        )
+    }
 }
 
 public enum CommunitySort: String, Encodable, Sendable {
@@ -396,6 +486,27 @@ public struct MessageAPI: Sendable {
             "Message/messagesById",
             body: MessagesByIDRequest(access: access, messageIds: messageIDs)
         )
+    }
+
+    public func updates(
+        access: MessageAccess,
+        createdStart: String,
+        createdEnd: String,
+        updatedAfter: String
+    ) async throws -> MessageUpdates {
+        try await transport.call(
+            "Message/loadUpdates",
+            body: MessageUpdatesRequest(
+                access: access,
+                createdStart: createdStart,
+                createdEnd: createdEnd,
+                updatedAfter: updatedAfter
+            )
+        )
+    }
+
+    public func urlPreview(_ url: String) async throws -> URLPreview {
+        try await transport.call("Message/getUrlPreview", body: URLPreviewRequest(url: url))
     }
 
     public func send(
@@ -605,6 +716,17 @@ private struct PersonalNewsletterRequest: Encodable, Sendable {
     let id: String
     let enablePersonalNewsletter: Bool
 }
+private struct NewsletterHistoryRequest: Encodable, Sendable {
+    let communityId: String
+    let timeframe: String
+}
+private struct NewsletterHistoryResponse: Decodable, Sendable {
+    let entries: [CommunityNewsletterEntry]
+}
+private struct CommunityArticleIDRequest: Encodable, Sendable {
+    let communityId: String
+    let articleId: String
+}
 private struct GiveSparkRequest: Encodable, Sendable {
     let communityId: String
     let amount: Int
@@ -663,6 +785,26 @@ private struct UpdateRoleRequest: Encodable, Sendable {
     let title: String?
     let description: String?
     let permissions: [String]?
+    let type: String?
+    let assignmentRules: JSONValue?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, communityId, title, description, permissions, type, assignmentRules
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(communityId, forKey: .communityId)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(description, forKey: .description)
+        try container.encodeIfPresent(permissions, forKey: .permissions)
+        try container.encodeIfPresent(type, forKey: .type)
+        if type != nil {
+            if let assignmentRules { try container.encode(assignmentRules, forKey: .assignmentRules) }
+            else { try container.encodeNil(forKey: .assignmentRules) }
+        }
+    }
 }
 private struct DeleteRoleRequest: Encodable, Sendable {
     let id: String
@@ -681,7 +823,8 @@ private struct CreateAreaRequest: Encodable, Sendable {
 private struct UpdateAreaRequest: Encodable, Sendable {
     let id: String
     let communityId: String
-    let title: String
+    let title: String?
+    let order: Int?
 }
 private struct DeleteAreaRequest: Encodable, Sendable {
     let id: String
@@ -749,6 +892,30 @@ private struct DeleteChannelRequest: Encodable, Sendable {
     let channelId: String
     let communityId: String
 }
+private struct PinnedMessagesRequest: Encodable, Sendable {
+    let communityId: String
+    let channelId: String
+    let pinnedMessageIds: [String]
+}
+private struct CommunityTokenRequest: Encodable, Sendable {
+    let communityId: String
+    let contractId: String
+    let order: Int
+}
+private struct RemoveCommunityTokenRequest: Encodable, Sendable {
+    let communityId: String
+    let contractId: String
+}
+private struct BuyCommunityPremiumRequest: Encodable, Sendable {
+    let communityId: String
+    let featureName: String
+    let duration: String
+}
+private struct PremiumAutoRenewRequest: Encodable, Sendable {
+    let communityId: String
+    let featureName: String
+    let autoRenew: String?
+}
 private struct OtherUserRequest: Encodable, Sendable { let otherUserId: String }
 private struct ChatIDRequest: Encodable, Sendable { let chatId: String }
 private struct LoadMessagesRequest: Encodable, Sendable {
@@ -761,6 +928,13 @@ private struct MessagesByIDRequest: Encodable, Sendable {
     let access: MessageAccess
     let messageIds: [String]
 }
+private struct MessageUpdatesRequest: Encodable, Sendable {
+    let access: MessageAccess
+    let createdStart: String
+    let createdEnd: String
+    let updatedAfter: String
+}
+private struct URLPreviewRequest: Encodable, Sendable { let url: String }
 private struct CreateMessageRequest: Encodable, Sendable {
     let id: String
     let access: MessageAccess

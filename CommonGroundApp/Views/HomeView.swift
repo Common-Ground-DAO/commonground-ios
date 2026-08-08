@@ -821,21 +821,18 @@ private struct CommunitySettingsView: View {
                             SettingsRow(icon: "gearshape", color: .gray, title: "General")
                         }
                         NavigationLink {
-                            CommunitySettingsStatusView(
-                                title: "Premium",
-                                icon: "sparkles",
-                                rows: [
-                                    ("Plan", current.premium == nil ? "Free" : "Premium"),
-                                    ("Community points", current.pointBalance.formatted()),
-                                ]
-                            )
-                        } label: {
-                            SettingsRow(icon: "sparkles", color: .purple, title: "Premium")
-                        }
-                        NavigationLink {
                             CommunityNewsletterSettingsView(community: current)
                         } label: {
                             SettingsRow(icon: "envelope", color: .orange, title: "Newsletters")
+                        }
+                    }
+                }
+                if current.canManageRoles {
+                    Section("Plan") {
+                        NavigationLink {
+                            CommunityPremiumSettingsView(community: current)
+                        } label: {
+                            SettingsRow(icon: "sparkles", color: .purple, title: "Premium")
                         }
                     }
                 }
@@ -878,31 +875,30 @@ private struct CommunitySettingsView: View {
                     }
                 }
 
-                if current.canManageInfo || current.creatorId == model.store.ownUser?.id {
+                if current.canManageRoles || current.canManageInfo
+                    || current.creatorId == model.store.ownUser?.id || current.isAdmin {
                     Section("Extensions") {
-                    NavigationLink {
-                        CommunitySettingsStatusView(
-                            title: "Token",
-                            icon: "hexagon",
-                            rows: [("Configured tokens", "\(current.tokens.count)")]
-                        )
-                    } label: {
-                        SettingsRow(icon: "hexagon", color: .mint, title: "Token", badge: current.tokens.count)
-                    }
-                    NavigationLink {
-                        CommunityBotsSettingsView(community: current)
-                    } label: {
-                        SettingsRow(icon: "cpu", color: .yellow, title: "Bots")
-                    }
-                    NavigationLink {
-                        CommunitySettingsStatusView(
-                            title: "Plugins",
-                            icon: "puzzlepiece.extension",
-                            rows: [("Installed", "\(current.plugins.count)")]
-                        )
-                    } label: {
-                        SettingsRow(icon: "puzzlepiece.extension", color: .pink, title: "Plugins", badge: current.plugins.count)
-                    }
+                        if current.canManageRoles {
+                            NavigationLink {
+                                CommunityTokenSettingsView(community: current)
+                            } label: {
+                                SettingsRow(icon: "hexagon", color: .mint, title: "Token", badge: current.tokens.count)
+                            }
+                        }
+                        if current.canManageInfo || current.creatorId == model.store.ownUser?.id {
+                            NavigationLink {
+                                CommunityBotsSettingsView(community: current)
+                            } label: {
+                                SettingsRow(icon: "cpu", color: .yellow, title: "Bots")
+                            }
+                        }
+                        if current.isAdmin {
+                            NavigationLink {
+                                CommunityPluginsSettingsView(community: current)
+                            } label: {
+                                SettingsRow(icon: "puzzlepiece.extension", color: .pink, title: "Plugins", badge: current.plugins.count)
+                            }
+                        }
                     }
                 }
             }
@@ -941,23 +937,300 @@ private struct SettingsRow: View {
     }
 }
 
-private struct CommunitySettingsStatusView: View {
-    let title: String
-    let icon: String
-    let rows: [(String, String)]
+private struct CommunityPremiumSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @State private var feature = "BASIC"
+    @State private var duration = "month"
+    @State private var autoRenew: String?
+    @State private var confirmingPurchase = false
+    @State private var isSaving = false
+
+    init(community: Community) {
+        self.community = community
+        _feature = State(initialValue: community.premiumInfo?.featureName ?? "BASIC")
+        _autoRenew = State(initialValue: community.premiumInfo?.autoRenew)
+    }
+
+    private var current: Community { model.store.communities[community.id] ?? community }
+
+    var body: some View {
+        Form {
+            Section("Current plan") {
+                LabeledContent("Plan", value: current.premiumInfo?.featureName.capitalized ?? "Free")
+                if let expiry = current.premiumInfo?.activeUntil {
+                    LabeledContent("Active until", value: expiry)
+                }
+                LabeledContent("Community Spark", value: current.pointBalance.formatted())
+            }
+            if let premium = current.premiumInfo {
+                Section("Renewal") {
+                    Picker("Automatic renewal", selection: $autoRenew) {
+                        Text("Off").tag(String?.none)
+                        Text("Monthly").tag(String?.some("MONTH"))
+                        Text("Yearly").tag(String?.some("YEAR"))
+                    }
+                    Button("Save renewal") {
+                        isSaving = true
+                        Task {
+                            _ = await model.setCommunityPremiumAutoRenew(
+                                communityID: current.id,
+                                feature: premium.featureName,
+                                autoRenew: autoRenew
+                            )
+                            isSaving = false
+                        }
+                    }
+                    .disabled(isSaving || autoRenew == premium.autoRenew)
+                }
+            }
+            Section {
+                Picker("Plan", selection: $feature) {
+                    Text("Basic").tag("BASIC")
+                    Text("Pro").tag("PRO")
+                    Text("Enterprise").tag("ENTERPRISE")
+                }
+                Picker("Duration", selection: $duration) {
+                    Text("Month").tag("month")
+                    Text("Year").tag("year")
+                    if current.premiumInfo != nil { Text("Upgrade current term").tag("upgrade") }
+                }
+                Button("Review purchase", systemImage: "sparkles") { confirmingPurchase = true }
+            } header: {
+                Text("Purchase or upgrade")
+            } footer: {
+                Text("The instance determines the Spark price and rejects purchases when the community balance is insufficient.")
+            }
+        }
+        .navigationTitle("Premium")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Buy \(feature.capitalized) for \(duration)?",
+            isPresented: $confirmingPurchase,
+            titleVisibility: .visible
+        ) {
+            Button("Confirm Spark purchase") {
+                isSaving = true
+                Task {
+                    _ = await model.buyCommunityPremium(
+                        communityID: current.id,
+                        feature: feature,
+                        duration: duration
+                    )
+                    isSaving = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This spends Spark from the community balance according to the instance's configured price.")
+        }
+        .overlay { if isSaving { ProgressView() } }
+    }
+}
+
+private struct CommunityTokenSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @State private var contractID = ""
+    @State private var isSaving = false
+
+    private var current: Community { model.store.communities[community.id] ?? community }
 
     var body: some View {
         List {
-            Section {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    LabeledContent(row.0, value: row.1)
+            Section("Configured tokens") {
+                if current.tokenInfos.isEmpty {
+                    ContentUnavailableView("No tokens", systemImage: "hexagon")
                 }
+                ForEach(current.tokenInfos) { token in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(token.contractId).textSelection(.enabled)
+                        Text("Order \(token.order + 1)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .swipeActions {
+                        Button("Remove", role: .destructive) {
+                            Task {
+                                _ = await model.removeCommunityToken(
+                                    communityID: current.id,
+                                    contractID: token.contractId
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Section {
+                TextField("Contract ID", text: $contractID)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Add token", systemImage: "plus") {
+                    let value = contractID.trimmingCharacters(in: .whitespacesAndNewlines)
+                    isSaving = true
+                    Task {
+                        if await model.addCommunityToken(communityID: current.id, contractID: value) {
+                            contractID = ""
+                        }
+                        isSaving = false
+                    }
+                }
+                .disabled(isSaving || contractID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } header: {
+                Text("Add token contract")
             } footer: {
-                Text("This section is connected to the community's live configuration. Editing controls will appear here as each workflow is made native on iPhone and iPad.")
+                Text("Token-gated roles can reference the configured contracts in Roles & Permissions.")
             }
         }
-        .navigationTitle(title)
+        .navigationTitle("Token")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct CommunityPluginsSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    private var current: Community { model.store.communities[community.id] ?? community }
+
+    var body: some View {
+        List {
+            Section("Installed") {
+                if current.pluginInfos.isEmpty {
+                    ContentUnavailableView("No plugins installed", systemImage: "puzzlepiece.extension")
+                }
+                ForEach(current.pluginInfos) { plugin in
+                    NavigationLink {
+                        CommunityPluginEditor(plugin: plugin)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(plugin.name)
+                            Text(plugin.description ?? plugin.url)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+            }
+            Section {
+                NavigationLink {
+                    CommunityPluginCatalog(community: current)
+                } label: {
+                    Label("Browse Common Ground apps", systemImage: "storefront")
+                }
+            }
+        }
+        .navigationTitle("Plugins")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct CommunityPluginEditor: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let plugin: CommunityPluginInfo
+    @State private var accepted: Set<String>
+    @State private var confirmingRemoval = false
+    @State private var isSaving = false
+
+    init(plugin: CommunityPluginInfo) {
+        self.plugin = plugin
+        _accepted = State(initialValue: Set(plugin.acceptedPermissions ?? plugin.permissions?.mandatory ?? []))
+    }
+
+    var body: some View {
+        Form {
+            Section("App") {
+                LabeledContent("Name", value: plugin.name)
+                LabeledContent("Origin", value: plugin.url)
+                if plugin.requiresIsolationMode {
+                    Label("Requires isolated web content", systemImage: "lock.shield")
+                }
+                if plugin.reportFlagged || plugin.warnAbusive {
+                    Label("This app has a safety warning", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+            }
+            if let permissions = plugin.permissions {
+                Section("Required permissions") {
+                    ForEach(permissions.mandatory, id: \.self) { Text($0.permissionTitle) }
+                }
+                Section("Optional permissions") {
+                    ForEach(permissions.optional, id: \.self) { permission in
+                        Toggle(permission.permissionTitle, isOn: Binding(
+                            get: { accepted.contains(permission) },
+                            set: { enabled in
+                                if enabled { accepted.insert(permission) }
+                                else { accepted.remove(permission) }
+                            }
+                        ))
+                    }
+                    Button("Save permissions") {
+                        isSaving = true
+                        Task {
+                            let required = Set(permissions.mandatory)
+                            _ = await model.updatePluginPermissions(
+                                plugin,
+                                permissions: Array(required.union(accepted)).sorted()
+                            )
+                            isSaving = false
+                        }
+                    }
+                    .disabled(isSaving)
+                }
+            }
+            Section {
+                Button("Remove Plugin", role: .destructive) { confirmingRemoval = true }
+            }
+        }
+        .navigationTitle(plugin.name)
+        .confirmationDialog("Remove \(plugin.name)?", isPresented: $confirmingRemoval) {
+            Button("Remove Plugin", role: .destructive) {
+                Task { if await model.removePlugin(plugin, communityID: plugin.communityId) { dismiss() } }
+            }
+        }
+    }
+}
+
+private struct CommunityPluginCatalog: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @State private var search = ""
+    @State private var installingID: String?
+
+    var body: some View {
+        List(model.appStorePlugins) { plugin in
+            VStack(alignment: .leading, spacing: 7) {
+                Text(plugin.name).font(.headline)
+                Text(plugin.description).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                if !plugin.permissions.mandatory.isEmpty {
+                    Text("Requires: \(plugin.permissions.mandatory.map(\.permissionTitle).joined(separator: ", "))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Install", systemImage: "square.and.arrow.down") {
+                    installingID = plugin.id
+                    Task {
+                        _ = await model.installPlugin(plugin, communityID: community.id)
+                        installingID = nil
+                    }
+                }
+                .disabled(installingID != nil || community.pluginInfos.contains { $0.pluginId == plugin.pluginId })
+            }
+            .padding(.vertical, 4)
+        }
+        .overlay { if model.appStorePlugins.isEmpty { ProgressView() } }
+        .navigationTitle("App Store")
+        .searchable(text: $search, prompt: "Search apps")
+        .task(id: search) {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            await model.loadAppStorePlugins(query: search)
+        }
+    }
+}
+
+private extension String {
+    var permissionTitle: String {
+        replacingOccurrences(of: "_", with: " ").lowercased().capitalized
     }
 }
 
@@ -967,6 +1240,7 @@ private struct CommunityNewsletterSettingsView: View {
     let community: Community
     @State private var enabled: Bool
     @State private var isSaving = false
+    @State private var timeframe = "90days"
 
     init(community: Community) {
         self.community = community
@@ -979,6 +1253,26 @@ private struct CommunityNewsletterSettingsView: View {
                 Toggle("Personal newsletters", isOn: $enabled)
             } footer: {
                 Text("Allow members to opt in to personalized email updates from this community.")
+            }
+            Section("Newsletter history") {
+                Picker("Timeframe", selection: $timeframe) {
+                    Text("30 days").tag("30days")
+                    Text("90 days").tag("90days")
+                    Text("1 year").tag("1year")
+                }
+                ForEach(model.communityNewsletterHistory[community.id] ?? []) { entry in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.title)
+                        Text(entry.sentAsNewsletter.map { "Sent \($0)" } ?? "Queued")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if model.communityNewsletterHistory[community.id]?.isEmpty == true {
+                    Text("No deliveries in this timeframe, or newsletters are not enabled for this instance.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .navigationTitle("Newsletters")
@@ -999,6 +1293,9 @@ private struct CommunityNewsletterSettingsView: View {
             }
         }
         .overlay { if isSaving { ProgressView() } }
+        .task(id: timeframe) {
+            await model.loadCommunityNewsletterHistory(communityID: community.id, timeframe: timeframe)
+        }
     }
 }
 
@@ -1381,6 +1678,7 @@ private struct CommunityMembersSettingsView: View {
     @State private var search = ""
     @State private var selectedRoleID: String?
     @State private var roleMember: ChannelMemberEntry?
+    @State private var moderationMember: ChannelMemberEntry?
 
     private var result: CommunityMemberList? { model.communityMemberLists[community.id] }
     private var members: [ChannelMemberEntry] { (result?.online ?? []) + (result?.offline ?? []) }
@@ -1429,6 +1727,12 @@ private struct CommunityMembersSettingsView: View {
                                     .buttonStyle(.borderless)
                                 }
                             }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if community.canModerate && member.userId != model.store.ownUser?.id {
+                                    Button("Moderate") { moderationMember = member }
+                                        .tint(.orange)
+                                }
+                            }
                         } else {
                             ProgressView().frame(maxWidth: .infinity)
                         }
@@ -1462,11 +1766,66 @@ private struct CommunityMembersSettingsView: View {
                 CommunityMemberRoleEditor(community: community, member: member)
             }
         }
+        .sheet(item: $moderationMember) { member in
+            NavigationStack {
+                CommunityMemberModerationView(community: community, member: member)
+            }
+        }
     }
 
     private func roleNames(_ ids: [String]) -> String {
         let names = community.roleInfos.filter { ids.contains($0.id) }.map(\.title)
         return names.isEmpty ? "Member" : names.joined(separator: ", ")
+    }
+}
+
+private struct CommunityMemberModerationView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    let member: ChannelMemberEntry
+    @State private var isSaving = false
+
+    private var userName: String {
+        model.store.users[member.userId]?.displayName ?? "Member"
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Choose a moderation action for \(userName). The change applies immediately across the community.")
+            }
+            Section("Mute chat") {
+                Button("Mute for 24 hours") { apply(state: "CHAT_MUTED", days: 1) }
+                Button("Mute for 7 days") { apply(state: "CHAT_MUTED", days: 7) }
+            }
+            Section("Ban") {
+                Button("Ban for 24 hours", role: .destructive) { apply(state: "BANNED", days: 1) }
+                Button("Ban for 7 days", role: .destructive) { apply(state: "BANNED", days: 7) }
+                Button("Ban indefinitely", role: .destructive) { apply(state: "BANNED", days: nil) }
+            }
+        }
+        .navigationTitle("Moderate Member")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        .disabled(isSaving)
+        .overlay { if isSaving { ProgressView() } }
+    }
+
+    private func apply(state: String, days: Int?) {
+        isSaving = true
+        let until = days.map {
+            ISO8601DateFormatter().string(from: Date().addingTimeInterval(Double($0) * 86_400))
+        }
+        Task {
+            if await model.setCommunityMemberBlock(
+                communityID: community.id,
+                userID: member.userId,
+                state: state,
+                until: until
+            ) { dismiss() }
+            isSaving = false
+        }
     }
 }
 
@@ -1592,6 +1951,17 @@ private struct CommunityChannelsSettingsView: View {
 
     var body: some View {
         List {
+            if current.canManageChannels && !current.areaInfos.isEmpty {
+                Section("Areas") {
+                    ForEach(current.areaInfos) { area in
+                        NavigationLink {
+                            CommunityAreaEditor(community: current, area: area)
+                        } label: {
+                            LabeledContent(area.title, value: "Order \(area.order + 1)")
+                        }
+                    }
+                }
+            }
             channelSection(title: "Uncategorized", areaID: nil)
             ForEach(current.areaInfos) { area in
                 channelSection(title: area.title, areaID: area.id)
@@ -1663,6 +2033,70 @@ private struct CommunityChannelsSettingsView: View {
     }
 }
 
+private struct CommunityAreaEditor: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    let area: CommunityAreaInfo
+    @State private var title: String
+    @State private var order: Int
+    @State private var confirmingDelete = false
+    @State private var isSaving = false
+
+    init(community: Community, area: CommunityAreaInfo) {
+        self.community = community
+        self.area = area
+        _title = State(initialValue: area.title)
+        _order = State(initialValue: area.order)
+    }
+
+    var body: some View {
+        Form {
+            Section("Area") {
+                TextField("Name", text: $title)
+                Stepper("Position \(order + 1)", value: $order, in: 0...max(0, community.areaInfos.count - 1))
+            }
+            Section {
+                Button("Delete Area", role: .destructive) { confirmingDelete = true }
+                    .disabled(community.channels.contains { $0.areaId == area.id })
+            } footer: {
+                if community.channels.contains(where: { $0.areaId == area.id }) {
+                    Text("Move or delete every channel in this area before deleting it.")
+                }
+            }
+        }
+        .navigationTitle(area.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    isSaving = true
+                    Task {
+                        if await model.saveCommunityArea(
+                            communityID: community.id,
+                            areaID: area.id,
+                            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                            order: order
+                        ) { dismiss() }
+                        isSaving = false
+                    }
+                }
+                .disabled(isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .confirmationDialog("Delete \(area.title)?", isPresented: $confirmingDelete) {
+            Button("Delete Area", role: .destructive) {
+                Task {
+                    if await model.deleteCommunityArea(communityID: community.id, areaID: area.id) {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .overlay { if isSaving { ProgressView() } }
+    }
+}
+
 private struct CommunityChannelEditor: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -1673,6 +2107,7 @@ private struct CommunityChannelEditor: View {
     @State private var emoji: String
     @State private var url: String
     @State private var areaID: String?
+    @State private var order: Int
     @State private var access: [String: Set<String>]
     @State private var isSaving = false
     @State private var confirmingDelete = false
@@ -1687,11 +2122,16 @@ private struct CommunityChannelEditor: View {
     init(community: Community, channel: Channel?) {
         self.community = community
         self.channel = channel
+        let initialAreaID = channel?.areaId ?? community.areaInfos.first?.id
         _title = State(initialValue: channel?.title ?? "")
         _description = State(initialValue: channel?.description ?? "")
         _emoji = State(initialValue: channel?.emoji ?? "💬")
         _url = State(initialValue: channel?.url ?? "")
-        _areaID = State(initialValue: channel?.areaId ?? community.areaInfos.first?.id)
+        _areaID = State(initialValue: initialAreaID)
+        _order = State(
+            initialValue: channel?.order
+                ?? ((community.channels.filter { $0.areaId == initialAreaID }.map(\.order).max() ?? -1) + 1)
+        )
         var initial = Dictionary(uniqueKeysWithValues: (channel?.roleAccess ?? []).map {
             ($0.roleId, Set($0.permissions))
         })
@@ -1722,6 +2162,11 @@ private struct CommunityChannelEditor: View {
                         Text(area.title).tag(String?.some(area.id))
                     }
                 }
+                Stepper(
+                    "Position \(order + 1)",
+                    value: $order,
+                    in: 0...max(0, community.channels.filter { $0.areaId == areaID }.count)
+                )
             }
 
             ForEach(community.roleInfos) { role in
@@ -1792,7 +2237,7 @@ private struct CommunityChannelEditor: View {
                 areaID: areaID,
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                 url: url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : url,
-                order: channel?.order ?? ((community.channels.filter { $0.areaId == areaID }.map(\.order).max() ?? -1) + 1),
+                order: order,
                 description: description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : description,
                 emoji: emoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "💬" : emoji,
                 roleAccess: roleAccess
@@ -1858,6 +2303,11 @@ private struct CommunityRoleEditor: View {
     @State private var title: String
     @State private var description: String
     @State private var permissions: Set<String>
+    @State private var assignmentMode: String
+    @State private var tokenContractID: String
+    @State private var tokenType: String
+    @State private var tokenAmount: String
+    @State private var tokenID: String
     @State private var isSaving = false
     @State private var confirmingDelete = false
 
@@ -1880,6 +2330,15 @@ private struct CommunityRoleEditor: View {
         _title = State(initialValue: role.title)
         _description = State(initialValue: role.description ?? "")
         _permissions = State(initialValue: Set(role.permissions))
+        let assignment = role.assignmentRules?.objectValue ?? [:]
+        let rules = assignment["rules"]?.objectValue ?? [:]
+        let rule = rules["rule1"]?.objectValue ?? [:]
+        let mode = assignment["type"]?.stringValue ?? "manual"
+        _assignmentMode = State(initialValue: mode)
+        _tokenContractID = State(initialValue: rule["contractId"]?.stringValue ?? community.tokenInfos.first?.contractId ?? "")
+        _tokenType = State(initialValue: rule["type"]?.stringValue ?? "ERC20")
+        _tokenAmount = State(initialValue: rule["amount"]?.stringValue ?? "1")
+        _tokenID = State(initialValue: rule["tokenId"]?.stringValue ?? "0")
     }
 
     private var isAdmin: Bool { role.title == "Admin" }
@@ -1905,6 +2364,44 @@ private struct CommunityRoleEditor: View {
             }
             if isCustom {
                 Section {
+                    Picker("Assignment", selection: $assignmentMode) {
+                        Text("Assigned by moderators").tag("manual")
+                        Text("Claimable by anyone").tag("free")
+                        Text("Token gated").tag("token")
+                    }
+                    if assignmentMode == "token" {
+                        if community.tokenInfos.isEmpty {
+                            Label("Add a token contract in Token settings first.", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                        } else {
+                            Picker("Contract", selection: $tokenContractID) {
+                                ForEach(community.tokenInfos) { token in
+                                    Text(token.contractId).tag(token.contractId)
+                                }
+                            }
+                            Picker("Token standard", selection: $tokenType) {
+                                Text("ERC-20").tag("ERC20")
+                                Text("ERC-721").tag("ERC721")
+                                Text("ERC-1155").tag("ERC1155")
+                                Text("LSP-7").tag("LSP7")
+                                Text("LSP-8").tag("LSP8")
+                            }
+                            TextField("Minimum amount", text: $tokenAmount)
+                                .keyboardType(.decimalPad)
+                            if tokenType == "ERC1155" {
+                                TextField("Token ID", text: $tokenID)
+                                    .keyboardType(.numberPad)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Assignment")
+                } footer: {
+                    Text("Automatic roles are claimed by members when they meet the configured rule; moderators can still manage manual roles directly.")
+                }
+            }
+            if isCustom {
+                Section {
                     Button("Delete Role", role: .destructive) { confirmingDelete = true }
                 }
             }
@@ -1913,7 +2410,11 @@ private struct CommunityRoleEditor: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { save() }.disabled(isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Save") { save() }.disabled(
+                    isSaving
+                        || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || (assignmentMode == "token" && tokenContractID.isEmpty)
+                )
             }
         }
         .overlay { if isSaving { ProgressView() } }
@@ -1931,12 +2432,34 @@ private struct CommunityRoleEditor: View {
     private func save() {
         isSaving = true
         Task {
+            let assignmentRules: JSONValue?
+            switch assignmentMode {
+            case "free":
+                assignmentRules = .object(["type": .string("free")])
+            case "token":
+                var rule: [String: JSONValue] = [
+                    "type": .string(tokenType),
+                    "contractId": .string(tokenContractID),
+                    "amount": .string(tokenAmount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "1" : tokenAmount),
+                ]
+                if tokenType == "ERC1155" {
+                    rule["tokenId"] = .string(tokenID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "0" : tokenID)
+                }
+                assignmentRules = .object([
+                    "type": .string("token"),
+                    "rules": .object(["rule1": .object(rule)]),
+                ])
+            default:
+                assignmentRules = nil
+            }
             let saved = await model.updateCommunityRole(
                 communityID: community.id,
                 roleID: role.id,
                 title: isCustom ? title.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
                 description: description,
-                permissions: isAdmin ? nil : Array(permissions).sorted()
+                permissions: isAdmin ? nil : Array(permissions).sorted(),
+                type: isCustom ? (assignmentMode == "manual" ? "CUSTOM_MANUAL_ASSIGN" : "CUSTOM_AUTO_ASSIGN") : nil,
+                assignmentRules: isCustom ? assignmentRules : nil
             )
             isSaving = false
             if saved { dismiss() }
@@ -2357,6 +2880,7 @@ private struct ArticleReaderView: View {
     @State private var isSendingComment = false
     @State private var showEditor = false
     @State private var confirmDelete = false
+    @State private var confirmNewsletter = false
 
     private var article: ArticleDetail? { model.articleDetails[articleID] }
     private var comments: [Message] {
@@ -2496,6 +3020,11 @@ private struct ArticleReaderView: View {
                     ToolbarItem(placement: .primaryAction) {
                         Menu("Manage article", systemImage: "ellipsis.circle") {
                             Button("Edit article", systemImage: "pencil") { showEditor = true }
+                            if case .community = source, !isDraft {
+                                Button("Send as newsletter", systemImage: "envelope") {
+                                    confirmNewsletter = true
+                                }
+                            }
                             Button("Delete article", systemImage: "trash", role: .destructive) {
                                 confirmDelete = true
                             }
@@ -2545,6 +3074,20 @@ private struct ArticleReaderView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This removes the article and its public link.")
+            }
+            .confirmationDialog("Send this article as a newsletter?", isPresented: $confirmNewsletter) {
+                Button("Queue Newsletter") {
+                    guard case .community(let communityID) = source else { return }
+                    Task {
+                        _ = await model.sendCommunityArticleAsNewsletter(
+                            communityID: communityID,
+                            articleID: articleID
+                        )
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This queues email delivery to subscribed members. Delivery cannot be recalled from the app.")
             }
             .onDisappear {
                 guard let article else { return }
@@ -3263,6 +3806,11 @@ private enum ConversationContext {
         case .chat(let chat): .chat(chat.id, channelId: chat.channelId)
         }
     }
+
+    var channel: Channel? {
+        if case .channel(let channel) = self { return channel }
+        return nil
+    }
 }
 
 private struct ConversationView: View {
@@ -3275,6 +3823,11 @@ private struct ConversationView: View {
     @State private var showMentionPicker = false
     @State private var selectedUser: UserProfile?
     @State private var showParticipants = false
+    @State private var showSearch = false
+    @State private var showSaved = false
+    @State private var showGallery = false
+    @State private var showGIFPicker = false
+    @State private var threadRoot: Message?
     @GestureState private var participantDrag: CGFloat = 0
 
     private var messages: [Message] {
@@ -3332,11 +3885,15 @@ private struct ConversationView: View {
         .navigationTitle(context.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Channel participants", systemImage: "person.2") {
-                    showParticipants.toggle()
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("Search messages", systemImage: "magnifyingglass") { showSearch = true }
+                Menu("Conversation options", systemImage: "ellipsis.circle") {
+                    Button("Channel participants", systemImage: "person.2") {
+                        showParticipants.toggle()
+                    }
+                    Button("Saved messages", systemImage: "bookmark") { showSaved = true }
+                    Button("Media gallery", systemImage: "photo.on.rectangle") { showGallery = true }
                 }
-                .accessibilityHint("Swipe left in the conversation to reveal this panel")
             }
         }
         .task(id: "\(context.channelID):\(model.focusedMessageID ?? "")") { await load() }
@@ -3353,6 +3910,45 @@ private struct ConversationView: View {
                 showMentionPicker = false
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showSearch) {
+            MessageSearchView(title: context.title, messages: messages, store: store) { id in
+                model.focusMessage(id)
+                showSearch = false
+            }
+        }
+        .sheet(isPresented: $showSaved) {
+            MessageSearchView(
+                title: "Saved Messages",
+                messages: messages.filter { store.savedMessageIDs.contains($0.id) },
+                store: store,
+                searchEnabled: false
+            ) { id in
+                model.focusMessage(id)
+                showSaved = false
+            }
+        }
+        .sheet(isPresented: $showGallery) {
+            MessageGalleryView(messages: messages)
+        }
+        .sheet(isPresented: $showGIFPicker) {
+            GIFPickerView { gif in
+                Task {
+                    if await model.selectGIF(gif) {
+                        showGIFPicker = false
+                    }
+                }
+            }
+        }
+        .sheet(item: $threadRoot) { root in
+            MessageThreadView(
+                root: root,
+                replies: messages.filter { $0.parentMessageId == root.id },
+                store: store
+            ) {
+                threadRoot = nil
+                model.beginReply(to: root)
+            }
         }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
@@ -3388,7 +3984,31 @@ private struct ConversationView: View {
         let orderedMessages = messages
         let messageIndex = Dictionary(uniqueKeysWithValues: orderedMessages.map { ($0.id, $0) })
         let messageIDs = orderedMessages.map(\.id)
+        let firstUnreadID = firstUnreadMessageID(in: orderedMessages)
         return VStack(spacing: 0) {
+            if let channel = context.channel, let pins = channel.pinnedMessageIds, !pins.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(pins, id: \.self) { id in
+                            if let message = messageIndex[id] {
+                                Button {
+                                    model.focusMessage(id)
+                                } label: {
+                                    Label(message.body.plainText, systemImage: "pin.fill")
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 7)
+                                        .background(AppTheme.accent.opacity(0.12), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                }
+                Divider()
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
@@ -3402,6 +4022,16 @@ private struct ConversationView: View {
                             .padding(.vertical, 60)
                         }
                         ForEach(orderedMessages) { message in
+                            if message.id == firstUnreadID {
+                                HStack {
+                                    Rectangle().frame(height: 1)
+                                    Text("New messages").font(.caption.bold())
+                                    Rectangle().frame(height: 1)
+                                }
+                                .foregroundStyle(AppTheme.accent)
+                            }
+                            let previewURL = AppModel.firstURL(in: message.body.plainText)
+                            let preview = previewURL.flatMap { model.linkPreviews[$0] }
                             MessageRow(
                                 message: message,
                                 pending: store.pendingMessages[message.id],
@@ -3414,6 +4044,8 @@ private struct ConversationView: View {
                                 attachmentURL: message.imageAttachments.first.flatMap {
                                     model.attachmentURLs[$0.largeImageId] ?? model.attachmentURLs[$0.imageId]
                                 },
+                                linkPreview: preview,
+                                linkPreviewImageURL: preview?.imageId.flatMap { model.attachmentURLs[$0] },
                                 openProfile: {
                                     selectedUser = store.users[message.creatorId]
                                 },
@@ -3433,7 +4065,28 @@ private struct ConversationView: View {
                                     )
                                 },
                                 retry: { Task { await model.retryPendingMessage(message.id) } },
-                                discard: { model.discardPendingMessage(message.id) }
+                                discard: { model.discardPendingMessage(message.id) },
+                                focusParent: { parentID in model.focusMessage(parentID) },
+                                isSaved: store.savedMessageIDs.contains(message.id),
+                                toggleSaved: {
+                                    model.setMessageSaved(
+                                        message,
+                                        saved: !store.savedMessageIDs.contains(message.id)
+                                    )
+                                },
+                                isPinned: context.channel?.pinnedMessageIds?.contains(message.id) == true,
+                                canPin: context.channel != nil,
+                                togglePinned: {
+                                    guard let channel = context.channel else { return }
+                                    Task {
+                                        await model.setMessagePinned(
+                                            message,
+                                            channel: channel,
+                                            pinned: channel.pinnedMessageIds?.contains(message.id) != true
+                                        )
+                                    }
+                                },
+                                viewThread: { threadRoot = message }
                             )
                             .padding(8)
                             .background(
@@ -3463,6 +4116,10 @@ private struct ConversationView: View {
                             )
                         }
                     }
+                }
+                .onChange(of: model.focusedMessageID) { _, target in
+                    guard let target, messageIDs.contains(target) else { return }
+                    withAnimation { proxy.scrollTo(target, anchor: .center) }
                 }
             }
 
@@ -3503,6 +4160,14 @@ private struct ConversationView: View {
                     .disabled(model.editingMessage != nil || model.isUploadingAttachment)
                     .accessibilityLabel("Attach image")
 
+                    if model.instanceConfig?.giphyApiKey?.isEmpty == false {
+                        Button("GIF") { showGIFPicker = true }
+                            .font(.caption.bold())
+                            .frame(width: 34, height: 42)
+                            .disabled(model.editingMessage != nil || model.isUploadingAttachment)
+                            .accessibilityLabel("Choose a GIF")
+                    }
+
                     Button("Mention someone", systemImage: "at") {
                         showMentionPicker = true
                     }
@@ -3536,6 +4201,20 @@ private struct ConversationView: View {
             .padding(12)
             .frame(maxWidth: .infinity)
         }
+    }
+
+    private func firstUnreadMessageID(in messages: [Message]) -> String? {
+        guard let lastRead = context.channel?.lastRead,
+              let lastReadDate = Self.parseDate(lastRead) else { return nil }
+        return messages.first { message in
+            Self.parseDate(message.createdAt).map { $0 > lastReadDate } ?? false
+        }?.id
+    }
+
+    private static func parseDate(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
     private func load() async {
@@ -3829,6 +4508,237 @@ private struct ComposerContextBanner: View {
     }
 }
 
+private struct MessageSearchView: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let messages: [Message]
+    @ObservedObject var store: SyncStore
+    var searchEnabled = true
+    let select: (String) -> Void
+    @State private var query = ""
+
+    private var results: [Message] {
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard searchEnabled && !value.isEmpty else { return Array(messages.reversed()) }
+        return Array(messages.filter {
+            $0.body.plainText.localizedCaseInsensitiveContains(value)
+                || (store.users[$0.creatorId]?.displayName.localizedCaseInsensitiveContains(value) ?? false)
+        }.reversed())
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(results) { message in
+                Button {
+                    select(message.id)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(store.users[message.creatorId]?.displayName ?? "Member")
+                            .font(.caption.bold())
+                            .foregroundStyle(AppTheme.accent)
+                        Text(message.body.plainText).lineLimit(3).foregroundStyle(.primary)
+                    }
+                }
+            }
+            .overlay {
+                if results.isEmpty {
+                    ContentUnavailableView(
+                        searchEnabled ? "No matching messages" : "No saved messages",
+                        systemImage: searchEnabled ? "magnifyingglass" : "bookmark"
+                    )
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .searchable(text: $query, prompt: "Search messages")
+        }
+    }
+}
+
+private struct MessageGalleryView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let messages: [Message]
+
+    private var attachments: [MessageImageAttachment] {
+        messages.flatMap(\.imageAttachments)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 3)], spacing: 3) {
+                    ForEach(Array(attachments.enumerated()), id: \.offset) { _, attachment in
+                        let url = model.attachmentURLs[attachment.largeImageId]
+                            ?? model.attachmentURLs[attachment.imageId]
+                        AsyncImage(url: url) { image in
+                            image.resizable().scaledToFill()
+                        } placeholder: {
+                            Color.secondary.opacity(0.1).overlay { ProgressView() }
+                        }
+                        .frame(minHeight: 140)
+                        .aspectRatio(1, contentMode: .fill)
+                        .clipped()
+                    }
+                }
+            }
+            .overlay {
+                if attachments.isEmpty {
+                    ContentUnavailableView("No shared images", systemImage: "photo.on.rectangle")
+                }
+            }
+            .navigationTitle("Media")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+}
+
+private struct GIFPickerView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    let select: (GIFSearchResult) -> Void
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 116), spacing: 8)
+    ]
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ContentUnavailableView(
+                        "Find a GIF",
+                        systemImage: "sparkles.rectangle.stack",
+                        description: Text("Search GIPHY, then tap a result to attach it to your message.")
+                    )
+                } else if model.gifResults.isEmpty && !model.isSearchingGIFs {
+                    ContentUnavailableView.search(text: query)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 8) {
+                            ForEach(model.gifResults) { gif in
+                                Button { select(gif) } label: {
+                                    AsyncImage(url: gif.previewURL) { phase in
+                                        switch phase {
+                                        case .success(let image):
+                                            image.resizable().scaledToFill()
+                                        case .failure:
+                                            Color.secondary.opacity(0.12)
+                                                .overlay { Image(systemName: "photo.badge.exclamationmark") }
+                                        default:
+                                            Color.secondary.opacity(0.08)
+                                                .overlay { ProgressView() }
+                                        }
+                                    }
+                                    .frame(height: 116)
+                                    .frame(maxWidth: .infinity)
+                                    .clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(gif.title.isEmpty ? "GIF result" : gif.title)
+                            }
+                        }
+                        .padding()
+                    }
+                }
+            }
+            .overlay {
+                if model.isSearchingGIFs { ProgressView().controlSize(.large) }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Text("Powered by GIPHY")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(.bar)
+            }
+            .navigationTitle("GIFs")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $query, prompt: "Search GIPHY")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .task(id: query) {
+                guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    await model.searchGIFs(query: "")
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+                await model.searchGIFs(query: query)
+            }
+        }
+    }
+}
+
+private struct MessageThreadView: View {
+    @Environment(\.dismiss) private var dismiss
+    let root: Message
+    let replies: [Message]
+    @ObservedObject var store: SyncStore
+    let reply: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Original message") {
+                    threadRow(root)
+                }
+                Section("Replies · \(replies.count)") {
+                    if replies.isEmpty {
+                        Text("No replies yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(replies) { message in threadRow(message) }
+                    }
+                }
+            }
+            .navigationTitle("Thread")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    dismiss()
+                    reply()
+                } label: {
+                    Label("Reply in thread", systemImage: "arrowshape.turn.up.left")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.accent)
+                .padding()
+                .background(.bar)
+            }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func threadRow(_ message: Message) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(store.users[message.creatorId]?.displayName ?? "Member")
+                    .font(.subheadline.bold())
+                Spacer()
+                Text(message.createdAt)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(message.body.plainText)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 private struct MessageRow: View {
     let message: Message
     let pending: PendingMessage?
@@ -3837,6 +4747,8 @@ private struct MessageRow: View {
     let avatarURL: URL?
     let parent: Message?
     let attachmentURL: URL?
+    let linkPreview: URLPreview?
+    let linkPreviewImageURL: URL?
     let openProfile: () -> Void
     let reply: () -> Void
     let edit: () -> Void
@@ -3845,6 +4757,13 @@ private struct MessageRow: View {
     let report: () -> Void
     let retry: () -> Void
     let discard: () -> Void
+    let focusParent: (String) -> Void
+    let isSaved: Bool
+    let toggleSaved: () -> Void
+    let isPinned: Bool
+    let canPin: Bool
+    let togglePinned: () -> Void
+    let viewThread: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
@@ -3887,13 +4806,18 @@ private struct MessageRow: View {
                     }
                 }
                 if let parent {
-                    HStack(spacing: 6) {
-                        Rectangle().fill(AppTheme.accent).frame(width: 2)
-                        Text(parent.body.plainText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                    Button {
+                        focusParent(parent.id)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Rectangle().fill(AppTheme.accent).frame(width: 2)
+                            Text(parent.body.plainText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
                     }
+                    .buttonStyle(.plain)
                     .padding(.vertical, 2)
                 } else if message.parentMessageId != nil {
                     Label("Earlier message", systemImage: "arrowshape.turn.up.left")
@@ -3903,6 +4827,35 @@ private struct MessageRow: View {
                 Text(message.body.plainText)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if let linkPreview, let destination = URL(string: linkPreview.url) {
+                    Link(destination: destination) {
+                        HStack(spacing: 12) {
+                            if let linkPreviewImageURL {
+                                AsyncImage(url: linkPreviewImageURL) { image in
+                                    image.resizable().scaledToFill()
+                                } placeholder: {
+                                    Color.secondary.opacity(0.1)
+                                }
+                                .frame(width: 82, height: 72)
+                                .clipped()
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(linkPreview.title).font(.subheadline.bold()).lineLimit(2)
+                                Text(linkPreview.description)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                Text(destination.host ?? destination.absoluteString)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(10)
+                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                }
                 if let attachmentURL {
                     AsyncImage(url: attachmentURL) { phase in
                         switch phase {
@@ -3945,6 +4898,11 @@ private struct MessageRow: View {
                 Button("Discard message", systemImage: "trash", role: .destructive, action: discard)
             } else {
                 Button("Reply", systemImage: "arrowshape.turn.up.left", action: reply)
+                Button("View replies", systemImage: "bubble.left.and.bubble.right", action: viewThread)
+                Button(isSaved ? "Remove from Saved" : "Save Message", systemImage: isSaved ? "bookmark.slash" : "bookmark", action: toggleSaved)
+                if canPin {
+                    Button(isPinned ? "Unpin Message" : "Pin Message", systemImage: isPinned ? "pin.slash" : "pin", action: togglePinned)
+                }
                 Menu("React", systemImage: "face.smiling") {
                     ForEach(["👍", "❤️", "😂", "🎉", "👀"], id: \.self) { emoji in
                         Button(emoji) { react(message.ownReaction == emoji ? nil : emoji) }

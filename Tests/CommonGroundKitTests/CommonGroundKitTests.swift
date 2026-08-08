@@ -580,6 +580,179 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertTrue(messagesAfter.isEmpty)
     }
 
+    func testMessageDeltaAndURLPreviewContracts() async throws {
+        let access = MessageAccess.community("community-1", channelId: "channel-1")
+        let api = MessageAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = try XCTUnwrap(request.url?.path)
+            routes.append(path)
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            switch path {
+            case "/api/v2/Message/loadUpdates":
+                XCTAssertEqual(object["createdStart"] as? String, "2026-08-08T10:00:00.000Z")
+                XCTAssertEqual(object["createdEnd"] as? String, "2026-08-08T11:00:00.000Z")
+                XCTAssertEqual(object["updatedAfter"] as? String, "2026-08-08T10:30:00.000Z")
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":{"updated":[],"deleted":["message-1"]}}"#
+                )
+            case "/api/v2/Message/getUrlPreview":
+                XCTAssertEqual(object["url"] as? String, "https://example.com/story")
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":{"title":"Story","description":"Preview","imageId":"image-1","url":"https://example.com/story"}}"#
+                )
+            default:
+                XCTFail("Unexpected route \(path)")
+                return Self.response(request, status: 404, body: #"{"status":"ERROR"}"#)
+            }
+        }
+
+        let updates = try await api.updates(
+            access: access,
+            createdStart: "2026-08-08T10:00:00.000Z",
+            createdEnd: "2026-08-08T11:00:00.000Z",
+            updatedAfter: "2026-08-08T10:30:00.000Z"
+        )
+        XCTAssertEqual(updates.deleted, ["message-1"])
+        let preview = try await api.urlPreview("https://example.com/story")
+        XCTAssertEqual(preview.title, "Story")
+        XCTAssertEqual(preview.imageId, "image-1")
+        XCTAssertEqual(routes, ["/api/v2/Message/loadUpdates", "/api/v2/Message/getUrlPreview"])
+    }
+
+    func testCommunityExtensionsAndPluginContracts() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = try XCTUnwrap(request.url?.path)
+            routes.append(path)
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request))) as? [String: Any]
+            )
+            switch path {
+            case "/api/v2/Community/updateChannel":
+                XCTAssertEqual(object["pinnedMessageIds"] as? [String], ["m1", "m2"])
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/addCommunityToken":
+                XCTAssertEqual(object["contractId"] as? String, "token-1")
+                XCTAssertEqual(object["order"] as? Int, 2)
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/removeCommunityToken":
+                XCTAssertEqual(object["contractId"] as? String, "token-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/buyCommunityPremiumFeature":
+                XCTAssertEqual(object["featureName"] as? String, "PRO")
+                XCTAssertEqual(object["duration"] as? String, "year")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/setPremiumFeatureAutoRenew":
+                XCTAssertEqual(object["featureName"] as? String, "PRO")
+                XCTAssertEqual(object["autoRenew"] as? String, "YEAR")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/updateRole":
+                XCTAssertEqual(object["type"] as? String, "CUSTOM_AUTO_ASSIGN")
+                let assignment = try XCTUnwrap(object["assignmentRules"] as? [String: Any])
+                XCTAssertEqual(assignment["type"] as? String, "token")
+                let rules = try XCTUnwrap(assignment["rules"] as? [String: Any])
+                let rule = try XCTUnwrap(rules["rule1"] as? [String: Any])
+                XCTAssertEqual(rule["contractId"] as? String, "token-1")
+                XCTAssertEqual(rule["amount"] as? String, "10")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/getNewsletterHistory":
+                XCTAssertEqual(object["timeframe"] as? String, "90days")
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":{"entries":[{"id":"article-1","title":"Update","creatorId":"user-1","markAsNewsletter":true,"sentAsNewsletter":null,"url":"update"}]}}"#
+                )
+            case "/api/v2/Community/sendArticleAsEmail":
+                XCTAssertEqual(object["articleId"] as? String, "article-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Plugins/getAppstorePlugins":
+                XCTAssertEqual(object["query"] as? String, "calendar")
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":{"plugins":[{"pluginId":"plugin-1","ownerCommunityId":"owner-1","url":"https://app.example","description":"Calendar","permissions":{"mandatory":["COMMUNITY_INFO"],"optional":["USER_INFO"]},"imageId":null,"name":"Calendar","communityCount":"4","appstoreEnabled":true,"tags":["productivity"]}]}}"#
+                )
+            case "/api/v2/Plugins/clonePlugin":
+                XCTAssertEqual(object["copiedFromCommunityId"] as? String, "owner-1")
+                XCTAssertEqual(object["targetCommunityId"] as? String, "community-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":{"ok":true}}"#)
+            case "/api/v2/Plugins/acceptPluginPermissions":
+                XCTAssertEqual(object["pluginId"] as? String, "installed-1")
+                XCTAssertEqual(object["permissions"] as? [String], ["COMMUNITY_INFO", "USER_INFO"])
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":{"ok":true}}"#)
+            case "/api/v2/Plugins/deletePlugin":
+                XCTAssertEqual(object["id"] as? String, "installed-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":{"ok":true}}"#)
+            default:
+                XCTFail("Unexpected route \(path)")
+                return Self.response(request, status: 404, body: #"{"status":"ERROR"}"#)
+            }
+        }
+        let transport = HTTPTransport(
+            baseURL: URL(string: "https://example.org")!,
+            sessionConfiguration: configuration()
+        )
+        let community = CommunityAPI(transport: transport)
+        let plugins = PluginAPI(transport: transport)
+        try await community.setPinnedMessages(
+            communityID: "community-1",
+            channelID: "channel-1",
+            messageIDs: ["m1", "m2", "m3"]
+        )
+        try await community.addToken(communityID: "community-1", contractID: "token-1", order: 2)
+        try await community.removeToken(communityID: "community-1", contractID: "token-1")
+        try await community.buyPremium(communityID: "community-1", feature: "PRO", duration: "year")
+        try await community.setPremiumAutoRenew(
+            communityID: "community-1",
+            feature: "PRO",
+            autoRenew: "YEAR"
+        )
+        try await community.updateRole(
+            communityID: "community-1",
+            roleID: "role-1",
+            title: "Holders",
+            description: "Token holders",
+            permissions: ["COMMUNITY_MANAGE_ARTICLES"],
+            type: "CUSTOM_AUTO_ASSIGN",
+            assignmentRules: .object([
+                "type": .string("token"),
+                "rules": .object([
+                    "rule1": .object([
+                        "type": .string("ERC20"),
+                        "contractId": .string("token-1"),
+                        "amount": .string("10"),
+                    ]),
+                ]),
+            ])
+        )
+        let history = try await community.newsletterHistory(
+            communityID: "community-1",
+            timeframe: "90days"
+        )
+        XCTAssertEqual(history.first?.title, "Update")
+        try await community.sendArticleAsNewsletter(communityID: "community-1", articleID: "article-1")
+        let catalog = try await plugins.appStore(query: "calendar")
+        XCTAssertEqual(catalog.first?.communityCount, 4)
+        try await plugins.install(pluginID: "plugin-1", ownerCommunityID: "owner-1", communityID: "community-1")
+        try await plugins.acceptPermissions(
+            pluginID: "installed-1",
+            permissions: ["COMMUNITY_INFO", "USER_INFO"]
+        )
+        try await plugins.remove(id: "installed-1")
+        XCTAssertEqual(routes.count, 12)
+    }
+
     func testNotificationDestinationsAndPersistence() throws {
         func notification(_ json: String) throws -> AppNotification {
             try JSONDecoder().decode(AppNotification.self, from: Data(json.utf8))

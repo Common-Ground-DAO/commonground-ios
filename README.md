@@ -25,6 +25,15 @@ The first protocol spine is implemented end-to-end:
 - public community discovery/create/join/leave and community, user, and message reporting are API-backed;
 - replies, structured mentions, reactions, editing/deletion, image upload, and signed attachment rendering are native messaging features;
 - Spark balances and non-refundable community contributions are native, alongside configurable community bot policy;
+- account-scoped SQLite persistence provides offline launch, cached communities/chats/messages/users/notifications,
+  durable per-conversation drafts, and a retryable message outbox;
+- realtime reconnect performs in-band reauthentication, delta message reconciliation, structural refreshes,
+  notification replay deduplication, and stable ISO timestamp ordering;
+- community administration covers general assets/info, premium and renewal, onboarding/applications,
+  newsletters, members and timed moderation, bans, channels/areas, roles and permissions, tokens,
+  bots, and Common Ground app installation/permissions/removal;
+- messaging includes local search, saved messages, pinned messages, first-unread markers,
+  reply-thread navigation, URL previews, GIPHY search, image galleries, and offline-aware sends;
 - own REST writes are applied locally because the server deliberately sends no same-device echo.
 
 The SDK is a standalone Swift package in `Sources/CommonGroundKit`; views contain no protocol code.
@@ -62,6 +71,7 @@ CommonGroundKit (Swift package)
         ├── Transport / instance config
         ├── Secure-Enclave identity / auth / ALTCHA
         ├── Socket.IO event routing / normalized store
+        ├── SQLite cache, drafts, and durable outbox
         └── Typed social domain APIs
 ```
 

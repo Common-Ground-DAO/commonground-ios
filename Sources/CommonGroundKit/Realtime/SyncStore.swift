@@ -11,6 +11,7 @@ public final class SyncStore: ObservableObject {
     @Published public private(set) var notifications: [String: AppNotification] = [:]
     @Published public private(set) var users: [String: UserProfile] = [:]
     @Published public private(set) var pendingMessages: [String: PendingMessage] = [:]
+    @Published public private(set) var savedMessageIDs: Set<String> = []
     @Published public private(set) var unreadNotificationCount = 0
 
     private var listenerID: UUID?
@@ -37,6 +38,7 @@ public final class SyncStore: ObservableObject {
             pendingMessages[pending.id] = pending
             messages[pending.access.channelId, default: [:]][pending.id] = pending.placeholder
         }
+        savedMessageIDs.formUnion(snapshot.savedMessageIDs)
         unreadNotificationCount = max(unreadNotificationCount, snapshot.unreadNotificationCount)
     }
 
@@ -62,6 +64,7 @@ public final class SyncStore: ObservableObject {
         notifications = [:]
         users = [:]
         pendingMessages = [:]
+        savedMessageIDs = []
         unreadNotificationCount = 0
         listenerID = nil
     }
@@ -207,6 +210,20 @@ public final class SyncStore: ObservableObject {
                 try? await database.removePendingMessage(id: id)
                 try? await database.removeMessage(id: id)
             }
+        }
+    }
+
+    public func setMessageSaved(id: String, saved: Bool) {
+        if saved { savedMessageIDs.insert(id) }
+        else { savedMessageIDs.remove(id) }
+        if let database { Task { try? await database.setMessageSaved(id: id, saved: saved) } }
+    }
+
+    public func applyMessageUpdates(_ updates: MessageUpdates, channelID: String) {
+        seed(updates.updated, channelId: channelID)
+        for id in updates.deleted {
+            messages[channelID]?.removeValue(forKey: id)
+            if let database { Task { try? await database.removeMessage(id: id) } }
         }
     }
 

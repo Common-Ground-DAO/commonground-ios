@@ -392,12 +392,34 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         managementPermissions.contains("COMMUNITY_MANAGE_USER_APPLICATIONS")
     }
 
+    public var isAdmin: Bool {
+        let ownRoles = Set(myRoleIds)
+        return roles.contains { role in
+            guard let object = role.objectValue,
+                  let id = object["id"]?.stringValue,
+                  let title = object["title"]?.stringValue else { return false }
+            return title == "Admin" && ownRoles.contains(id)
+        }
+    }
+
     public var roleInfos: [CommunityRoleInfo] {
         roles.compactMap(CommunityRoleInfo.init)
     }
 
     public var areaInfos: [CommunityAreaInfo] {
         areas.compactMap(CommunityAreaInfo.init).sorted { $0.order < $1.order }
+    }
+
+    public var premiumInfo: CommunityPremiumInfo? {
+        premium.flatMap(CommunityPremiumInfo.init)
+    }
+
+    public var tokenInfos: [CommunityTokenInfo] {
+        tokens.compactMap(CommunityTokenInfo.init).sorted { $0.order < $1.order }
+    }
+
+    public var pluginInfos: [CommunityPluginInfo] {
+        plugins.compactMap(CommunityPluginInfo.init)
     }
 
     public var defaultArticleRolePermissions: [ArticleRolePermission] {
@@ -497,6 +519,110 @@ public struct CommunityAreaInfo: Identifiable, Equatable, Sendable {
         self.id = id
         self.title = title
         order = Int(object["order"]?.numberValue ?? 0)
+    }
+}
+
+public struct CommunityPremiumInfo: Equatable, Sendable {
+    public let featureName: String
+    public let activeUntil: String
+    public let autoRenew: String?
+
+    init?(_ value: JSONValue) {
+        guard let object = value.objectValue,
+              let featureName = object["featureName"]?.stringValue,
+              let activeUntil = object["activeUntil"]?.stringValue else { return nil }
+        self.featureName = featureName
+        self.activeUntil = activeUntil
+        autoRenew = object["autoRenew"]?.stringValue
+    }
+}
+
+public struct CommunityTokenInfo: Identifiable, Equatable, Sendable {
+    public let contractId: String
+    public let order: Int
+    public var id: String { contractId }
+
+    init?(_ value: JSONValue) {
+        guard let object = value.objectValue,
+              let contractId = object["contractId"]?.stringValue else { return nil }
+        self.contractId = contractId
+        order = Int(object["order"]?.numberValue ?? 0)
+    }
+}
+
+public struct CommunityNewsletterEntry: Decodable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let title: String
+    public let creatorId: String
+    public let markAsNewsletter: Bool
+    public let sentAsNewsletter: String?
+    public let url: String?
+}
+
+public struct PluginPermissionSet: Codable, Equatable, Sendable {
+    public let mandatory: [String]
+    public let optional: [String]
+}
+
+public struct CommunityPluginInfo: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let communityId: String
+    public let pluginId: String
+    public let ownerCommunityId: String
+    public let name: String
+    public let description: String?
+    public let imageId: String?
+    public let url: String
+    public let tags: [String]?
+    public let permissions: PluginPermissionSet?
+    public let acceptedPermissions: [String]?
+    public let clonable: Bool
+    public let appstoreEnabled: Bool
+    public let warnAbusive: Bool
+    public let requiresIsolationMode: Bool
+    public let reportFlagged: Bool
+
+    init?(_ value: JSONValue) {
+        guard let data = try? JSONEncoder().encode(value),
+              let decoded = try? JSONDecoder().decode(Self.self, from: data) else { return nil }
+        self = decoded
+    }
+}
+
+public struct AppStorePlugin: Codable, Equatable, Identifiable, Sendable {
+    public let pluginId: String
+    public let ownerCommunityId: String
+    public let url: String
+    public let description: String
+    public let permissions: PluginPermissionSet
+    public let imageId: String?
+    public let name: String
+    public let communityCount: Int
+    public let appstoreEnabled: Bool
+    public let tags: [String]?
+    public var id: String { pluginId }
+
+    private enum CodingKeys: String, CodingKey {
+        case pluginId, ownerCommunityId, url, description, permissions, imageId
+        case name, communityCount, appstoreEnabled, tags
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        pluginId = try container.decode(String.self, forKey: .pluginId)
+        ownerCommunityId = try container.decode(String.self, forKey: .ownerCommunityId)
+        url = try container.decode(String.self, forKey: .url)
+        description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+        permissions = try container.decode(PluginPermissionSet.self, forKey: .permissions)
+        imageId = try container.decodeIfPresent(String.self, forKey: .imageId)
+        name = try container.decode(String.self, forKey: .name)
+        if let value = try? container.decode(Int.self, forKey: .communityCount) {
+            communityCount = value
+        } else {
+            communityCount = Int(try container.decode(String.self, forKey: .communityCount)) ?? 0
+        }
+        appstoreEnabled = try container.decodeIfPresent(Bool.self, forKey: .appstoreEnabled) ?? true
+        tags = try container.decodeIfPresent([String].self, forKey: .tags)
     }
 }
 
@@ -784,4 +910,16 @@ public struct PendingMessage: Codable, Equatable, Identifiable, Sendable {
             parentMessageId: parentMessageID
         )
     }
+}
+
+public struct MessageUpdates: Decodable, Equatable, Sendable {
+    public let updated: [Message]
+    public let deleted: [String]
+}
+
+public struct URLPreview: Codable, Equatable, Sendable {
+    public let title: String
+    public let description: String
+    public let imageId: String?
+    public let url: String
 }

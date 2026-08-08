@@ -13,6 +13,41 @@ enum ArticleOwner: Equatable {
     case user(String)
 }
 
+struct GIFSearchResult: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let previewURL: URL
+    let downloadURL: URL
+}
+
+private struct GiphySearchResponse: Decodable {
+    let data: [GiphyItem]
+}
+
+private struct GiphyItem: Decodable {
+    let id: String
+    let title: String
+    let images: GiphyImages
+}
+
+private struct GiphyImages: Decodable {
+    let fixedWidthStill: GiphyRendition
+    let downsizedMedium: GiphyRendition?
+    let downsized: GiphyRendition?
+    let original: GiphyRendition
+
+    enum CodingKeys: String, CodingKey {
+        case fixedWidthStill = "fixed_width_still"
+        case downsizedMedium = "downsized_medium"
+        case downsized
+        case original
+    }
+}
+
+private struct GiphyRendition: Decodable {
+    let url: String
+}
+
 enum AppearancePreference: String, CaseIterable, Identifiable {
     case system, light, dark
     var id: String { rawValue }
@@ -71,6 +106,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var communityMemberLists: [String: CommunityMemberList] = [:]
     @Published private(set) var communityBans: [String: [CommunityBan]] = [:]
     @Published private(set) var communityPendingApprovals: [String: [CommunityPendingApproval]] = [:]
+    @Published private(set) var communityNewsletterHistory: [String: [CommunityNewsletterEntry]] = [:]
+    @Published private(set) var appStorePlugins: [AppStorePlugin] = []
+    @Published private(set) var linkPreviews: [String: URLPreview] = [:]
+    @Published private(set) var gifResults: [GIFSearchResult] = []
+    @Published private(set) var isSearchingGIFs = false
     @Published var appearance = AppearancePreference(
         rawValue: UserDefaults.standard.string(forKey: "appearancePreference") ?? ""
     ) ?? .system {
@@ -1051,6 +1091,35 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func loadCommunityNewsletterHistory(communityID: String, timeframe: String) async {
+        guard let client else { return }
+        do {
+            communityNewsletterHistory[communityID] = try await client.communities.newsletterHistory(
+                communityID: communityID,
+                timeframe: timeframe
+            )
+        } catch let error as APIError where error.code == "NOT_ALLOWED" {
+            communityNewsletterHistory[communityID] = []
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func sendCommunityArticleAsNewsletter(communityID: String, articleID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.sendArticleAsNewsletter(
+                communityID: communityID,
+                articleID: articleID
+            )
+            await loadCommunityNewsletterHistory(communityID: communityID, timeframe: "90days")
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
     func giveSpark(to communityID: String, amount: Int) async -> Bool {
         guard let client, let balance = store.ownUser?.pointBalance else { return false }
         guard amount >= 1_000 else {
@@ -1124,7 +1193,9 @@ final class AppModel: ObservableObject {
         roleID: String,
         title: String?,
         description: String?,
-        permissions: [String]?
+        permissions: [String]?,
+        type: String? = nil,
+        assignmentRules: JSONValue? = nil
     ) async -> Bool {
         guard let client else { return false }
         do {
@@ -1133,7 +1204,9 @@ final class AppModel: ObservableObject {
                 roleID: roleID,
                 title: title,
                 description: description,
-                permissions: permissions
+                permissions: permissions,
+                type: type,
+                assignmentRules: assignmentRules
             )
             await refreshCommunity(communityID)
             return true
@@ -1195,7 +1268,8 @@ final class AppModel: ObservableObject {
                 try await client.communities.updateArea(
                     communityID: communityID,
                     areaID: areaID,
-                    title: title
+                    title: title,
+                    order: order
                 )
             } else {
                 try await client.communities.createArea(
@@ -1281,6 +1355,157 @@ final class AppModel: ObservableObject {
                 channelID: channelID
             )
             await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func setCommunityMemberBlock(
+        communityID: String,
+        userID: String,
+        state: String?,
+        until: String? = nil
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.setBlockState(
+                communityID: communityID,
+                userID: userID,
+                state: state,
+                until: until
+            )
+            await loadCommunityMembers(communityID: communityID)
+            await loadCommunityBans(communityID: communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func addCommunityToken(communityID: String, contractID: String) async -> Bool {
+        guard let client,
+              let community = store.communities[communityID] else { return false }
+        do {
+            try await client.communities.addToken(
+                communityID: communityID,
+                contractID: contractID,
+                order: (community.tokenInfos.map(\.order).max() ?? -1) + 1
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func removeCommunityToken(communityID: String, contractID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.removeToken(
+                communityID: communityID,
+                contractID: contractID
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func buyCommunityPremium(
+        communityID: String,
+        feature: String,
+        duration: String
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.buyPremium(
+                communityID: communityID,
+                feature: feature,
+                duration: duration
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func setCommunityPremiumAutoRenew(
+        communityID: String,
+        feature: String,
+        autoRenew: String?
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.setPremiumAutoRenew(
+                communityID: communityID,
+                feature: feature,
+                autoRenew: autoRenew
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func loadAppStorePlugins(query: String = "") async {
+        guard let client else { return }
+        do {
+            appStorePlugins = try await client.plugins.appStore(
+                query: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : query
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func installPlugin(_ plugin: AppStorePlugin, communityID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.plugins.install(
+                pluginID: plugin.pluginId,
+                ownerCommunityID: plugin.ownerCommunityId,
+                communityID: communityID
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func removePlugin(_ plugin: CommunityPluginInfo, communityID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.plugins.remove(id: plugin.id)
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func updatePluginPermissions(
+        _ plugin: CommunityPluginInfo,
+        permissions: [String]
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.plugins.acceptPermissions(pluginID: plugin.id, permissions: permissions)
+            await refreshCommunity(plugin.communityId)
             return true
         } catch {
             errorMessage = userMessage(for: error)
@@ -1392,6 +1617,61 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func searchGIFs(query: String) async {
+        let value = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(50))
+        guard !value.isEmpty, let apiKey = instanceConfig?.giphyApiKey, !apiKey.isEmpty else {
+            gifResults = []
+            return
+        }
+        isSearchingGIFs = true
+        defer { isSearchingGIFs = false }
+        var components = URLComponents(string: "https://api.giphy.com/v1/gifs/search")
+        components?.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "q", value: value),
+            URLQueryItem(name: "limit", value: "30"),
+            URLQueryItem(name: "rating", value: "pg-13"),
+            URLQueryItem(name: "bundle", value: "messaging_non_clips"),
+        ]
+        guard let url = components?.url else { return }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true else {
+                throw URLError(.badServerResponse)
+            }
+            gifResults = try JSONDecoder().decode(GiphySearchResponse.self, from: data).data.compactMap {
+                guard let preview = URL(string: $0.images.fixedWidthStill.url),
+                      let download = URL(string:
+                        $0.images.downsizedMedium?.url
+                            ?? $0.images.downsized?.url
+                            ?? $0.images.original.url
+                      ) else { return nil }
+                return GIFSearchResult(id: $0.id, title: $0.title, previewURL: preview, downloadURL: download)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            gifResults = []
+            errorMessage = "GIF search is temporarily unavailable."
+        }
+    }
+
+    func selectGIF(_ gif: GIFSearchResult) async -> Bool {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: gif.downloadURL)
+            guard (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true,
+                  data.count <= 8 * 1_024 * 1_024 else {
+                errorMessage = "That GIF is too large to send."
+                return false
+            }
+            await uploadMessageImage(data)
+            return pendingImageAttachment != nil
+        } catch {
+            errorMessage = "That GIF could not be downloaded."
+            return false
+        }
+    }
+
     func removePendingImage() {
         pendingImageAttachment = nil
     }
@@ -1463,6 +1743,31 @@ final class AppModel: ObservableObject {
                 let (older, newer) = try await (before, after)
                 messages = older + target + newer
                 lastRead = focused.createdAt
+            } else if let first = store.orderedMessages(channelId: channelID).first,
+                      let last = store.orderedMessages(channelId: channelID).last {
+                do {
+                    async let changes = client.messages.updates(
+                        access: access,
+                        createdStart: first.createdAt,
+                        createdEnd: last.createdAt,
+                        updatedAfter: store.orderedMessages(channelId: channelID)
+                            .map(\.updatedAt).max() ?? last.updatedAt
+                    )
+                    async let newer = client.messages.load(
+                        access: access,
+                        order: .ascending,
+                        createdBefore: nil,
+                        createdAfter: last.createdAt
+                    )
+                    let (updates, appended) = try await (changes, newer)
+                    store.applyMessageUpdates(updates, channelID: channelID)
+                    store.seed(appended, channelId: channelID)
+                    messages = store.orderedMessages(channelId: channelID)
+                    lastRead = messages.last?.createdAt
+                } catch {
+                    messages = try await client.messages.load(access: access)
+                    lastRead = messages.map(\.createdAt).max()
+                }
             } else {
                 messages = try await client.messages.load(access: access)
                 lastRead = messages.map(\.createdAt).max()
@@ -1472,6 +1777,7 @@ final class AppModel: ObservableObject {
             await loadAttachmentURLs(
                 objectIDs: messages.flatMap(\.imageAttachments).flatMap { [$0.imageId, $0.largeImageId] }
             )
+            await loadLinkPreviews(for: messages)
             if let lastRead {
                 try? await client.messages.setLastRead(access: access, date: lastRead)
             }
@@ -1480,6 +1786,53 @@ final class AppModel: ObservableObject {
         } catch {
             errorMessage = userMessage(for: error)
         }
+    }
+
+    func setMessageSaved(_ message: Message, saved: Bool) {
+        store.setMessageSaved(id: message.id, saved: saved)
+    }
+
+    func setMessagePinned(_ message: Message, channel: Channel, pinned: Bool) async {
+        guard let client else { return }
+        var ids = channel.pinnedMessageIds ?? []
+        if pinned {
+            guard ids.count < 2 else {
+                errorMessage = "A channel can have at most two pinned messages. Unpin one first."
+                return
+            }
+            if !ids.contains(message.id) { ids.append(message.id) }
+        } else {
+            ids.removeAll { $0 == message.id }
+        }
+        do {
+            try await client.communities.setPinnedMessages(
+                communityID: channel.communityId,
+                channelID: channel.channelId,
+                messageIDs: ids
+            )
+            await refreshCommunity(channel.communityId)
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    private func loadLinkPreviews(for messages: [Message]) async {
+        guard let client else { return }
+        let urls = Set(messages.compactMap { Self.firstURL(in: $0.body.plainText) })
+            .subtracting(linkPreviews.keys)
+        for url in urls {
+            if let preview = try? await client.messages.urlPreview(url) {
+                linkPreviews[url] = preview
+                if let imageID = preview.imageId { await loadAttachmentURLs(objectIDs: [imageID]) }
+            }
+        }
+    }
+
+    static func firstURL(in text: String) -> String? {
+        guard let range = text.range(of: #"https?://[^\s<>]+"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(text[range]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;!?)"))
     }
 
     private func sendMessage(access: MessageAccess) async {

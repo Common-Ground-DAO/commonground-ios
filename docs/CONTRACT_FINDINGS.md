@@ -51,3 +51,11 @@ Resolved by backend PR #56 / issue #52 (reference findings F-13 and F-14), deplo
 ## N-12 — channel writes exclude the server-managed Admin role
 
 `Community/createChannel` requires a non-null `areaId`, but callers must omit the predefined Admin role from `rolePermissions`. The server rejects a supplied Admin entry with `NOT_ALLOWED` and injects its canonical full-access preset itself; `updateChannel` follows the same rule. The Swift API filters Admin defensively and the channel editor requires an area before creation. A contract test pins the outgoing role list so this does not regress into a misleading authorization error.
+
+## N-13 — offline state is account-scoped and the outbox is durable
+
+The native cache uses SQLite in WAL mode and is scoped by normalized instance URL plus user id. It stores the own-user snapshot, communities, chats, messages, hydrated users, and notifications without treating cached state as authoritative after reconnect. Drafts are keyed by conversation access, and queued sends retain their client-generated UUID so retries remain idempotent. Files use complete-until-first-user-authentication protection; logout removes the account's local database even when server logout fails. Reconnect first attempts `Message/loadUpdates` for the cached time window, applies updates/deletes, and falls back to a full history load if delta reconciliation fails.
+
+## N-14 — typing and generic files require new backend contracts
+
+There is no authenticated typing-state command/event in the current API or socket catalog. The app does not infer presence from draft text because that would be both unreliable and privacy-sensitive; backend issue #57 tracks an ephemeral, authorized, expiring contract. Likewise, uploads and message attachments currently model images only. The native gallery therefore handles image attachments, while a true document/file browser waits for the typed metadata, policy, and download semantics tracked in backend issue #58.

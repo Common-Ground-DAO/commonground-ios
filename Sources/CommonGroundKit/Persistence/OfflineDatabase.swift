@@ -9,6 +9,7 @@ public struct OfflineSnapshot: Sendable {
     public let notifications: [AppNotification]
     public let users: [UserProfile]
     public let pendingMessages: [PendingMessage]
+    public let savedMessageIDs: Set<String>
     public let unreadNotificationCount: Int
 }
 
@@ -125,6 +126,7 @@ public actor OfflineDatabase {
             notifications: try load(kind: "notification", as: AppNotification.self),
             users: try load(kind: "user", as: UserProfile.self),
             pendingMessages: try load(kind: "pendingMessage", as: PendingMessage.self),
+            savedMessageIDs: Set(try load(kind: "savedMessage", as: String.self)),
             unreadNotificationCount: Int(try stateValue(for: "unreadNotificationCount") ?? "0") ?? 0
         )
     }
@@ -182,6 +184,11 @@ public actor OfflineDatabase {
 
     public func removePendingMessage(id: String) throws {
         try remove(kind: "pendingMessage", id: id)
+    }
+
+    public func setMessageSaved(id: String, saved: Bool) throws {
+        if saved { try upsert(kind: "savedMessage", id: id, value: id) }
+        else { try remove(kind: "savedMessage", id: id) }
     }
 
     public func save(users: [UserProfile]) throws {

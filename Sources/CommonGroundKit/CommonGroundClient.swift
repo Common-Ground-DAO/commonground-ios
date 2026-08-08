@@ -13,6 +13,7 @@ public final class CommonGroundClient: @unchecked Sendable {
     public let articles: ArticleAPI
     public let reports: ReportAPI
     public let files: FileAPI
+    public let plugins: PluginAPI
 
     public init(instance: InstanceURL, sessionConfiguration: URLSessionConfiguration? = nil) {
         self.instance = instance
@@ -31,6 +32,7 @@ public final class CommonGroundClient: @unchecked Sendable {
         self.articles = ArticleAPI(transport: transport)
         self.reports = ReportAPI(transport: transport)
         self.files = FileAPI(transport: transport)
+        self.plugins = PluginAPI(transport: transport)
     }
 
     @MainActor
