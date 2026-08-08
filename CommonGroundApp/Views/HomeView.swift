@@ -26,6 +26,17 @@ private struct ReportTarget: Identifiable {
     let subject: String
 }
 
+private struct NotificationArticleRoute: Identifiable {
+    let source: ArticleOwner
+    let articleID: String
+    let commentID: String?
+    var id: String { "\(articleID):\(commentID ?? "")" }
+}
+
+private struct NotificationProfileRoute: Identifiable {
+    let id: String
+}
+
 private struct HomeContent: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
@@ -34,6 +45,8 @@ private struct HomeContent: View {
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var showAccount = false
     @State private var showCreateCommunity = false
+    @State private var notificationArticle: NotificationArticleRoute?
+    @State private var notificationProfile: NotificationProfileRoute?
 
     private var communities: [Community] {
         let order = store.ownUser?.communityOrder ?? []
@@ -76,16 +89,56 @@ private struct HomeContent: View {
                 openCommunity(communityID)
             }
         }
-        .overlay(alignment: .top) {
-            if let notice = model.realtimeNotice {
-                Label(notice, systemImage: "bolt.slash")
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.top, 8)
-                    .accessibilityLabel("Connection notice: \(notice)")
+        .sheet(item: $notificationArticle) { route in
+            ArticleReaderView(
+                articleID: route.articleID,
+                source: route.source,
+                store: store,
+                focusedCommentID: route.commentID
+            )
+        }
+        .sheet(item: $notificationProfile) { route in
+            UserProfileView(userID: route.id, store: store) { chatID in
+                notificationProfile = nil
+                openChat(chatID)
             }
+        }
+        .overlay(alignment: .top) {
+            VStack(spacing: 8) {
+                if let notification = model.inAppNotification {
+                    Button {
+                        openNotification(notification)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "bell.fill")
+                                .foregroundStyle(AppTheme.accent)
+                            Text(notification.text)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: 520)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                        .shadow(color: .black.opacity(0.15), radius: 14, y: 6)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 12)
+                    .accessibilityHint("Opens the related activity")
+                }
+                if let notice = model.realtimeNotice {
+                    Label(notice, systemImage: "bolt.slash")
+                        .font(.caption)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .accessibilityLabel("Connection notice: \(notice)")
+                }
+            }
+            .padding(.top, 8)
         }
         .onAppear(perform: restoreNavigation)
         .onChange(of: sidebarSelection) { _, selection in
@@ -215,7 +268,7 @@ private struct HomeContent: View {
                 select: openChat
             )
         case .notifications:
-            NotificationsView(store: store)
+            NotificationsView(store: store, open: openNotification)
         case .search:
             SearchView(
                 communities: communities,
@@ -331,6 +384,65 @@ private struct HomeContent: View {
         model.selectChat(id)
         sidebarSelection = .directMessages
         preferredCompactColumn = .detail
+    }
+
+    private func openNotification(_ notification: AppNotification) {
+        model.dismissInAppNotification()
+        Task {
+            await model.markNotificationRead(notification.id)
+            guard let destination = notification.destination else {
+                model.errorMessage = "This notification does not contain a destination."
+                return
+            }
+            switch destination {
+            case .channel(let communityID, let channelID, let messageID):
+                if store.communities[communityID]?.channels.contains(where: {
+                    $0.channelId == channelID
+                }) != true {
+                    await model.refreshHome()
+                }
+                guard store.communities[communityID]?.channels.contains(where: {
+                    $0.channelId == channelID
+                }) == true else {
+                    model.errorMessage = "That channel is no longer available."
+                    return
+                }
+                openChannel(channelID, communityID: communityID)
+                model.focusMessage(messageID)
+            case .chat(let chatID, _, let messageID):
+                if store.chats[chatID] == nil { await model.refreshHome() }
+                guard store.chats[chatID] != nil else {
+                    model.errorMessage = "That conversation is no longer available."
+                    return
+                }
+                openChat(chatID)
+                model.focusMessage(messageID)
+            case .article(let owner, let articleID, let messageID):
+                let source: ArticleOwner
+                switch owner {
+                case .community(let id): source = .community(id)
+                case .user(let id): source = .user(id)
+                }
+                notificationArticle = NotificationArticleRoute(
+                    source: source,
+                    articleID: articleID,
+                    commentID: messageID
+                )
+            case .profile(let userID):
+                notificationProfile = NotificationProfileRoute(id: userID)
+            case .community(let communityID):
+                if store.communities[communityID] == nil { await model.refreshHome() }
+                guard store.communities[communityID] != nil else {
+                    model.errorMessage = "That community is no longer available."
+                    return
+                }
+                openCommunity(communityID)
+            case .path:
+                model.errorMessage = "This notification links to a feature that is not available in the app yet."
+            case .unknownArticle:
+                model.errorMessage = "This article notification is missing its owner information."
+            }
+        }
     }
 }
 
@@ -2002,7 +2114,12 @@ private struct CommunityHomeView: View {
         .refreshable { await model.loadCommunityArticles(communityID: community.id) }
         .task(id: community.id) { await model.loadCommunityArticles(communityID: community.id) }
         .sheet(item: $selectedArticle) { article in
-            ArticleReaderView(articleID: article.id, source: .community(community.id), store: store)
+            ArticleReaderView(
+                articleID: article.id,
+                source: .community(community.id),
+                store: store,
+                focusedCommentID: nil
+            )
         }
         .sheet(isPresented: $showComposer) {
             ArticleComposer(owner: .community(community.id)) {
@@ -2070,6 +2187,7 @@ private struct ArticleReaderView: View {
     let articleID: String
     let source: ArticleOwner
     @ObservedObject var store: SyncStore
+    let focusedCommentID: String?
     @State private var commentText = ""
     @State private var isSendingComment = false
     @State private var showEditor = false
@@ -2090,8 +2208,9 @@ private struct ArticleReaderView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                if let article {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    if let article {
                     VStack(alignment: .leading, spacing: 18) {
                         if let imageID = article.headerImageId,
                            let url = model.attachmentURLs[imageID] {
@@ -2149,6 +2268,14 @@ private struct ArticleReaderView: View {
                                             .imageID
                                             .flatMap { model.attachmentURLs[$0] }
                                     )
+                                    .padding(10)
+                                    .background(
+                                        comment.id == focusedCommentID
+                                            ? AppTheme.accent.opacity(0.14)
+                                            : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 14)
+                                    )
+                                    .id(comment.id)
                                 }
                             }
                         }
@@ -2185,8 +2312,16 @@ private struct ArticleReaderView: View {
                     .frame(maxWidth: 720, alignment: .leading)
                     .padding(24)
                     .frame(maxWidth: .infinity)
-                } else {
-                    ProgressView("Loading article…").padding(50)
+                    } else {
+                        ProgressView("Loading article…").padding(50)
+                    }
+                }
+                .onChange(of: comments.map(\.id), initial: true) { _, ids in
+                    guard let focusedCommentID, ids.contains(focusedCommentID) else { return }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(120))
+                        withAnimation { proxy.scrollTo(focusedCommentID, anchor: .center) }
+                    }
                 }
             }
             .navigationTitle("Article")
@@ -2214,7 +2349,11 @@ private struct ArticleReaderView: View {
                     await model.loadUserArticle(userID: id, articleID: articleID)
                 }
                 if let article = model.articleDetails[articleID] {
-                    await model.loadArticleComments(owner: source, article: article)
+                    await model.loadArticleComments(
+                        owner: source,
+                        article: article,
+                        focusing: focusedCommentID
+                    )
                 }
             }
             .refreshable {
@@ -2459,6 +2598,7 @@ private struct ChatListView: View {
 private struct NotificationsView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
+    let open: (AppNotification) -> Void
 
     private var notifications: [AppNotification] {
         store.notifications.values.sorted { $0.createdAt > $1.createdAt }
@@ -2477,7 +2617,7 @@ private struct NotificationsView: View {
             } else {
                 List(notifications) { notification in
                     Button {
-                        Task { await model.markNotificationRead(notification.id) }
+                        open(notification)
                     } label: {
                         NotificationRow(notification: notification)
                     }
@@ -2825,7 +2965,12 @@ private struct UserProfileView: View {
             }
             .sheet(item: $reportTarget) { ReportSheet(target: $0) }
             .sheet(item: $selectedArticle) { article in
-                ArticleReaderView(articleID: article.id, source: .user(userID), store: store)
+                ArticleReaderView(
+                    articleID: article.id,
+                    source: .user(userID),
+                    store: store,
+                    focusedCommentID: nil
+                )
             }
             .sheet(isPresented: $showComposer) {
                 ArticleComposer(owner: .user(userID)) {
@@ -2951,7 +3096,7 @@ private struct ConversationView: View {
                 .accessibilityHint("Swipe left in the conversation to reveal this panel")
             }
         }
-        .task(id: context.channelID) { await load() }
+        .task(id: "\(context.channelID):\(model.focusedMessageID ?? "")") { await load() }
         .sheet(item: $reportTarget) { ReportSheet(target: $0) }
         .sheet(item: $selectedUser) { user in
             UserProfileView(userID: user.id, store: store) { chatID in
@@ -3043,6 +3188,13 @@ private struct ConversationView: View {
                                     )
                                 }
                             )
+                            .padding(8)
+                            .background(
+                                message.id == model.focusedMessageID
+                                    ? AppTheme.accent.opacity(0.14)
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 14)
+                            )
                             .id(message.id)
                         }
                     }
@@ -3051,9 +3203,18 @@ private struct ConversationView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .refreshable { await load() }
-                .onChange(of: messages.count) { _, _ in
-                    if let id = messages.last?.id {
-                        withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                .onChange(of: messages.map(\.id), initial: true) { _, ids in
+                    let target = model.focusedMessageID.flatMap { ids.contains($0) ? $0 : nil }
+                        ?? ids.last
+                    guard let target else { return }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(100))
+                        withAnimation {
+                            proxy.scrollTo(
+                                target,
+                                anchor: target == model.focusedMessageID ? .center : .bottom
+                            )
+                        }
                     }
                 }
             }
@@ -3132,8 +3293,10 @@ private struct ConversationView: View {
 
     private func load() async {
         switch context {
-        case .channel(let channel): await model.loadMessages(channel: channel)
-        case .chat(let chat): await model.loadMessages(chat: chat)
+        case .channel(let channel):
+            await model.loadMessages(channel: channel, focusing: model.focusedMessageID)
+        case .chat(let chat):
+            await model.loadMessages(chat: chat, focusing: model.focusedMessageID)
         }
     }
 

@@ -40,6 +40,8 @@ final class AppModel: ObservableObject {
     @Published var selectedCommunityID: String?
     @Published var selectedChannelID: String?
     @Published var selectedChatID: String?
+    @Published var focusedMessageID: String?
+    @Published var inAppNotification: AppNotification?
     @Published var draftMessage = ""
     @Published private(set) var draftMentions: [String: String] = [:]
     @Published var replyingTo: Message?
@@ -76,6 +78,9 @@ final class AppModel: ObservableObject {
     private(set) var client: CommonGroundClient?
     private var signingKey: (any DeviceSigningKey)?
     private var realtime: RealtimeClient?
+    private var notificationListenerID: UUID?
+    private var notificationDismissTask: Task<Void, Never>?
+    private var presentedNotificationIDs: Set<String> = []
     private var didAttemptLaunchRestore = false
 
     var savedDeviceID: String? {
@@ -202,17 +207,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func loadMessages(channel: Channel) async {
+    func loadMessages(channel: Channel, focusing messageID: String? = nil) async {
         await loadMessages(
             access: .community(channel.communityId, channelId: channel.channelId),
-            channelID: channel.channelId
+            channelID: channel.channelId,
+            focusing: messageID
         )
     }
 
-    func loadMessages(chat: Chat) async {
+    func loadMessages(chat: Chat, focusing messageID: String? = nil) async {
         await loadMessages(
             access: .chat(chat.id, channelId: chat.channelId),
-            channelID: chat.channelId
+            channelID: chat.channelId,
+            focusing: messageID
         )
     }
 
@@ -234,6 +241,7 @@ final class AppModel: ObservableObject {
 
     func selectChannel(_ id: String?) {
         resetComposerContext()
+        focusedMessageID = nil
         selectedChannelID = id
         selectedChatID = nil
         guard let client else { return }
@@ -242,6 +250,7 @@ final class AppModel: ObservableObject {
 
     func selectChat(_ id: String?) {
         resetComposerContext()
+        focusedMessageID = nil
         selectedChatID = id
         selectedChannelID = nil
         guard let client else { return }
@@ -269,13 +278,28 @@ final class AppModel: ObservableObject {
     }
 
     func markNotificationRead(_ id: String) async {
-        guard let client, store.notifications[id]?.read == false else { return }
+        guard let notification = store.notifications[id], !notification.read else { return }
+        guard notification.isPersisted else {
+            store.markNotificationRead(id)
+            return
+        }
+        guard let client else { return }
         do {
             try await client.notifications.markAsRead(id)
             store.markNotificationRead(id)
         } catch {
             errorMessage = userMessage(for: error)
         }
+    }
+
+    func focusMessage(_ id: String?) {
+        focusedMessageID = id
+    }
+
+    func dismissInAppNotification() {
+        notificationDismissTask?.cancel()
+        notificationDismissTask = nil
+        inAppNotification = nil
     }
 
     func markAllNotificationsRead() async {
@@ -596,9 +620,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func loadArticleComments(owner: ArticleOwner, article: ArticleDetail) async {
+    func loadArticleComments(
+        owner: ArticleOwner,
+        article: ArticleDetail,
+        focusing messageID: String? = nil
+    ) async {
         let access = articleAccess(owner: owner, article: article)
-        await loadMessages(access: access, channelID: article.channelId)
+        await loadMessages(access: access, channelID: article.channelId, focusing: messageID)
         try? await client?.articles.joinCommentRoom(access: access)
     }
 
@@ -1290,16 +1318,46 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func loadMessages(access: MessageAccess, channelID: String) async {
+    private func loadMessages(
+        access: MessageAccess,
+        channelID: String,
+        focusing messageID: String? = nil
+    ) async {
         guard let client else { return }
         do {
-            let messages = try await client.messages.load(access: access)
+            let messages: [Message]
+            let lastRead: String?
+            if let messageID {
+                let target = try await client.messages.byIDs(access: access, messageIDs: [messageID])
+                guard let focused = target.first else {
+                    errorMessage = "That message is no longer available."
+                    return
+                }
+                async let before = client.messages.load(
+                    access: access,
+                    order: .descending,
+                    createdBefore: focused.createdAt,
+                    createdAfter: nil
+                )
+                async let after = client.messages.load(
+                    access: access,
+                    order: .ascending,
+                    createdBefore: nil,
+                    createdAfter: focused.createdAt
+                )
+                let (older, newer) = try await (before, after)
+                messages = older + target + newer
+                lastRead = focused.createdAt
+            } else {
+                messages = try await client.messages.load(access: access)
+                lastRead = messages.map(\.createdAt).max()
+            }
             store.seed(messages, channelId: channelID)
             await hydrateUsers(ids: messages.map(\.creatorId))
             await loadAttachmentURLs(
                 objectIDs: messages.flatMap(\.imageAttachments).flatMap { [$0.imageId, $0.largeImageId] }
             )
-            if let lastRead = messages.last?.createdAt {
+            if let lastRead {
                 try? await client.messages.setLastRead(access: access, date: lastRead)
             }
         } catch is CancellationError {
@@ -1434,6 +1492,9 @@ final class AppModel: ObservableObject {
         defer { isWorking = false }
         do {
             try await client.auth.logout()
+            if let notificationListenerID { realtime?.removeListener(notificationListenerID) }
+            notificationListenerID = nil
+            dismissInAppNotification()
             realtime?.close()
             await client.transport.clearCookies()
             UserDefaults.standard.removeObject(forKey: Keys.deviceID(client.instance))
@@ -1451,6 +1512,9 @@ final class AppModel: ObservableObject {
     }
 
     func chooseAnotherInstance() {
+        if let notificationListenerID { realtime?.removeListener(notificationListenerID) }
+        notificationListenerID = nil
+        dismissInAppNotification()
         realtime?.close()
         realtime = nil
         client = nil
@@ -1486,6 +1550,9 @@ final class AppModel: ObservableObject {
         let realtime = client.realtime()
         self.realtime = realtime
         store.attach(to: realtime)
+        notificationListenerID = realtime.onEvent { [weak self] event in
+            self?.handleRealtimeNotification(event)
+        }
         do {
             try await realtime.connect()
             try await realtime.login(deviceId: session.deviceId, deviceKey: session.deviceKey)
@@ -1499,6 +1566,37 @@ final class AppModel: ObservableObject {
         // opens immediately and restored sessions continuously smoke-test the
         // deployed community-list contract.
         await discoverCommunities()
+    }
+
+    private func handleRealtimeNotification(_ event: RealtimeEvent) {
+        guard event.type == .notification,
+              case .object(let payload) = event.payload,
+              payload["action"]?.stringValue == "new",
+              let data = payload["data"],
+              let encoded = try? JSONEncoder().encode(data),
+              let notification = try? JSONDecoder().decode(AppNotification.self, from: encoded),
+              !presentedNotificationIDs.contains(notification.id),
+              !isViewing(notification.destination) else { return }
+        presentedNotificationIDs.insert(notification.id)
+        if presentedNotificationIDs.count > 200 {
+            presentedNotificationIDs.removeAll(keepingCapacity: true)
+            presentedNotificationIDs.insert(notification.id)
+        }
+        notificationDismissTask?.cancel()
+        inAppNotification = notification
+        notificationDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            self?.inAppNotification = nil
+        }
+    }
+
+    private func isViewing(_ destination: NotificationDestination?) -> Bool {
+        switch destination {
+        case .channel(_, let channelID, _): selectedChannelID == channelID
+        case .chat(let chatID, _, _): selectedChatID == chatID
+        default: false
+        }
     }
 
     private func restoreSession(

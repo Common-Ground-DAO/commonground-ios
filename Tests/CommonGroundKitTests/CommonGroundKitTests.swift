@@ -504,6 +504,82 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(message.body.plainText, "@alice hello")
     }
 
+    func testMessageContextLoadingContracts() async throws {
+        let access = MessageAccess.community(
+            "44444444-4444-4444-4444-444444444444",
+            channelId: "33333333-3333-3333-3333-333333333333"
+        )
+        let api = MessageAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Message/messagesById")
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request)))
+                    as? [String: Any]
+            )
+            XCTAssertEqual(object["messageIds"] as? [String], ["target-message"])
+            return Self.response(request, status: 200, body: #"{"status":"OK","data":[]}"#)
+        }
+        let messagesByID = try await api.byIDs(access: access, messageIDs: ["target-message"])
+        XCTAssertTrue(messagesByID.isEmpty)
+
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Message/loadMessages")
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request)))
+                    as? [String: Any]
+            )
+            XCTAssertEqual(object["order"] as? String, "ASC")
+            XCTAssertEqual(object["createdAfter"] as? String, "2026-08-08T12:00:00.000Z")
+            XCTAssertNil(object["createdBefore"])
+            return Self.response(request, status: 200, body: #"{"status":"OK","data":[]}"#)
+        }
+        let messagesAfter = try await api.load(
+            access: access,
+            order: .ascending,
+            createdBefore: nil,
+            createdAfter: "2026-08-08T12:00:00.000Z"
+        )
+        XCTAssertTrue(messagesAfter.isEmpty)
+    }
+
+    func testNotificationDestinationsAndPersistence() throws {
+        func notification(_ json: String) throws -> AppNotification {
+            try JSONDecoder().decode(AppNotification.self, from: Data(json.utf8))
+        }
+        let base = #""type":"Mention","id":"n1","text":"hello","createdAt":"2026-08-08T12:00:00.000Z","updatedAt":"2026-08-08T12:00:00.000Z","read":false"#
+        let channel = try notification(
+            "{\(base),\"subjectItemId\":\"m1\",\"subjectCommunityId\":\"c1\",\"subjectUserId\":\"u1\",\"subjectArticleId\":null,\"extraData\":{\"type\":\"channelData\",\"channelId\":\"ch1\"}}"
+        )
+        XCTAssertEqual(
+            channel.destination,
+            .channel(communityID: "c1", channelID: "ch1", messageID: "m1")
+        )
+        XCTAssertTrue(channel.isPersisted)
+
+        let article = try notification(
+            "{\(base),\"subjectItemId\":\"comment1\",\"subjectCommunityId\":null,\"subjectUserId\":\"u1\",\"subjectArticleId\":\"a1\",\"extraData\":{\"type\":\"articleData\",\"articleId\":\"a1\",\"articleOwner\":{\"type\":\"user\",\"userId\":\"owner1\"}}}"
+        )
+        XCTAssertEqual(
+            article.destination,
+            .article(owner: .user("owner1"), articleID: "a1", messageID: "comment1")
+        )
+
+        let directMessage = try notification(
+            "{\(base.replacingOccurrences(of: "Mention", with: "DM")),\"subjectItemId\":\"m2\",\"subjectCommunityId\":null,\"subjectUserId\":\"u2\",\"subjectArticleId\":null,\"extraData\":{\"type\":\"chatData\",\"chatId\":\"chat1\",\"channelId\":\"ch2\"}}"
+        )
+        XCTAssertEqual(
+            directMessage.destination,
+            .chat(chatID: "chat1", channelID: "ch2", messageID: "m2")
+        )
+        XCTAssertFalse(directMessage.isPersisted)
+    }
+
     func testRichMessageMutationContracts() async throws {
         var routes: [String] = []
         MockURLProtocol.handler = { request in

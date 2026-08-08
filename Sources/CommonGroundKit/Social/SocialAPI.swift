@@ -350,11 +350,25 @@ public struct MessageAPI: Sendable {
 
     public func load(
         access: MessageAccess,
-        createdBefore: String = ISO8601DateFormatter().string(from: Date())
+        order: MessageOrder = .descending,
+        createdBefore: String? = ISO8601DateFormatter().string(from: Date()),
+        createdAfter: String? = nil
     ) async throws -> [Message] {
         try await transport.call(
             "Message/loadMessages",
-            body: LoadMessagesRequest(access: access, createdBefore: createdBefore)
+            body: LoadMessagesRequest(
+                access: access,
+                order: order,
+                createdBefore: createdBefore,
+                createdAfter: createdAfter
+            )
+        )
+    }
+
+    public func byIDs(access: MessageAccess, messageIDs: [String]) async throws -> [Message] {
+        try await transport.call(
+            "Message/messagesById",
+            body: MessagesByIDRequest(access: access, messageIds: messageIDs)
         )
     }
 
@@ -416,6 +430,11 @@ public struct MessageAPI: Sendable {
             body: SetLastReadRequest(access: access, lastRead: date)
         )
     }
+}
+
+public enum MessageOrder: String, Encodable, Sendable {
+    case ascending = "ASC"
+    case descending = "DESC"
 }
 
 public struct MessageEditResult: Codable, Equatable, Sendable {
@@ -675,7 +694,13 @@ private struct OtherUserRequest: Encodable, Sendable { let otherUserId: String }
 private struct ChatIDRequest: Encodable, Sendable { let chatId: String }
 private struct LoadMessagesRequest: Encodable, Sendable {
     let access: MessageAccess
-    let createdBefore: String
+    let order: MessageOrder
+    let createdBefore: String?
+    let createdAfter: String?
+}
+private struct MessagesByIDRequest: Encodable, Sendable {
+    let access: MessageAccess
+    let messageIds: [String]
 }
 private struct CreateMessageRequest: Encodable, Sendable {
     let id: String
