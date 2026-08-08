@@ -793,7 +793,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public let lastMessage: Message?
 }
 
-public struct MessageAccess: Codable, Equatable, Sendable {
+public struct MessageAccess: Codable, Hashable, Sendable {
     public let channelId: String
     public let communityId: String?
     public let chatId: String?

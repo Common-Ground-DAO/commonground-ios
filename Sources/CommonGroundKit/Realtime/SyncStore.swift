@@ -12,12 +12,22 @@ public final class SyncStore: ObservableObject {
     @Published public private(set) var users: [String: UserProfile] = [:]
     @Published public private(set) var pendingMessages: [String: PendingMessage] = [:]
     @Published public private(set) var savedMessageIDs: Set<String> = []
+    @Published public private(set) var typingUsersByAccess: [MessageAccess: Set<String>] = [:]
     @Published public private(set) var unreadNotificationCount = 0
+
+    private struct TypingPresenceKey: Hashable {
+        let access: MessageAccess
+        let userID: String
+    }
 
     private var listenerID: UUID?
     private var database: OfflineDatabase?
+    private let typingExpiry: Duration
+    private var typingExpiryTasks: [TypingPresenceKey: Task<Void, Never>] = [:]
 
-    public init() {}
+    public init(typingExpiry: Duration = .seconds(7)) {
+        self.typingExpiry = typingExpiry
+    }
 
     public func configurePersistence(_ database: OfflineDatabase) async {
         self.database = database
@@ -65,8 +75,21 @@ public final class SyncStore: ObservableObject {
         users = [:]
         pendingMessages = [:]
         savedMessageIDs = []
+        clearTypingPresence()
         unreadNotificationCount = 0
         listenerID = nil
+    }
+
+    public func typingUserIDs(for access: MessageAccess) -> [String] {
+        Array(typingUsersByAccess[access] ?? []).sorted()
+    }
+
+    /// Clears ephemeral receiver state when the socket is interrupted. A
+    /// newly authenticated connection will repopulate it from fresh events.
+    public func clearTypingPresence() {
+        for task in typingExpiryTasks.values { task.cancel() }
+        typingExpiryTasks = [:]
+        typingUsersByAccess = [:]
     }
 
     public func seed(_ batch: [Message], channelId: String) {
@@ -326,8 +349,47 @@ public final class SyncStore: ObservableObject {
                   let updated: OwnUser = applying(patch, to: ownUser) else { return }
             self.ownUser = updated
             if let database { Task { try? await database.save(ownUser: updated) } }
+        case .typing:
+            guard let accessValue = payload["access"],
+                  let access: MessageAccess = decode(accessValue),
+                  let userID = payload["userId"]?.stringValue,
+                  !userID.isEmpty,
+                  let isTyping = payload["isTyping"]?.boolValue else { return }
+            applyTypingPresence(access: access, userID: userID, isTyping: isTyping)
         default:
             break
+        }
+    }
+
+    private func applyTypingPresence(access: MessageAccess, userID: String, isTyping: Bool) {
+        let key = TypingPresenceKey(access: access, userID: userID)
+        typingExpiryTasks[key]?.cancel()
+        typingExpiryTasks[key] = nil
+
+        guard isTyping else {
+            removeTypingPresence(key)
+            return
+        }
+
+        typingUsersByAccess[access, default: []].insert(userID)
+        let expiry = typingExpiry
+        typingExpiryTasks[key] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: expiry)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.removeTypingPresence(key)
+        }
+    }
+
+    private func removeTypingPresence(_ key: TypingPresenceKey) {
+        typingExpiryTasks[key]?.cancel()
+        typingExpiryTasks[key] = nil
+        typingUsersByAccess[key.access]?.remove(key.userID)
+        if typingUsersByAccess[key.access]?.isEmpty == true {
+            typingUsersByAccess[key.access] = nil
         }
     }
 

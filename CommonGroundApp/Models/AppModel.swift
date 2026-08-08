@@ -124,6 +124,9 @@ final class AppModel: ObservableObject {
     private var notificationListenerID: UUID?
     private var realtimeStatusListenerID: UUID?
     private var realtimeRefreshTask: Task<Void, Never>?
+    private var typingRefreshTask: Task<Void, Never>?
+    private var typingIdleTask: Task<Void, Never>?
+    private var activeTypingAccess: MessageAccess?
     private var offlineDatabase: OfflineDatabase?
     private var draftPersistenceTask: Task<Void, Never>?
     private var isRestoringDraft = false
@@ -304,6 +307,7 @@ final class AppModel: ObservableObject {
 
     func selectCommunity(_ id: String?) {
         if selectedCommunityID != id {
+            stopTyping()
             persistCurrentDraftImmediately()
             resetComposerContext()
             focusedMessageID = nil
@@ -318,6 +322,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectChannel(_ id: String?) {
+        stopTyping()
         persistCurrentDraftImmediately()
         resetComposerContext()
         focusedMessageID = nil
@@ -329,6 +334,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectChat(_ id: String?) {
+        stopTyping()
         persistCurrentDraftImmediately()
         resetComposerContext()
         focusedMessageID = nil
@@ -717,6 +723,8 @@ final class AppModel: ObservableObject {
     }
 
     func sendArticleComment(owner: ArticleOwner, article: ArticleDetail, text: String) async -> Bool {
+        let access = articleAccess(owner: owner, article: article)
+        stopTyping(access: access)
         guard !articleDraftIDs.contains(article.articleId) else {
             errorMessage = "Comments are read-only while this article is a draft."
             return false
@@ -725,7 +733,7 @@ final class AppModel: ObservableObject {
         guard !value.isEmpty, let client else { return false }
         do {
             let sent = try await client.messages.send(
-                access: articleAccess(owner: owner, article: article),
+                access: access,
                 text: value
             )
             store.applyOwnWrite(sent)
@@ -736,7 +744,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func articleAccess(owner: ArticleOwner, article: ArticleDetail) -> MessageAccess {
+    func articleAccess(owner: ArticleOwner, article: ArticleDetail) -> MessageAccess {
         switch owner {
         case .community(let communityID):
             .communityArticle(
@@ -1838,6 +1846,7 @@ final class AppModel: ObservableObject {
     private func sendMessage(access: MessageAccess) async {
         let text = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || pendingImageAttachment != nil), let client else { return }
+        stopTyping(access: access)
         if let editingMessage {
             guard !text.isEmpty else { return }
             do {
@@ -2133,8 +2142,12 @@ final class AppModel: ObservableObject {
                 self.realtimeNotice = nil
                 Task { await self.flushPendingMessages() }
             case .disconnected, .reconnecting:
+                self.finishTyping(access: nil, emitStop: false)
+                self.store.clearTypingPresence()
                 self.realtimeNotice = "Reconnecting live updates…"
             case .authenticationFailed:
+                self.finishTyping(access: nil, emitStop: false)
+                self.store.clearTypingPresence()
                 self.realtimeNotice = "Live updates are unavailable. Pull to refresh."
             case .connected:
                 break
@@ -2152,6 +2165,13 @@ final class AppModel: ObservableObject {
     }
 
     private func handleRealtimeEvent(_ event: RealtimeEvent) {
+        if event.type == .typing,
+           case .object(let payload) = event.payload,
+           payload["isTyping"]?.boolValue == true,
+           let userID = payload["userId"]?.stringValue,
+           store.users[userID] == nil {
+            Task { await hydrateUsers(ids: [userID]) }
+        }
         if Self.requiresCommunityRefresh(event) {
             realtimeRefreshTask?.cancel()
             realtimeRefreshTask = Task { [weak self] in
@@ -2192,12 +2212,81 @@ final class AppModel: ObservableObject {
     }
 
     private func removeRealtimeListeners() {
+        finishTyping(access: nil, emitStop: true)
+        store.clearTypingPresence()
         if let notificationListenerID { realtime?.removeListener(notificationListenerID) }
         if let realtimeStatusListenerID { realtime?.removeStatusListener(realtimeStatusListenerID) }
         notificationListenerID = nil
         realtimeStatusListenerID = nil
         realtimeRefreshTask?.cancel()
         realtimeRefreshTask = nil
+    }
+
+    /// Starts or refreshes the local user's ephemeral typing presence. Views
+    /// call this only while their composer has focus, so restored drafts never
+    /// announce typing until the user actually resumes editing.
+    func updateTyping(access: MessageAccess, text: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            stopTyping(access: access)
+            return
+        }
+
+        if activeTypingAccess != access {
+            finishTyping(access: nil, emitStop: true)
+            activeTypingAccess = access
+            emitTyping(access: access, isTyping: true)
+            startTypingRefresh(access: access)
+        } else if typingRefreshTask == nil {
+            emitTyping(access: access, isTyping: true)
+            startTypingRefresh(access: access)
+        }
+
+        typingIdleTask?.cancel()
+        typingIdleTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(2.5))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.finishTyping(access: access, emitStop: true)
+        }
+    }
+
+    func stopTyping(access: MessageAccess? = nil) {
+        finishTyping(access: access, emitStop: true)
+    }
+
+    private func startTypingRefresh(access: MessageAccess) {
+        typingRefreshTask?.cancel()
+        typingRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(3.5))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled,
+                      self?.activeTypingAccess == access else { return }
+                self?.emitTyping(access: access, isTyping: true)
+            }
+        }
+    }
+
+    private func finishTyping(access: MessageAccess?, emitStop: Bool) {
+        guard let activeTypingAccess,
+              access == nil || access == activeTypingAccess else { return }
+        typingRefreshTask?.cancel()
+        typingRefreshTask = nil
+        typingIdleTask?.cancel()
+        typingIdleTask = nil
+        self.activeTypingAccess = nil
+        if emitStop { emitTyping(access: activeTypingAccess, isTyping: false) }
+    }
+
+    private func emitTyping(access: MessageAccess, isTyping: Bool) {
+        guard let realtime else { return }
+        try? realtime.setTyping(access: access, isTyping: isTyping)
     }
 
     private var currentConversationPersistenceID: String? {

@@ -238,6 +238,45 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(unreadCount, 1)
     }
 
+    func testTypingPresenceRoutesFlatEventsStopsAndExpires() async throws {
+        let access = MessageAccess.community(
+            "33333333-3333-3333-3333-333333333333",
+            channelId: "44444444-4444-4444-4444-444444444444"
+        )
+        let accessJSON = try JSONDecoder().decode(
+            JSONValue.self,
+            from: JSONEncoder().encode(access)
+        )
+        @Sendable func event(userID: String, isTyping: Bool) -> RealtimeEvent {
+            RealtimeEvent(
+                type: .typing,
+                payload: .object([
+                    "access": accessJSON,
+                    "userId": .string(userID),
+                    "isTyping": .bool(isTyping),
+                ]),
+                receivedAt: Date()
+            )
+        }
+
+        let store = await MainActor.run { SyncStore(typingExpiry: .milliseconds(120)) }
+        await MainActor.run {
+            store.apply(event(userID: "user-a", isTyping: true))
+            store.apply(event(userID: "user-b", isTyping: true))
+            XCTAssertEqual(store.typingUserIDs(for: access), ["user-a", "user-b"])
+
+            store.apply(event(userID: "user-a", isTyping: false))
+            XCTAssertEqual(store.typingUserIDs(for: access), ["user-b"])
+        }
+
+        try await Task.sleep(for: .milliseconds(180))
+        await MainActor.run {
+            XCTAssertTrue(store.typingUserIDs(for: access).isEmpty)
+            XCTAssertNil(store.typingUsersByAccess[access])
+        }
+        XCTAssertEqual(RealtimeEventName.typing.rawValue, "cliTypingEvent")
+    }
+
     func testUserSearchHydratesPublicProfileContract() async throws {
         MockURLProtocol.handler = { request in
             switch request.url?.path {

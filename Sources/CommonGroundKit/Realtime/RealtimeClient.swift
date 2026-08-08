@@ -17,6 +17,7 @@ public enum RealtimeEventName: String, CaseIterable, Codable, Sendable {
     case userOwnData = "cliUserOwnData"
     case wallet = "cliWalletEvent"
     case call = "cliCallEvent"
+    case typing = "cliTypingEvent"
     case botScopes = "cliBotScopesEvent"
     case cgIDSignResponse = "cliCgIdSignResponse"
 }
@@ -187,6 +188,25 @@ public final class RealtimeClient: ObservableObject {
         return number.doubleValue
     }
 
+    /// Broadcasts ephemeral typing presence for a channel, direct message, or
+    /// article comment room. This event is deliberately fire-and-forget: the
+    /// server authorizes and relays it without an acknowledgement.
+    public func setTyping(access: MessageAccess, isTyping: Bool) throws {
+        guard let socket, connected else { throw RealtimeError.notConnected }
+        let encoded = try JSONEncoder().encode(access)
+        guard let accessObject = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        else { throw RealtimeError.invalidPayload }
+        socket.emit("setTyping", ["access": accessObject, "isTyping": isTyping])
+    }
+
+    public func startTyping(access: MessageAccess) throws {
+        try setTyping(access: access, isTyping: true)
+    }
+
+    public func stopTyping(access: MessageAccess) throws {
+        try setTyping(access: access, isTyping: false)
+    }
+
     @discardableResult
     public func onEvent(_ listener: @escaping @MainActor (RealtimeEvent) -> Void) -> UUID {
         let id = UUID()
@@ -260,6 +280,7 @@ public enum RealtimeError: Error, LocalizedError {
     case alreadyConnected
     case notConnected
     case connectionFailed(String)
+    case invalidPayload
     case invalidAcknowledgement
     case acknowledgementTimedOut
     case loginFailed(String)
@@ -269,6 +290,7 @@ public enum RealtimeError: Error, LocalizedError {
         case .alreadyConnected: return "Realtime is already connected."
         case .notConnected: return "Realtime is not connected."
         case .connectionFailed(let reason): return "Realtime connection failed: \(reason)"
+        case .invalidPayload: return "The realtime payload could not be encoded."
         case .invalidAcknowledgement: return "The realtime server returned an invalid acknowledgement."
         case .acknowledgementTimedOut: return "The realtime server did not acknowledge the request."
         case .loginFailed(let reason): return "Realtime login failed: \(reason)"

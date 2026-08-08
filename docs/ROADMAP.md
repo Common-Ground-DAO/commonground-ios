@@ -22,12 +22,13 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
   tokens, bots, and plugin discovery/installation/permission management/removal.
 - Messaging includes local search, saved/pinned messages, unread markers, reply-thread navigation,
   URL previews, instance-configured GIPHY search, and an image attachment gallery.
+- Ephemeral typing presence is implemented end to end for community channels, direct messages, and
+  joined article comment rooms, including refresh, explicit stop, reconnect cleanup, and stale-state expiry.
 
 ## M1.1 — release hardening
 
 - Add account deletion when the server resolves the policy/API backlog.
 - Add user blocking when the server resolves the policy/API backlog.
-- Consume realtime typing presence after backend issue #57 defines the authenticated ephemeral contract.
 - Add arbitrary file picking/browsing after backend issue #58 defines generic attachment metadata.
 - Add passkeys through AuthenticationServices plus `ASWebAuthenticationSession` fallback for arbitrary instances.
 - Complete localization, VoiceOver/UI automation, privacy manifests, and the supported-instance compatibility matrix.

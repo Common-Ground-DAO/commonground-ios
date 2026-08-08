@@ -17,7 +17,7 @@ The first protocol spine is implemented end-to-end:
 - registration, password login, device-signature login, session status, and destructive logout are wrapped;
 - valid sessions restore silently from cached login state on launch;
 - stale device identities fall back to password login and superseded devices are retired when possible;
-- Socket.IO connects at `/api/ws/`, retries transient initial failures, performs in-band device login, and routes all 17 `cli*` events;
+- Socket.IO connects at `/api/ws/`, retries transient initial failures, performs in-band device login, and routes all 18 `cli*` events;
 - community channel history and structured text-message sends back the initial SwiftUI experience;
 - adaptive native navigation uses compact iPhone flows and a three-column iPad layout;
 - communities and direct-message sessions are distinct navigation surfaces, with explicit selection restoration;
@@ -33,7 +33,8 @@ The first protocol spine is implemented end-to-end:
   newsletters, members and timed moderation, bans, channels/areas, roles and permissions, tokens,
   bots, and Common Ground app installation/permissions/removal;
 - messaging includes local search, saved messages, pinned messages, first-unread markers,
-  reply-thread navigation, URL previews, GIPHY search, image galleries, and offline-aware sends;
+  reply-thread navigation, URL previews, GIPHY search, image galleries, offline-aware sends, and
+  ephemeral typing indicators for channels, DMs, and article comments;
 - own REST writes are applied locally because the server deliberately sends no same-device echo.
 
 The SDK is a standalone Swift package in `Sources/CommonGroundKit`; views contain no protocol code.

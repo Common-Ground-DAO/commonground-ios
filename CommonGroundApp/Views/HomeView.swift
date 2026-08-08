@@ -2881,6 +2881,7 @@ private struct ArticleReaderView: View {
     @State private var showEditor = false
     @State private var confirmDelete = false
     @State private var confirmNewsletter = false
+    @FocusState private var commentComposerFocused: Bool
 
     private var article: ArticleDetail? { model.articleDetails[articleID] }
     private var comments: [Message] {
@@ -2894,6 +2895,12 @@ private struct ArticleReaderView: View {
         }
     }
     private var isDraft: Bool { model.articleDraftIDs.contains(articleID) }
+    private var commentAccess: MessageAccess? {
+        article.map { model.articleAccess(owner: source, article: $0) }
+    }
+    private var typingUserIDs: [String] {
+        commentAccess.map { store.typingUserIDs(for: $0) } ?? []
+    }
 
     var body: some View {
         NavigationStack {
@@ -2979,9 +2986,13 @@ private struct ArticleReaderView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                         } else {
+                            if !typingUserIDs.isEmpty {
+                                TypingIndicatorView(userIDs: typingUserIDs, users: store.users)
+                            }
                             HStack(alignment: .bottom, spacing: 10) {
                                 TextField("Add a comment…", text: $commentText, axis: .vertical)
                                     .lineLimit(1...5)
+                                    .focused($commentComposerFocused)
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 11)
                                     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 17))
@@ -3089,8 +3100,21 @@ private struct ArticleReaderView: View {
             } message: {
                 Text("This queues email delivery to subscribed members. Delivery cannot be recalled from the app.")
             }
+            .onChange(of: commentText) { _, text in
+                guard commentComposerFocused, let commentAccess else { return }
+                model.updateTyping(access: commentAccess, text: text)
+            }
+            .onChange(of: commentComposerFocused) { _, focused in
+                guard let commentAccess else { return }
+                if focused {
+                    model.updateTyping(access: commentAccess, text: commentText)
+                } else {
+                    model.stopTyping(access: commentAccess)
+                }
+            }
             .onDisappear {
                 guard let article else { return }
+                model.stopTyping(access: model.articleAccess(owner: source, article: article))
                 Task { await model.leaveArticleComments(owner: source, article: article) }
             }
         }
@@ -3098,6 +3122,7 @@ private struct ArticleReaderView: View {
 
     private func sendComment(_ article: ArticleDetail) {
         let text = commentText
+        model.stopTyping(access: model.articleAccess(owner: source, article: article))
         isSendingComment = true
         Task {
             if await model.sendArticleComment(owner: source, article: article, text: text) {
@@ -3775,6 +3800,39 @@ private struct UserProfileView: View {
     }
 }
 
+private struct TypingIndicatorView: View {
+    let userIDs: [String]
+    let users: [String: UserProfile]
+
+    private var summary: String {
+        let names = userIDs.compactMap { users[$0]?.displayName }
+        switch userIDs.count {
+        case 0:
+            return ""
+        case 1:
+            return "\(names.first ?? "Someone") is typing…"
+        case 2 where names.count == 2:
+            return "\(names[0]) and \(names[1]) are typing…"
+        case 2:
+            return "Two people are typing…"
+        default:
+            if let first = names.first {
+                return "\(first) and \(userIDs.count - 1) others are typing…"
+            }
+            return "\(userIDs.count) people are typing…"
+        }
+    }
+
+    var body: some View {
+        Label(summary, systemImage: "ellipsis.message.fill")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentTransition(.numericText())
+            .accessibilityLabel(summary)
+    }
+}
+
 private enum ConversationContext {
     case channel(Channel)
     case chat(Chat)
@@ -3829,9 +3887,14 @@ private struct ConversationView: View {
     @State private var showGIFPicker = false
     @State private var threadRoot: Message?
     @GestureState private var participantDrag: CGFloat = 0
+    @FocusState private var composerFocused: Bool
 
     private var messages: [Message] {
         store.orderedMessages(channelId: context.channelID)
+    }
+
+    private var typingUserIDs: [String] {
+        store.typingUserIDs(for: context.access)
     }
 
     var body: some View {
@@ -3978,6 +4041,18 @@ private struct ConversationView: View {
         } message: {
             Text("This cannot be undone.")
         }
+        .onChange(of: model.draftMessage) { _, text in
+            guard composerFocused else { return }
+            model.updateTyping(access: context.access, text: text)
+        }
+        .onChange(of: composerFocused) { _, focused in
+            if focused {
+                model.updateTyping(access: context.access, text: model.draftMessage)
+            } else {
+                model.stopTyping(access: context.access)
+            }
+        }
+        .onDisappear { model.stopTyping(access: context.access) }
     }
 
     private var conversationBody: some View {
@@ -4152,6 +4227,10 @@ private struct ConversationView: View {
                     .padding(.horizontal, 8)
                 }
 
+                if !typingUserIDs.isEmpty {
+                    TypingIndicatorView(userIDs: typingUserIDs, users: store.users)
+                }
+
                 HStack(alignment: .bottom, spacing: 10) {
                     PhotosPicker(selection: $selectedPhoto, matching: .images) {
                         Image(systemName: "photo")
@@ -4176,6 +4255,7 @@ private struct ConversationView: View {
 
                     TextField(context.composerPrompt, text: $model.draftMessage, axis: .vertical)
                         .lineLimit(1...5)
+                        .focused($composerFocused)
                         .textFieldStyle(.plain)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 11)
