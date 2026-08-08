@@ -42,7 +42,9 @@ final class AppModel: ObservableObject {
     @Published var selectedChatID: String?
     @Published var focusedMessageID: String?
     @Published var inAppNotification: AppNotification?
-    @Published var draftMessage = ""
+    @Published var draftMessage = "" {
+        didSet { scheduleDraftPersistence() }
+    }
     @Published private(set) var draftMentions: [String: String] = [:]
     @Published var replyingTo: Message?
     @Published var editingMessage: Message?
@@ -80,6 +82,12 @@ final class AppModel: ObservableObject {
     private var signingKey: (any DeviceSigningKey)?
     private var realtime: RealtimeClient?
     private var notificationListenerID: UUID?
+    private var realtimeStatusListenerID: UUID?
+    private var realtimeRefreshTask: Task<Void, Never>?
+    private var offlineDatabase: OfflineDatabase?
+    private var draftPersistenceTask: Task<Void, Never>?
+    private var isRestoringDraft = false
+    private var isFlushingOutbox = false
     private var notificationDismissTask: Task<Void, Never>?
     private var presentedNotificationIDs: Set<String> = []
     private var didAttemptLaunchRestore = false
@@ -126,6 +134,14 @@ final class AppModel: ObservableObject {
                 selectCommunity(nil)
                 selectChannel(nil)
             }
+            if realtime?.connected != true {
+                removeRealtimeListeners()
+                realtime?.close()
+                realtime = nil
+                await startRealtime(session)
+            }
+            await flushPendingMessages()
+            realtimeNotice = nil
         } catch is CancellationError {
             return
         } catch {
@@ -144,13 +160,25 @@ final class AppModel: ObservableObject {
         await perform(activity: "Checking this Common Ground…") {
             let instance = try InstanceURL(instanceInput)
             let client = CommonGroundClient(instance: instance)
-            let config = try await client.instanceAPI.config()
             self.client = client
-            self.instanceConfig = config
             self.instanceInput = instance.description
             UserDefaults.standard.set(instance.description, forKey: Keys.instance)
             let signingKey = try DeviceKeyStore.loadOrCreate(for: instance)
             self.signingKey = signingKey
+            do {
+                self.instanceConfig = try await client.instanceAPI.config()
+            } catch {
+                if let deviceID = self.savedDeviceID(for: instance),
+                   let response = self.cachedResponse(for: instance) {
+                    self.realtimeNotice = "Offline — showing saved content."
+                    await self.didAuthenticate(
+                        AuthSession(response: response, deviceId: deviceID, deviceKey: signingKey),
+                        offline: true
+                    )
+                    return
+                }
+                throw error
+            }
             if !(await self.restoreSession(client: client, signingKey: signingKey)) {
                 self.phase = .authentication
             }
@@ -235,25 +263,38 @@ final class AppModel: ObservableObject {
     }
 
     func selectCommunity(_ id: String?) {
+        if selectedCommunityID != id {
+            persistCurrentDraftImmediately()
+            resetComposerContext()
+            focusedMessageID = nil
+            selectedChannelID = nil
+            selectedChatID = nil
+            restoreDraft(for: nil)
+        }
         selectedCommunityID = id
         guard let client else { return }
         UserDefaults.standard.set(id, forKey: Keys.communityID(client.instance))
+        UserDefaults.standard.removeObject(forKey: Keys.channelID(client.instance))
     }
 
     func selectChannel(_ id: String?) {
+        persistCurrentDraftImmediately()
         resetComposerContext()
         focusedMessageID = nil
         selectedChannelID = id
         selectedChatID = nil
+        restoreDraft(for: id.map { "channel:\($0)" })
         guard let client else { return }
         UserDefaults.standard.set(id, forKey: Keys.channelID(client.instance))
     }
 
     func selectChat(_ id: String?) {
+        persistCurrentDraftImmediately()
         resetComposerContext()
         focusedMessageID = nil
         selectedChatID = id
         selectedChannelID = nil
+        restoreDraft(for: id.map { "chat:\($0)" })
         guard let client else { return }
         UserDefaults.standard.set(id, forKey: Keys.chatID(client.instance))
     }
@@ -1306,7 +1347,7 @@ final class AppModel: ObservableObject {
         pendingImageAttachment = nil
         editingMessage = message
         draftMessage = message.body.plainText
-        draftMentions = [:]
+        draftMentions = message.body.mentions
     }
 
     func cancelComposerContext() {
@@ -1450,12 +1491,13 @@ final class AppModel: ObservableObject {
                 let result = try await client.messages.edit(
                     access: access,
                     messageID: editingMessage.id,
-                    text: text
+                    text: text,
+                    mentions: draftMentions
                 )
                 store.applyOwnEdit(
                     messageID: editingMessage.id,
                     channelID: editingMessage.channelId,
-                    body: .text(text),
+                    body: .composed(text, mentions: draftMentions),
                     editedAt: result.editedAt
                 )
                 resetComposerContext()
@@ -1468,29 +1510,71 @@ final class AppModel: ObservableObject {
         let reply = replyingTo
         let attachment = pendingImageAttachment
         let mentions = draftMentions
+        guard let creatorID = store.ownUser?.id else { return }
+        let id = UUID()
+        let pending = PendingMessage(
+            id: id.uuidString.lowercased(),
+            creatorID: creatorID,
+            access: access,
+            text: text,
+            mentions: mentions,
+            parentMessageID: reply?.id,
+            imageAttachments: attachment.map { [$0] } ?? [],
+            createdAt: ISO8601DateFormatter().string(from: Date())
+        )
         draftMessage = ""
         draftMentions = [:]
         replyingTo = nil
         pendingImageAttachment = nil
+        store.enqueue(pending)
+        await deliverPendingMessage(pending)
+    }
+
+    func retryPendingMessage(_ id: String) async {
+        guard let pending = store.pendingMessages[id] else { return }
+        await deliverPendingMessage(pending)
+    }
+
+    func discardPendingMessage(_ id: String) {
+        store.discardPending(id: id)
+    }
+
+    private func deliverPendingMessage(_ pending: PendingMessage) async {
+        guard let client else { return }
+        store.updatePending(id: pending.id, state: .sending)
         do {
             let sent = try await client.messages.send(
-                access: access,
-                text: text,
-                mentions: mentions,
-                parentMessageID: reply?.id,
-                imageAttachments: attachment.map { [$0] } ?? []
+                access: pending.access,
+                text: pending.text,
+                mentions: pending.mentions,
+                parentMessageID: pending.parentMessageID,
+                imageAttachments: pending.imageAttachments,
+                id: UUID(uuidString: pending.id) ?? UUID()
             )
-            store.applyOwnWrite(sent)
+            store.completePending(id: pending.id, with: sent)
             await loadAttachmentURLs(
                 objectIDs: sent.imageAttachments.flatMap { [$0.imageId, $0.largeImageId] }
             )
+        } catch is CancellationError {
+            store.updatePending(id: pending.id, state: .queued)
+        } catch let error as APIError {
+            let message = userMessage(for: error)
+            store.updatePending(id: pending.id, state: .failed, error: message)
+            errorMessage = message
         } catch {
-            draftMessage = text
-            replyingTo = reply
-            pendingImageAttachment = attachment
-            draftMentions = mentions
-            errorMessage = userMessage(for: error)
+            store.updatePending(id: pending.id, state: .queued, error: userMessage(for: error))
+            realtimeNotice = "Message queued — it will send when the connection returns."
         }
+    }
+
+    private func flushPendingMessages() async {
+        guard !isFlushingOutbox else { return }
+        isFlushingOutbox = true
+        defer { isFlushingOutbox = false }
+        let pending = store.pendingMessages.values
+            .filter { $0.state != .failed }
+            .sorted { $0.createdAt < $1.createdAt }
+        for message in pending { await deliverPendingMessage(message) }
     }
 
     private func loadAttachmentURLs(objectIDs: [String], force: Bool = false) async {
@@ -1577,32 +1661,44 @@ final class AppModel: ObservableObject {
         guard let client else { return }
         isWorking = true
         defer { isWorking = false }
+        var remoteError: Error?
+        do { try await client.auth.logout() } catch { remoteError = error }
+
+        removeRealtimeListeners()
+        dismissInAppNotification()
+        realtime?.close()
+        realtime = nil
+        await client.transport.clearCookies()
+        UserDefaults.standard.removeObject(forKey: Keys.deviceID(client.instance))
+        UserDefaults.standard.removeObject(forKey: Keys.cachedLogin(client.instance))
+        selectedCommunityID = nil
+        selectedChannelID = nil
+        selectedChatID = nil
+        attachmentURLs = [:]
+        attachmentURLExpirations = [:]
+        await store.clearPersistentData()
+        store.reset()
+        store.detachPersistence()
+        offlineDatabase = nil
+        phase = .authentication
+
         do {
-            try await client.auth.logout()
-            if let notificationListenerID { realtime?.removeListener(notificationListenerID) }
-            notificationListenerID = nil
-            dismissInAppNotification()
-            realtime?.close()
-            await client.transport.clearCookies()
-            UserDefaults.standard.removeObject(forKey: Keys.deviceID(client.instance))
-            UserDefaults.standard.removeObject(forKey: Keys.cachedLogin(client.instance))
-            selectedCommunityID = nil
-            selectedChannelID = nil
-            selectedChatID = nil
-            attachmentURLs = [:]
-            attachmentURLExpirations = [:]
-            store.reset()
-            phase = .authentication
             try DeviceKeyStore.delete(for: client.instance)
             signingKey = try DeviceKeyStore.loadOrCreate(for: client.instance)
         } catch {
+            signingKey = nil
             errorMessage = userMessage(for: error)
+            return
+        }
+        if let remoteError {
+            // Local credentials are authoritative for signing out this device.
+            // The server call is best-effort and must never retain local access.
+            errorMessage = "You were signed out on this device. The instance could not confirm the logout: \(userMessage(for: remoteError))"
         }
     }
 
     func chooseAnotherInstance() {
-        if let notificationListenerID { realtime?.removeListener(notificationListenerID) }
-        notificationListenerID = nil
+        removeRealtimeListeners()
         dismissInAppNotification()
         realtime?.close()
         realtime = nil
@@ -1615,13 +1711,29 @@ final class AppModel: ObservableObject {
         attachmentURLs = [:]
         attachmentURLExpirations = [:]
         store.reset()
+        store.detachPersistence()
+        offlineDatabase = nil
         phase = .instance
     }
 
-    private func didAuthenticate(_ session: AuthSession) async {
+    private func didAuthenticate(_ session: AuthSession, offline: Bool = false) async {
         guard let client else { return }
+        do {
+            let database = try OfflineDatabase(
+                fileURL: OfflineDatabase.defaultURL(
+                    instance: client.instance,
+                    userID: session.response.ownData.id
+                ),
+                scope: "\(client.instance.description)|\(session.response.ownData.id)"
+            )
+            offlineDatabase = database
+            await store.configurePersistence(database)
+        } catch {
+            // Persistence failure must not block an otherwise healthy session.
+            offlineDatabase = nil
+        }
         store.hydrate(from: session.response)
-        await hydrateUsers(ids: [session.response.ownData.id])
+        if !offline { await hydrateUsers(ids: [session.response.ownData.id]) }
         UserDefaults.standard.set(session.deviceId, forKey: Keys.deviceID(client.instance))
         saveCachedResponse(session.response, for: client.instance)
         let communityIDs = Set(session.response.communities.map(\.id))
@@ -1633,16 +1745,47 @@ final class AppModel: ObservableObject {
         selectedCommunityID = savedCommunityID.flatMap { communityIDs.contains($0) ? $0 : nil }
         selectedChannelID = savedChannelID.flatMap { channelIDs.contains($0) ? $0 : nil }
         selectedChatID = savedChatID.flatMap { chatIDs.contains($0) ? $0 : nil }
-        phase = .home
-        await refreshCommunityPresentation(
-            communityIDs: session.response.communities.map(\.id)
+        restoreDraft(
+            for: selectedChatID.map { "chat:\($0)" }
+                ?? selectedChannelID.map { "channel:\($0)" }
         )
+        phase = .home
+        if !offline {
+            await refreshCommunityPresentation(
+                communityIDs: session.response.communities.map(\.id)
+            )
+        }
 
+        guard !offline else { return }
+
+        await startRealtime(session)
+        // Warm the read-only public directory after authentication so Discover
+        // opens immediately and restored sessions continuously smoke-test the
+        // deployed community-list contract.
+        await discoverCommunities()
+    }
+
+    private func startRealtime(_ session: AuthSession) async {
+        guard let client, realtime == nil else { return }
         let realtime = client.realtime()
         self.realtime = realtime
         store.attach(to: realtime)
         notificationListenerID = realtime.onEvent { [weak self] event in
-            self?.handleRealtimeNotification(event)
+            self?.handleRealtimeEvent(event)
+        }
+        realtimeStatusListenerID = realtime.onStatus { [weak self] status in
+            guard let self else { return }
+            switch status {
+            case .authenticated:
+                self.realtimeNotice = nil
+                Task { await self.flushPendingMessages() }
+            case .disconnected, .reconnecting:
+                self.realtimeNotice = "Reconnecting live updates…"
+            case .authenticationFailed:
+                self.realtimeNotice = "Live updates are unavailable. Pull to refresh."
+            case .connected:
+                break
+            }
         }
         do {
             try await realtime.connect()
@@ -1653,13 +1796,17 @@ final class AppModel: ObservableObject {
             // a later lifecycle pass without invalidating the authenticated UI.
             realtimeNotice = "Live updates are temporarily unavailable. Pull to refresh."
         }
-        // Warm the read-only public directory after authentication so Discover
-        // opens immediately and restored sessions continuously smoke-test the
-        // deployed community-list contract.
-        await discoverCommunities()
     }
 
-    private func handleRealtimeNotification(_ event: RealtimeEvent) {
+    private func handleRealtimeEvent(_ event: RealtimeEvent) {
+        if Self.requiresCommunityRefresh(event) {
+            realtimeRefreshTask?.cancel()
+            realtimeRefreshTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                await self?.refreshHome()
+            }
+        }
         guard event.type == .notification,
               case .object(let payload) = event.payload,
               payload["action"]?.stringValue == "new",
@@ -1679,6 +1826,67 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(for: .seconds(6))
             guard !Task.isCancelled else { return }
             self?.inAppNotification = nil
+        }
+    }
+
+    private static func requiresCommunityRefresh(_ event: RealtimeEvent) -> Bool {
+        switch event.type {
+        case .channel, .area, .role, .membership, .myRoles, .plugin:
+            true
+        default:
+            false
+        }
+    }
+
+    private func removeRealtimeListeners() {
+        if let notificationListenerID { realtime?.removeListener(notificationListenerID) }
+        if let realtimeStatusListenerID { realtime?.removeStatusListener(realtimeStatusListenerID) }
+        notificationListenerID = nil
+        realtimeStatusListenerID = nil
+        realtimeRefreshTask?.cancel()
+        realtimeRefreshTask = nil
+    }
+
+    private var currentConversationPersistenceID: String? {
+        if let selectedChatID { return "chat:\(selectedChatID)" }
+        if let selectedChannelID { return "channel:\(selectedChannelID)" }
+        return nil
+    }
+
+    private func scheduleDraftPersistence() {
+        guard !isRestoringDraft,
+              let database = offlineDatabase,
+              let conversationID = currentConversationPersistenceID else { return }
+        let text = draftMessage
+        draftPersistenceTask?.cancel()
+        draftPersistenceTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            try? await database.saveDraft(text, conversationID: conversationID)
+        }
+    }
+
+    private func persistCurrentDraftImmediately() {
+        draftPersistenceTask?.cancel()
+        guard !isRestoringDraft,
+              let database = offlineDatabase,
+              let conversationID = currentConversationPersistenceID else { return }
+        let text = draftMessage
+        Task { try? await database.saveDraft(text, conversationID: conversationID) }
+    }
+
+    private func restoreDraft(for conversationID: String?) {
+        draftPersistenceTask?.cancel()
+        isRestoringDraft = true
+        draftMessage = ""
+        isRestoringDraft = false
+        guard let conversationID, let database = offlineDatabase else { return }
+        Task { [weak self] in
+            let text = (try? await database.draft(conversationID: conversationID)) ?? ""
+            guard let self, self.currentConversationPersistenceID == conversationID else { return }
+            self.isRestoringDraft = true
+            self.draftMessage = text
+            self.isRestoringDraft = false
         }
     }
 

@@ -1,6 +1,6 @@
 import Foundation
 
-public struct AppNotification: Decodable, Equatable, Identifiable, Sendable {
+public struct AppNotification: Codable, Equatable, Identifiable, Sendable {
     public let type: String
     public let id: String
     public let text: String

@@ -56,6 +56,19 @@ public struct MessageBody: Codable, Equatable, Sendable {
             }
         }.joined()
     }
+
+    /// Mentions keyed by the visible alias used by the structured body. Keeping
+    /// this information when a message enters the editor prevents an otherwise
+    /// lossless text edit from silently downgrading mentions to plain text.
+    public var mentions: [String: String] {
+        content.reduce(into: [:]) { result, node in
+            guard let object = node.objectValue,
+                  object["type"]?.stringValue == "mention",
+                  let alias = object["alias"]?.stringValue,
+                  let userID = object["userId"]?.stringValue else { return }
+            result[alias] = userID
+        }
+    }
 }
 
 public struct MessageImageAttachment: Codable, Equatable, Sendable {
@@ -654,7 +667,7 @@ public struct Chat: Codable, Equatable, Identifiable, Sendable {
     public let lastMessage: Message?
 }
 
-public struct MessageAccess: Encodable, Equatable, Sendable {
+public struct MessageAccess: Codable, Equatable, Sendable {
     public let channelId: String
     public let communityId: String?
     public let chatId: String?
@@ -711,5 +724,64 @@ public struct MessageAccess: Encodable, Equatable, Sendable {
         self.articleId = articleId
         self.articleCommunityId = articleCommunityId
         self.articleUserId = articleUserId
+    }
+}
+
+public enum PendingMessageState: String, Codable, Equatable, Sendable {
+    case queued
+    case sending
+    case failed
+}
+
+public struct PendingMessage: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let creatorID: String
+    public let access: MessageAccess
+    public let text: String
+    public let mentions: [String: String]
+    public let parentMessageID: String?
+    public let imageAttachments: [MessageImageAttachment]
+    public let createdAt: String
+    public var state: PendingMessageState
+    public var lastError: String?
+
+    public init(
+        id: String,
+        creatorID: String,
+        access: MessageAccess,
+        text: String,
+        mentions: [String: String],
+        parentMessageID: String?,
+        imageAttachments: [MessageImageAttachment],
+        createdAt: String,
+        state: PendingMessageState = .queued,
+        lastError: String? = nil
+    ) {
+        self.id = id
+        self.creatorID = creatorID
+        self.access = access
+        self.text = text
+        self.mentions = mentions
+        self.parentMessageID = parentMessageID
+        self.imageAttachments = imageAttachments
+        self.createdAt = createdAt
+        self.state = state
+        self.lastError = lastError
+    }
+
+    public var placeholder: Message {
+        Message(
+            id: id,
+            creatorId: creatorID,
+            channelId: access.channelId,
+            body: .composed(text, mentions: mentions),
+            attachments: imageAttachments.map(\.jsonValue),
+            editedAt: nil,
+            createdAt: createdAt,
+            updatedAt: createdAt,
+            reactions: [:],
+            ownReaction: nil,
+            parentMessageId: parentMessageID
+        )
     }
 }

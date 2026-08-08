@@ -32,6 +32,14 @@ public struct BuildGreeting: Equatable, Sendable {
     public let serverTime: Double
 }
 
+public enum RealtimeConnectionStatus: Equatable, Sendable {
+    case connected
+    case authenticated
+    case reconnecting
+    case disconnected
+    case authenticationFailed
+}
+
 /// Socket.IO transport for `/api/ws/`. Session cookies establish the socket;
 /// `login` then performs the required in-band device-signature handshake.
 @MainActor
@@ -44,6 +52,10 @@ public final class RealtimeClient: ObservableObject {
     private var manager: SocketManager?
     private var socket: SocketIOClient?
     private var listeners: [UUID: @MainActor (RealtimeEvent) -> Void] = [:]
+    private var statusListeners: [UUID: @MainActor (RealtimeConnectionStatus) -> Void] = [:]
+    private var authentication: (deviceID: String, deviceKey: any DeviceSigningKey)?
+    private var isAuthenticating = false
+    private var isClosing = false
 
     public init(transport: HTTPTransport) {
         self.transport = transport
@@ -84,6 +96,25 @@ public final class RealtimeClient: ObservableObject {
         self.manager = manager
         self.socket = socket
 
+        socket.on(clientEvent: .connect) { [weak self] _, _ in
+            guard let self else { return }
+            self.connected = true
+            self.publishStatus(.connected)
+            guard self.authentication != nil else { return }
+            Task { @MainActor [weak self] in
+                await self?.reauthenticateAfterReconnect()
+            }
+        }
+        socket.on(clientEvent: .disconnect) { [weak self] _, _ in
+            guard let self else { return }
+            self.connected = false
+            self.publishStatus(self.isClosing ? .disconnected : .reconnecting)
+        }
+        socket.on(clientEvent: .error) { [weak self] _, _ in
+            guard let self, self.authentication != nil else { return }
+            self.publishStatus(.reconnecting)
+        }
+
         socket.on("buildId") { [weak self] data, _ in
             guard let buildId = data.first as? String else { return }
             let time = (data.dropFirst().first as? NSNumber)?.doubleValue ?? 0
@@ -117,6 +148,12 @@ public final class RealtimeClient: ObservableObject {
     }
 
     public func login(deviceId: String, deviceKey: any DeviceSigningKey) async throws {
+        authentication = (deviceId, deviceKey)
+        try await performLogin(deviceId: deviceId, deviceKey: deviceKey)
+        publishStatus(.authenticated)
+    }
+
+    private func performLogin(deviceId: String, deviceKey: any DeviceSigningKey) async throws {
         let secretValue = try await emitWithAck("getSignableSecret")
         guard let secret = secretValue as? String else { throw RealtimeError.invalidAcknowledgement }
         let signature = try await deviceKey.signSecret(secret)
@@ -126,6 +163,21 @@ public final class RealtimeClient: ObservableObject {
         )
         guard (result as? String) == "OK" else {
             throw RealtimeError.loginFailed(String(describing: result))
+        }
+    }
+
+    private func reauthenticateAfterReconnect() async {
+        guard let authentication, !isAuthenticating else { return }
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+        do {
+            try await performLogin(
+                deviceId: authentication.deviceID,
+                deviceKey: authentication.deviceKey
+            )
+            publishStatus(.authenticated)
+        } catch {
+            publishStatus(.authenticationFailed)
         }
     }
 
@@ -146,9 +198,26 @@ public final class RealtimeClient: ObservableObject {
         listeners.removeValue(forKey: id)
     }
 
+    @discardableResult
+    public func onStatus(
+        _ listener: @escaping @MainActor (RealtimeConnectionStatus) -> Void
+    ) -> UUID {
+        let id = UUID()
+        statusListeners[id] = listener
+        return id
+    }
+
+    public func removeStatusListener(_ id: UUID) {
+        statusListeners.removeValue(forKey: id)
+    }
+
     public func close() {
+        isClosing = true
+        authentication = nil
         tearDownSocket()
         greeting = nil
+        publishStatus(.disconnected)
+        isClosing = false
     }
 
     private func tearDownSocket() {
@@ -157,6 +226,10 @@ public final class RealtimeClient: ObservableObject {
         socket = nil
         manager = nil
         connected = false
+    }
+
+    private func publishStatus(_ status: RealtimeConnectionStatus) {
+        for listener in statusListeners.values { listener(status) }
     }
 
     private func emitWithAck(_ event: String, _ items: SocketData...) async throws -> Any {

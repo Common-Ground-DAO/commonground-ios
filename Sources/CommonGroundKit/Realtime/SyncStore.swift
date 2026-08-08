@@ -10,17 +10,48 @@ public final class SyncStore: ObservableObject {
     @Published public private(set) var messages: [String: [String: Message]] = [:]
     @Published public private(set) var notifications: [String: AppNotification] = [:]
     @Published public private(set) var users: [String: UserProfile] = [:]
+    @Published public private(set) var pendingMessages: [String: PendingMessage] = [:]
     @Published public private(set) var unreadNotificationCount = 0
 
     private var listenerID: UUID?
+    private var database: OfflineDatabase?
 
     public init() {}
+
+    public func configurePersistence(_ database: OfflineDatabase) async {
+        self.database = database
+        guard let snapshot = try? await database.loadSnapshot() else { return }
+        if let ownUser = snapshot.ownUser { self.ownUser = ownUser }
+        communities.merge(
+            Dictionary(uniqueKeysWithValues: snapshot.communities.map { ($0.id, $0) })
+        ) { _, cached in cached }
+        chats.merge(Dictionary(uniqueKeysWithValues: snapshot.chats.map { ($0.id, $0) })) { _, cached in cached }
+        for message in snapshot.messages {
+            messages[message.channelId, default: [:]][message.id] = message
+        }
+        notifications.merge(
+            Dictionary(uniqueKeysWithValues: snapshot.notifications.map { ($0.id, $0) })
+        ) { _, cached in cached }
+        users.merge(Dictionary(uniqueKeysWithValues: snapshot.users.map { ($0.id, $0) })) { _, cached in cached }
+        for pending in snapshot.pendingMessages {
+            pendingMessages[pending.id] = pending
+            messages[pending.access.channelId, default: [:]][pending.id] = pending.placeholder
+        }
+        unreadNotificationCount = max(unreadNotificationCount, snapshot.unreadNotificationCount)
+    }
+
+    public func clearPersistentData() async {
+        try? await database?.clear()
+    }
+
+    public func detachPersistence() { database = nil }
 
     public func hydrate(from response: LoginResponse) {
         ownUser = response.ownData
         communities = Dictionary(uniqueKeysWithValues: response.communities.map { ($0.id, $0) })
         chats = Dictionary(uniqueKeysWithValues: response.chats.map { ($0.id, $0) })
         unreadNotificationCount = response.unreadNotificationCount
+        if let database { Task { try? await database.replaceAccountState(response) } }
     }
 
     public func reset() {
@@ -30,6 +61,7 @@ public final class SyncStore: ObservableObject {
         messages = [:]
         notifications = [:]
         users = [:]
+        pendingMessages = [:]
         unreadNotificationCount = 0
         listenerID = nil
     }
@@ -38,22 +70,37 @@ public final class SyncStore: ObservableObject {
         var channelMessages = messages[channelId] ?? [:]
         for message in batch { channelMessages[message.id] = message }
         messages[channelId] = channelMessages
+        if let database { Task { try? await database.save(messages: batch) } }
     }
 
     public func orderedMessages(channelId: String) -> [Message] {
-        (messages[channelId] ?? [:]).values.sorted { $0.createdAt < $1.createdAt }
+        (messages[channelId] ?? [:]).values.sorted { lhs, rhs in
+            let lhsDate = Self.parseTimestamp(lhs.createdAt)
+            let rhsDate = Self.parseTimestamp(rhs.createdAt)
+            switch (lhsDate, rhsDate) {
+            case let (lhsDate?, rhsDate?):
+                if lhsDate == rhsDate { return lhs.id < rhs.id }
+                return lhsDate < rhsDate
+            default:
+                if lhs.createdAt == rhs.createdAt { return lhs.id < rhs.id }
+                return lhs.createdAt < rhs.createdAt
+            }
+        }
     }
 
     public func seed(chat: Chat) {
         chats[chat.id] = chat
+        if let database { Task { try? await database.save(chat: chat) } }
     }
 
     public func seed(community: Community) {
         communities[community.id] = community
+        if let database { Task { try? await database.save(community: community) } }
     }
 
     public func removeCommunity(id: String) {
         communities.removeValue(forKey: id)
+        if let database { Task { try? await database.removeCommunity(id: id) } }
     }
 
     public func applyCommunityFields(id: String, fields: [String: JSONValue]) {
@@ -62,20 +109,28 @@ public final class SyncStore: ObservableObject {
         patch["id"] = .string(id)
         guard let updated: Community = applying(patch, to: community) else { return }
         communities[id] = updated
+        if let database { Task { try? await database.save(community: updated) } }
     }
 
     public func replaceNotifications(_ batch: [AppNotification], unreadCount: Int) {
         notifications = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0) })
         unreadNotificationCount = unreadCount
+        if let database {
+            Task { try? await database.replaceNotifications(batch, unreadCount: unreadCount) }
+        }
     }
 
     public func seed(users batch: [UserProfile]) {
         for user in batch { users[user.id] = user }
+        if let database { Task { try? await database.save(users: batch) } }
     }
 
     public func setFollowing(userID: String, isFollowed: Bool) {
         guard let user = users[userID] else { return }
         users[userID] = user.replacingFollowed(isFollowed)
+        if let updated = users[userID], let database {
+            Task { try? await database.save(users: [updated]) }
+        }
     }
 
     public func markNotificationRead(_ id: String) {
@@ -94,6 +149,10 @@ public final class SyncStore: ObservableObject {
             extraData: item.extraData
         )
         unreadNotificationCount = max(0, unreadNotificationCount - 1)
+        if let updated = notifications[id], let database {
+            let count = unreadNotificationCount
+            Task { try? await database.save(notification: updated, unreadCount: count) }
+        }
     }
 
     public func markAllNotificationsRead() {
@@ -109,6 +168,46 @@ public final class SyncStore: ObservableObject {
     public func applyOwnWrite(_ message: Message) {
         // The server intentionally sends no same-device socket echo.
         seed([message], channelId: message.channelId)
+    }
+
+    public func enqueue(_ pending: PendingMessage) {
+        pendingMessages[pending.id] = pending
+        seed([pending.placeholder], channelId: pending.access.channelId)
+        if let database { Task { try? await database.save(pendingMessage: pending) } }
+    }
+
+    public func updatePending(
+        id: String,
+        state: PendingMessageState,
+        error: String? = nil
+    ) {
+        guard var pending = pendingMessages[id] else { return }
+        pending.state = state
+        pending.lastError = error
+        pendingMessages[id] = pending
+        if let database { Task { try? await database.save(pendingMessage: pending) } }
+    }
+
+    public func completePending(id: String, with message: Message) {
+        pendingMessages.removeValue(forKey: id)
+        messages[message.channelId]?[id] = message
+        if let database {
+            Task {
+                try? await database.removePendingMessage(id: id)
+                try? await database.save(messages: [message])
+            }
+        }
+    }
+
+    public func discardPending(id: String) {
+        guard let pending = pendingMessages.removeValue(forKey: id) else { return }
+        messages[pending.access.channelId]?.removeValue(forKey: id)
+        if let database {
+            Task {
+                try? await database.removePendingMessage(id: id)
+                try? await database.removeMessage(id: id)
+            }
+        }
     }
 
     public func applyOwnEdit(messageID: String, channelID: String, body: MessageBody, editedAt: String) {
@@ -158,14 +257,24 @@ public final class SyncStore: ObservableObject {
                 var current = messages[channelId] ?? [:]
                 for id in ids.compactMap(\.stringValue) { current.removeValue(forKey: id) }
                 messages[channelId] = current
+                if let database {
+                    for id in ids.compactMap(\.stringValue) {
+                        Task { try? await database.removeMessage(id: id) }
+                    }
+                }
             }
         case .notification:
             let action = payload["action"]?.stringValue
             if action == "new", let data = payload["data"],
                let encoded = try? JSONEncoder().encode(data),
                let notification = try? JSONDecoder().decode(AppNotification.self, from: encoded) {
+                let wasKnownUnread = notifications[notification.id]?.read == false
                 notifications[notification.id] = notification
-                unreadNotificationCount += notification.read ? 0 : 1
+                if !notification.read && !wasKnownUnread { unreadNotificationCount += 1 }
+                if let database {
+                    let count = unreadNotificationCount
+                    Task { try? await database.save(notification: notification, unreadCount: count) }
+                }
             } else if action == "update", case .object(let data) = payload["data"],
                       let id = data["id"]?.stringValue {
                 markNotificationRead(id)
@@ -173,20 +282,74 @@ public final class SyncStore: ObservableObject {
                 markAllNotificationsRead()
             }
         case .community:
-            guard payload["action"]?.stringValue == "update",
-                  case .object(let patch) = payload["data"],
-                  let id = patch["id"]?.stringValue,
-                  let community = communities[id],
-                  let updated: Community = applying(patch, to: community) else { return }
-            communities[id] = updated
+            let action = payload["action"]?.stringValue
+            guard let data = payload["data"] else { return }
+            if action == "new-or-full-update", let community: Community = decode(data) {
+                seed(community: community)
+            } else if action == "update", case .object(let patch) = data,
+                      let id = patch["id"]?.stringValue,
+                      let community = communities[id],
+                      let updated: Community = applying(patch, to: community) {
+                seed(community: updated)
+            } else if action == "delete", case .object(let deletion) = data,
+                      let id = deletion["id"]?.stringValue {
+                removeCommunity(id: id)
+            }
+        case .chat:
+            applyChatEvent(payload)
+        case .channelLastRead:
+            guard let channelID = payload["channelId"]?.stringValue,
+                  let lastRead = payload["lastRead"]?.stringValue else { return }
+            updateChannel(channelID: channelID) { channel in
+                channel.lastRead = lastRead
+            }
         case .userOwnData:
             guard case .object(let patch) = payload["data"],
                   let ownUser,
                   let updated: OwnUser = applying(patch, to: ownUser) else { return }
             self.ownUser = updated
+            if let database { Task { try? await database.save(ownUser: updated) } }
         default:
             break
         }
+    }
+
+    private func applyChatEvent(_ payload: [String: JSONValue]) {
+        let action = payload["action"]?.stringValue
+        guard let data = payload["data"] else { return }
+        if action == "new", let chat: Chat = decode(data) {
+            seed(chat: chat)
+        } else if action == "update", case .object(let patch) = data,
+                  let id = patch["id"]?.stringValue,
+                  let chat = chats[id],
+                  let updated: Chat = applying(patch, to: chat) {
+            seed(chat: updated)
+        } else if action == "delete", case .object(let deletion) = data,
+                  let id = deletion["id"]?.stringValue {
+            chats.removeValue(forKey: id)
+            if let database { Task { try? await database.removeChat(id: id) } }
+        }
+    }
+
+    private func updateChannel(channelID: String, mutate: (inout Channel) -> Void) {
+        guard let communityID = communities.first(where: { _, community in
+            community.channels.contains(where: { $0.channelId == channelID })
+        })?.key, var community = communities[communityID],
+              let index = community.channels.firstIndex(where: { $0.channelId == channelID }) else { return }
+        mutate(&community.channels[index])
+        communities[communityID] = community
+        if let database { Task { try? await database.save(community: community) } }
+    }
+
+    private func decode<Value: Decodable>(_ value: JSONValue) -> Value? {
+        guard let encoded = try? JSONEncoder().encode(value) else { return nil }
+        return try? JSONDecoder().decode(Value.self, from: encoded)
+    }
+
+    private static func parseTimestamp(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
     func applying<Value: Codable>(
@@ -248,7 +411,7 @@ public final class SyncStore: ObservableObject {
         ownReaction: String?? = nil,
         parentMessageId: String?? = nil
     ) {
-        messages[message.channelId]?[message.id] = Message(
+        let updated = Message(
             id: message.id,
             creatorId: message.creatorId,
             channelId: message.channelId,
@@ -261,5 +424,7 @@ public final class SyncStore: ObservableObject {
             ownReaction: ownReaction ?? message.ownReaction,
             parentMessageId: parentMessageId ?? message.parentMessageId
         )
+        messages[message.channelId]?[message.id] = updated
+        if let database { Task { try? await database.save(messages: [updated]) } }
     }
 }

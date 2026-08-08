@@ -144,6 +144,7 @@ private struct HomeContent: View {
         .onChange(of: sidebarSelection) { _, selection in
             if case .community(let id) = selection {
                 model.selectCommunity(id)
+                model.selectChannel(nil)
             }
         }
     }
@@ -3384,11 +3385,14 @@ private struct ConversationView: View {
     }
 
     private var conversationBody: some View {
-        VStack(spacing: 0) {
+        let orderedMessages = messages
+        let messageIndex = Dictionary(uniqueKeysWithValues: orderedMessages.map { ($0.id, $0) })
+        let messageIDs = orderedMessages.map(\.id)
+        return VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        if messages.isEmpty {
+                        if orderedMessages.isEmpty {
                             ContentUnavailableView(
                                 "Start the conversation",
                                 systemImage: "sparkles",
@@ -3397,17 +3401,16 @@ private struct ConversationView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 60)
                         }
-                        ForEach(messages) { message in
+                        ForEach(orderedMessages) { message in
                             MessageRow(
                                 message: message,
+                                pending: store.pendingMessages[message.id],
                                 isOwn: message.creatorId == store.ownUser?.id,
                                 author: store.users[message.creatorId],
                                 avatarURL: store.users[message.creatorId]?
                                     .imageID
                                     .flatMap { model.attachmentURLs[$0] },
-                                parent: message.parentMessageId.flatMap { parentID in
-                                    messages.first { $0.id == parentID }
-                                },
+                                parent: message.parentMessageId.flatMap { messageIndex[$0] },
                                 attachmentURL: message.imageAttachments.first.flatMap {
                                     model.attachmentURLs[$0.largeImageId] ?? model.attachmentURLs[$0.imageId]
                                 },
@@ -3428,7 +3431,9 @@ private struct ConversationView: View {
                                         id: message.id,
                                         subject: "Message from \(store.users[message.creatorId]?.displayName ?? "member")"
                                     )
-                                }
+                                },
+                                retry: { Task { await model.retryPendingMessage(message.id) } },
+                                discard: { model.discardPendingMessage(message.id) }
                             )
                             .padding(8)
                             .background(
@@ -3445,7 +3450,7 @@ private struct ConversationView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .refreshable { await load() }
-                .onChange(of: messages.map(\.id), initial: true) { _, ids in
+                .onChange(of: messageIDs, initial: true) { _, ids in
                     let target = model.focusedMessageID.flatMap { ids.contains($0) ? $0 : nil }
                         ?? ids.last
                     guard let target else { return }
@@ -3826,6 +3831,7 @@ private struct ComposerContextBanner: View {
 
 private struct MessageRow: View {
     let message: Message
+    let pending: PendingMessage?
     let isOwn: Bool
     let author: UserProfile?
     let avatarURL: URL?
@@ -3837,6 +3843,8 @@ private struct MessageRow: View {
     let delete: () -> Void
     let react: (String?) -> Void
     let report: () -> Void
+    let retry: () -> Void
+    let discard: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
@@ -3866,6 +3874,16 @@ private struct MessageRow: View {
                         .foregroundStyle(.tertiary)
                     if message.editedAt != nil {
                         Text("edited").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    if let pending {
+                        Label(
+                            pending.state == .sending ? "Sending" : pending.state == .failed ? "Failed" : "Queued",
+                            systemImage: pending.state == .sending
+                                ? "arrow.up.circle"
+                                : pending.state == .failed ? "exclamationmark.circle" : "clock"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(pending.state == .failed ? .red : .secondary)
                     }
                 }
                 if let parent {
@@ -3922,19 +3940,24 @@ private struct MessageRow: View {
         }
         .accessibilityElement(children: .combine)
         .contextMenu {
-            Button("Reply", systemImage: "arrowshape.turn.up.left", action: reply)
-            Menu("React", systemImage: "face.smiling") {
-                ForEach(["👍", "❤️", "😂", "🎉", "👀"], id: \.self) { emoji in
-                    Button(emoji) { react(message.ownReaction == emoji ? nil : emoji) }
+            if pending != nil {
+                Button("Try sending again", systemImage: "arrow.clockwise", action: retry)
+                Button("Discard message", systemImage: "trash", role: .destructive, action: discard)
+            } else {
+                Button("Reply", systemImage: "arrowshape.turn.up.left", action: reply)
+                Menu("React", systemImage: "face.smiling") {
+                    ForEach(["👍", "❤️", "😂", "🎉", "👀"], id: \.self) { emoji in
+                        Button(emoji) { react(message.ownReaction == emoji ? nil : emoji) }
+                    }
                 }
-            }
-            if isOwn {
-                Button("Edit", systemImage: "pencil", action: edit)
-                Button("Delete", systemImage: "trash", role: .destructive, action: delete)
-            }
-            if !isOwn {
-                Button("Report message", systemImage: "exclamationmark.bubble", role: .destructive) {
-                    report()
+                if isOwn {
+                    Button("Edit", systemImage: "pencil", action: edit)
+                    Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+                }
+                if !isOwn {
+                    Button("Report message", systemImage: "exclamationmark.bubble", role: .destructive) {
+                        report()
+                    }
                 }
             }
         }
@@ -4037,7 +4060,9 @@ private struct AccountView: View {
 
                 Section("About") {
                     Link("Privacy policy", destination: AppConfiguration.privacyURL)
-                    Link("Contact support", destination: URL(string: "mailto:\(AppConfiguration.supportEmail)")!)
+                    if let supportURL = URL(string: "mailto:\(AppConfiguration.supportEmail)") {
+                        Link("Contact support", destination: supportURL)
+                    }
                 }
 
                 Section {

@@ -18,9 +18,11 @@ let package = Package(
         )
     ],
     targets: [
+        .systemLibrary(name: "CSQLite"),
         .target(
             name: "CommonGroundKit",
             dependencies: [
+                "CSQLite",
                 .product(name: "SocketIO", package: "socket.io-client-swift")
             ]
         ),

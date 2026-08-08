@@ -626,6 +626,13 @@ final class CommonGroundKitTests: XCTestCase {
             switch path {
             case "/api/v2/Message/editMessage":
                 XCTAssertEqual(object["id"] as? String, "11111111-1111-1111-1111-111111111111")
+                let messageBody = try XCTUnwrap(object["body"] as? [String: Any])
+                let content = try XCTUnwrap(messageBody["content"] as? [[String: Any]])
+                XCTAssertTrue(content.contains { node in
+                    node["type"] as? String == "mention"
+                        && node["alias"] as? String == "alice"
+                        && node["userId"] as? String == "22222222-2222-2222-2222-222222222222"
+                })
                 return Self.response(
                     request,
                     status: 200,
@@ -653,7 +660,12 @@ final class CommonGroundKitTests: XCTestCase {
             channelId: "33333333-3333-3333-3333-333333333333"
         )
         let messageID = "11111111-1111-1111-1111-111111111111"
-        let edit = try await api.edit(access: access, messageID: messageID, text: "edited")
+        let edit = try await api.edit(
+            access: access,
+            messageID: messageID,
+            text: "edited @alice",
+            mentions: ["alice": "22222222-2222-2222-2222-222222222222"]
+        )
         XCTAssertEqual(edit.editedAt, "2026-08-07T01:00:00.000Z")
         try await api.delete(
             access: access,
@@ -663,6 +675,139 @@ final class CommonGroundKitTests: XCTestCase {
         try await api.setReaction(access: access, messageID: messageID, reaction: "👍")
         try await api.unsetReaction(access: access, messageID: messageID)
         XCTAssertEqual(routes.count, 4)
+    }
+
+    func testSyncStoreOrdersMixedISOTimestampsAndDeduplicatesRealtimeEvents() async throws {
+        let earlier = Message(
+            id: "earlier",
+            creatorId: "user",
+            channelId: "channel",
+            body: .text("earlier"),
+            attachments: [],
+            editedAt: nil,
+            createdAt: "2026-08-08T12:00:00Z",
+            updatedAt: "2026-08-08T12:00:00Z",
+            reactions: [:],
+            ownReaction: nil,
+            parentMessageId: nil
+        )
+        let later = Message(
+            id: "later",
+            creatorId: "user",
+            channelId: "channel",
+            body: .text("later"),
+            attachments: [],
+            editedAt: nil,
+            createdAt: "2026-08-08T12:00:00.500Z",
+            updatedAt: "2026-08-08T12:00:00.500Z",
+            reactions: [:],
+            ownReaction: nil,
+            parentMessageId: nil
+        )
+
+        await MainActor.run {
+            let store = SyncStore()
+            store.seed([later, earlier], channelId: "channel")
+            XCTAssertEqual(store.orderedMessages(channelId: "channel").map(\.id), ["earlier", "later"])
+
+            let notificationData: JSONValue = .object([
+                "type": .string("Mention"),
+                "id": .string("notification-1"),
+                "text": .string("Mentioned you"),
+                "createdAt": .string("2026-08-08T12:00:00Z"),
+                "updatedAt": .string("2026-08-08T12:00:00Z"),
+                "read": .bool(false),
+            ])
+            let notificationEvent = RealtimeEvent(
+                type: .notification,
+                payload: .object(["action": .string("new"), "data": notificationData]),
+                receivedAt: Date()
+            )
+            store.apply(notificationEvent)
+            store.apply(notificationEvent)
+            XCTAssertEqual(store.unreadNotificationCount, 1)
+
+            let chatData: JSONValue = .object([
+                "id": .string("chat-1"),
+                "channelId": .string("dm-channel"),
+                "userIds": .array([.string("user")]),
+                "adminIds": .array([]),
+                "createdAt": .string("2026-08-08T12:00:00Z"),
+                "updatedAt": .string("2026-08-08T12:00:00Z"),
+                "unread": .number(1),
+                "lastRead": .null,
+                "lastMessage": .null,
+            ])
+            store.apply(
+                RealtimeEvent(
+                    type: .chat,
+                    payload: .object(["action": .string("new"), "data": chatData]),
+                    receivedAt: Date()
+                )
+            )
+            XCTAssertEqual(store.chats["chat-1"]?.unread, 1)
+            store.apply(
+                RealtimeEvent(
+                    type: .chat,
+                    payload: .object([
+                        "action": .string("update"),
+                        "data": .object([
+                            "id": .string("chat-1"),
+                            "channelId": .string("dm-channel"),
+                            "unread": .number(2),
+                        ]),
+                    ]),
+                    receivedAt: Date()
+                )
+            )
+            XCTAssertEqual(store.chats["chat-1"]?.unread, 2)
+        }
+    }
+
+    func testOfflineDatabasePersistsMessagesOutboxAndDrafts() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "cg-offline-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let fileURL = directory.appending(path: "cache.sqlite3")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try OfflineDatabase(fileURL: fileURL, scope: "test-account")
+        let access = MessageAccess.community("community", channelId: "channel")
+        let message = Message(
+            id: "message",
+            creatorId: "user",
+            channelId: "channel",
+            body: .text("Saved offline"),
+            attachments: [],
+            editedAt: nil,
+            createdAt: "2026-08-08T12:00:00Z",
+            updatedAt: "2026-08-08T12:00:00Z",
+            reactions: [:],
+            ownReaction: nil,
+            parentMessageId: nil
+        )
+        let pending = PendingMessage(
+            id: "11111111-1111-1111-1111-111111111111",
+            creatorID: "user",
+            access: access,
+            text: "Queued offline",
+            mentions: [:],
+            parentMessageID: nil,
+            imageAttachments: [],
+            createdAt: "2026-08-08T12:01:00Z"
+        )
+
+        try await database.save(messages: [message])
+        try await database.save(pendingMessage: pending)
+        try await database.saveDraft("A durable draft", conversationID: "channel:channel")
+
+        let snapshot = try await database.loadSnapshot()
+        XCTAssertEqual(snapshot.messages, [message])
+        XCTAssertEqual(snapshot.pendingMessages, [pending])
+        let restoredDraft = try await database.draft(conversationID: "channel:channel")
+        XCTAssertEqual(restoredDraft, "A durable draft")
+
+        try await database.removePendingMessage(id: pending.id)
+        let finalSnapshot = try await database.loadSnapshot()
+        XCTAssertTrue(finalSnapshot.pendingMessages.isEmpty)
     }
 
     func testImageUploadUsesMultipartAndAcceptsBareSuccess() async throws {

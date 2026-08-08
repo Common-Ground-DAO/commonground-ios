@@ -421,11 +421,16 @@ public struct MessageAPI: Sendable {
     public func edit(
         access: MessageAccess,
         messageID: String,
-        text: String
+        text: String,
+        mentions: [String: String] = [:]
     ) async throws -> MessageEditResult {
         try await transport.call(
             "Message/editMessage",
-            body: EditMessageRequest(access: access, id: messageID, body: .text(text))
+            body: EditMessageRequest(
+                access: access,
+                id: messageID,
+                body: .composed(text, mentions: mentions)
+            )
         )
     }
 

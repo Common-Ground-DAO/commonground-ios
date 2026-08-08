@@ -1,6 +1,6 @@
 import Foundation
 
-public struct UserProfile: Decodable, Equatable, Identifiable, Sendable {
+public struct UserProfile: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let isBot: Bool
     public let botOwner: JSONValue?
@@ -40,6 +40,25 @@ public struct UserProfile: Decodable, Equatable, Identifiable, Sendable {
         followingCount = try container.decode(Int.self, forKey: .followingCount)
         followerCount = try container.decode(Int.self, forKey: .followerCount)
         tags = try container.decodeIfPresent([String].self, forKey: .tags)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(isBot, forKey: .isBot)
+        try container.encodeIfPresent(botOwner, forKey: .botOwner)
+        try container.encode(onlineStatus, forKey: .onlineStatus)
+        try container.encode(isFollowed, forKey: .isFollowed)
+        try container.encode(isFollower, forKey: .isFollower)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(bannerImageId, forKey: .bannerImageId)
+        try container.encode(displayAccount, forKey: .displayAccount)
+        try container.encode(accounts, forKey: .accounts)
+        try container.encode(premiumFeatures, forKey: .premiumFeatures)
+        try container.encode(followingCount, forKey: .followingCount)
+        try container.encode(followerCount, forKey: .followerCount)
+        try container.encodeIfPresent(tags, forKey: .tags)
     }
 
     public var displayName: String {
