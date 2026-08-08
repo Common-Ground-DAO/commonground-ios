@@ -4399,37 +4399,38 @@ private struct CommunityFeatureImage: View {
     @State private var retryID = 0
 
     var body: some View {
-        AsyncImage(url: url) { phase in
-            switch phase {
-            case .success(let image):
-                image.resizable().scaledToFill()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: height)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-            case .empty:
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.secondary.opacity(0.08))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: height)
-            case .failure:
-                VStack(spacing: 8) {
-                    Image(systemName: "photo.badge.exclamationmark")
-                        .font(.title2)
-                    Text("Image unavailable")
-                        .font(.caption)
-                    Button("Try again") { retryID += 1 }
-                        .buttonStyle(.bordered)
+        GeometryReader { proxy in
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: proxy.size.width, height: height)
+                        .clipped()
+                case .empty:
+                    Color.secondary.opacity(0.08)
+                case .failure:
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.title2)
+                        Text("Image unavailable")
+                            .font(.caption)
+                        Button("Try again") { retryID += 1 }
+                            .buttonStyle(.bordered)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(width: proxy.size.width, height: height)
+                @unknown default:
+                    Color.clear
                 }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .frame(height: height)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-            @unknown default:
-                EmptyView()
             }
+            .id("\(url.absoluteString):\(retryID)")
         }
-        .id("\(url.absoluteString):\(retryID)")
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
         .accessibilityLabel("Community image")
     }
 }
