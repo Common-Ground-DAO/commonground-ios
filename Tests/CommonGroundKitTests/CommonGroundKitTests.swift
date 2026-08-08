@@ -671,10 +671,26 @@ final class CommonGroundKitTests: XCTestCase {
     }
 
     func testCreateUserArticleEncodesRequiredNullFields() async throws {
+        var routes: [String] = []
         MockURLProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/api/v2/User/createArticle")
+            let path = try XCTUnwrap(request.url?.path)
+            routes.append(path)
             let body = try XCTUnwrap(Self.bodyData(request))
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            if path == "/api/v2/User/updateArticle" {
+                let userArticle = try XCTUnwrap(object["userArticle"] as? [String: Any])
+                let article = try XCTUnwrap(object["article"] as? [String: Any])
+                XCTAssertEqual(userArticle["articleId"] as? String, "22222222-2222-4222-8222-222222222222")
+                XCTAssertEqual(userArticle["published"] as? String, "2026-08-08T00:00:00.000Z")
+                XCTAssertEqual(article["articleId"] as? String, "22222222-2222-4222-8222-222222222222")
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":{"userArticle":{"updatedAt":"2026-08-08T00:00:01.000Z"}}}"#
+                )
+            }
+
+            XCTAssertEqual(path, "/api/v2/User/createArticle")
             let userArticle = try XCTUnwrap(object["userArticle"] as? [String: Any])
             let article = try XCTUnwrap(object["article"] as? [String: Any])
             XCTAssertTrue(userArticle["url"] is NSNull)
@@ -687,7 +703,7 @@ final class CommonGroundKitTests: XCTestCase {
             return Self.response(
                 request,
                 status: 200,
-                body: #"{"status":"OK","data":{"userArticle":{"userId":"11111111-1111-4111-8111-111111111111","articleId":"22222222-2222-4222-8222-222222222222","url":null,"published":"2026-08-08T00:00:00.000Z","updatedAt":"2026-08-08T00:00:00.000Z"},"article":{"articleId":"22222222-2222-4222-8222-222222222222","title":"Native publishing","previewText":"A short preview","thumbnailImageId":null,"headerImageId":null,"creatorId":"11111111-1111-4111-8111-111111111111","tags":["ios"],"commentCount":0,"latestCommentTimestamp":null,"content":{"version":"2","content":[{"type":"text","value":"Hello"}]},"channelId":"33333333-3333-4333-8333-333333333333"}}}"#
+                body: #"{"status":"OK","data":{"userArticle":{"userId":"11111111-1111-4111-8111-111111111111","articleId":"22222222-2222-4222-8222-222222222222","url":null,"published":null,"updatedAt":"2026-08-08T00:00:00.000Z"},"article":{"articleId":"22222222-2222-4222-8222-222222222222","title":"Native publishing","previewText":"A short preview","thumbnailImageId":null,"headerImageId":null,"creatorId":"11111111-1111-4111-8111-111111111111","tags":["ios"],"commentCount":0,"latestCommentTimestamp":null,"content":{"version":"2","content":[{"type":"text","value":"Hello"}]},"channelId":"33333333-3333-4333-8333-333333333333"}}}"#
             )
         }
         let api = ArticleAPI(
@@ -704,6 +720,10 @@ final class CommonGroundKitTests: XCTestCase {
             published: "2026-08-08T00:00:00.000Z"
         )
         XCTAssertEqual(result.article.title, "Native publishing")
+        XCTAssertEqual(result.userArticle.published, "2026-08-08T00:00:00.000Z")
+        XCTAssertEqual(result.userArticle.updatedAt, "2026-08-08T00:00:01.000Z")
+        XCTAssertEqual(result.preview.article.title, "Native publishing")
+        XCTAssertEqual(routes, ["/api/v2/User/createArticle", "/api/v2/User/updateArticle"])
     }
 
     func testArticleDetailFlattensStructuredContent() async throws {

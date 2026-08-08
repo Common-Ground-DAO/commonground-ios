@@ -144,4 +144,38 @@ public struct CommunityArticleDetail: Decodable, Equatable, Sendable {
 public struct UserArticleDetail: Decodable, Equatable, Sendable {
     public let userArticle: UserArticle
     public let article: ArticleDetail
+
+    public var preview: UserArticlePreview {
+        UserArticlePreview(
+            userArticle: userArticle,
+            article: ArticlePreview(detail: article)
+        )
+    }
+
+    func published(at timestamp: String, updatedAt: String) -> UserArticleDetail {
+        UserArticleDetail(
+            userArticle: UserArticle(
+                userId: userArticle.userId,
+                articleId: userArticle.articleId,
+                url: userArticle.url,
+                published: timestamp,
+                updatedAt: updatedAt
+            ),
+            article: article
+        )
+    }
+}
+
+private extension ArticlePreview {
+    init(detail: ArticleDetail) {
+        articleId = detail.articleId
+        title = detail.title
+        previewText = detail.previewText
+        thumbnailImageId = detail.thumbnailImageId
+        headerImageId = detail.headerImageId
+        creatorId = detail.creatorId
+        tags = detail.tags
+        commentCount = detail.commentCount
+        latestCommentTimestamp = detail.latestCommentTimestamp
+    }
 }

@@ -371,13 +371,22 @@ final class AppModel: ObservableObject {
     func publishUserArticle(title: String, preview: String, text: String, tags: [String]) async -> Bool {
         guard let client, let userID = store.ownUser?.id else { return false }
         do {
-            _ = try await client.articles.createUserArticle(
+            let created = try await client.articles.createUserArticle(
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                 previewText: preview.trimmingCharacters(in: .whitespacesAndNewlines),
                 text: text.trimmingCharacters(in: .whitespacesAndNewlines),
                 tags: tags
             )
-            userArticles[userID] = try await client.articles.userArticles(userID: userID)
+            let existing = userArticles[userID] ?? []
+            userArticles[userID] = [created.preview] + existing.filter { $0.id != created.preview.id }
+
+            // Reconcile with the server, while preserving the successful write
+            // if a read replica or publication boundary briefly lags behind.
+            if let fetched = try? await client.articles.userArticles(userID: userID) {
+                userArticles[userID] = fetched.contains(where: { $0.id == created.preview.id })
+                    ? fetched
+                    : [created.preview] + fetched
+            }
             return true
         } catch {
             errorMessage = userMessage(for: error)

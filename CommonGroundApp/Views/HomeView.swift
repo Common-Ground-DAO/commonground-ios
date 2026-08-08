@@ -1628,8 +1628,14 @@ private struct UserProfileView: View {
             }
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.inline)
+            .refreshable { await model.loadUserProfile(userID: userID) }
             .task(id: userID) { await model.loadUserProfile(userID: userID) }
             .toolbar {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Refresh", systemImage: "arrow.clockwise") {
+                        Task { await model.loadUserProfile(userID: userID) }
+                    }
+                }
                 if let user, user.id != store.ownUser?.id {
                     ToolbarItem(placement: .primaryAction) {
                         Button("Report user", systemImage: "exclamationmark.bubble") {

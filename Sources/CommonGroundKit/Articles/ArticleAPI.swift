@@ -39,7 +39,7 @@ public struct ArticleAPI: Sendable {
         tags: [String],
         published: String? = ISO8601DateFormatter().string(from: Date())
     ) async throws -> UserArticleDetail {
-        try await transport.call(
+        let created: UserArticleDetail = try await transport.call(
             "User/createArticle",
             body: CreateUserArticleRequest(
                 userArticle: .init(url: nil, published: published),
@@ -62,6 +62,19 @@ public struct ArticleAPI: Sendable {
                 )
             )
         )
+
+        // The current backend accepts `published` on create but stores the
+        // article as a draft. Publish it explicitly until that contract bug is
+        // fixed server-side. Keeping the follow-up is harmless after the fix.
+        guard let published else { return created }
+        let response: UpdateUserArticleResponse = try await transport.call(
+            "User/updateArticle",
+            body: UpdateUserArticleRequest(
+                userArticle: .init(articleId: created.article.articleId, published: published),
+                article: .init(articleId: created.article.articleId)
+            )
+        )
+        return created.published(at: published, updatedAt: response.userArticle.updatedAt)
     }
 }
 
@@ -124,4 +137,26 @@ private struct CreateUserArticleRequest: Encodable, Sendable {
     }
     let userArticle: UserData
     let article: ArticleData
+}
+
+private struct UpdateUserArticleRequest: Encodable, Sendable {
+    struct UserData: Encodable, Sendable {
+        let articleId: String
+        let published: String
+    }
+
+    struct ArticleData: Encodable, Sendable {
+        let articleId: String
+    }
+
+    let userArticle: UserData
+    let article: ArticleData
+}
+
+private struct UpdateUserArticleResponse: Decodable, Sendable {
+    struct UserData: Decodable, Sendable {
+        let updatedAt: String
+    }
+
+    let userArticle: UserData
 }
