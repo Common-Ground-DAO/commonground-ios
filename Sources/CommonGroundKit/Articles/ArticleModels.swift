@@ -151,19 +151,6 @@ public struct UserArticleDetail: Decodable, Equatable, Sendable {
             article: ArticlePreview(detail: article)
         )
     }
-
-    func published(at timestamp: String, updatedAt: String) -> UserArticleDetail {
-        UserArticleDetail(
-            userArticle: UserArticle(
-                userId: userArticle.userId,
-                articleId: userArticle.articleId,
-                url: userArticle.url,
-                published: timestamp,
-                updatedAt: updatedAt
-            ),
-            article: article
-        )
-    }
 }
 
 private extension ArticlePreview {
