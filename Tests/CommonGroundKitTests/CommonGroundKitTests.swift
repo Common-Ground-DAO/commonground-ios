@@ -277,6 +277,34 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(RealtimeEventName.typing.rawValue, "cliTypingEvent")
     }
 
+    func testUserPresenceRealtimePatchUpdatesCachedProfile() async throws {
+        let user = try JSONDecoder().decode(
+            UserProfile.self,
+            from: Data(#"{"id":"11111111-1111-1111-1111-111111111111","isBot":false,"botOwner":null,"onlineStatus":"offline","isFollowed":false,"isFollower":false,"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","bannerImageId":null,"displayAccount":"cg","accounts":[{"type":"cg","displayName":"alice","imageId":null,"extraData":null}],"premiumFeatures":[],"followingCount":0,"followerCount":0,"tags":[]}"#.utf8)
+        )
+        let store = await MainActor.run { SyncStore() }
+
+        await MainActor.run {
+            store.seed(users: [user])
+            store.apply(
+                RealtimeEvent(
+                    type: .userData,
+                    payload: .object([
+                        "data": .object([
+                            "id": .string(user.id),
+                            "onlineStatus": .string("online"),
+                            "updatedAt": .string("2026-08-08T12:00:00.000Z"),
+                        ]),
+                    ]),
+                    receivedAt: Date()
+                )
+            )
+
+            XCTAssertEqual(store.users[user.id]?.onlineStatus, "online")
+            XCTAssertEqual(store.users[user.id]?.updatedAt, "2026-08-08T12:00:00.000Z")
+        }
+    }
+
     func testUserSearchHydratesPublicProfileContract() async throws {
         MockURLProtocol.handler = { request in
             switch request.url?.path {

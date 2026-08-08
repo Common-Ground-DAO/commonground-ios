@@ -4340,7 +4340,7 @@ private struct ConversationParticipantsView: View {
                     id: entry.userId,
                     user: store.users[entry.userId],
                     isOnline: onlineIDs.contains(entry.userId)
-                        || (entry.userId == store.ownUser?.id && model.realtimeNotice == nil),
+                        || (entry.userId == store.ownUser?.id && model.isRealtimeAuthenticated),
                     role: role(for: entry.userId, in: members)
                 )
             }
@@ -4352,7 +4352,7 @@ private struct ConversationParticipantsView: View {
                     id: userID,
                     user: user,
                     isOnline: userID == store.ownUser?.id
-                        ? model.realtimeNotice == nil
+                        ? model.isRealtimeAuthenticated
                         : status != "offline" && status != "invisible",
                     role: userID == store.ownUser?.id ? "You" : "Participant"
                 )

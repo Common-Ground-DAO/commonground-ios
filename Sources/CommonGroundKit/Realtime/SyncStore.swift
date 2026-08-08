@@ -349,6 +349,12 @@ public final class SyncStore: ObservableObject {
                   let updated: OwnUser = applying(patch, to: ownUser) else { return }
             self.ownUser = updated
             if let database { Task { try? await database.save(ownUser: updated) } }
+        case .userData:
+            guard case .object(let patch) = payload["data"],
+                  let id = patch["id"]?.stringValue,
+                  let user = users[id],
+                  let updated: UserProfile = applying(patch, to: user) else { return }
+            seed(users: [updated])
         case .typing:
             guard let accessValue = payload["access"],
                   let access: MessageAccess = decode(accessValue),

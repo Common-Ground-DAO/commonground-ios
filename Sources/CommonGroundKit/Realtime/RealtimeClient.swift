@@ -35,6 +35,7 @@ public struct BuildGreeting: Equatable, Sendable {
 
 public enum RealtimeConnectionStatus: Equatable, Sendable {
     case connected
+    case authenticating
     case authenticated
     case reconnecting
     case disconnected
@@ -46,6 +47,7 @@ public enum RealtimeConnectionStatus: Equatable, Sendable {
 @MainActor
 public final class RealtimeClient: ObservableObject {
     @Published public private(set) var connected = false
+    @Published public private(set) var authenticated = false
     @Published public private(set) var greeting: BuildGreeting?
     @Published public private(set) var latestEvent: RealtimeEvent?
 
@@ -83,14 +85,18 @@ public final class RealtimeClient: ObservableObject {
     }
 
     private func connectOnce(reconnects: Bool) async throws {
-        let cookie = await transport.cookieHeader()
+        guard let cookie = await transport.cookieHeader(), !cookie.isEmpty else {
+            throw RealtimeError.missingSessionCookie
+        }
         var configuration: SocketIOClientConfiguration = [
             .path("/api/ws/"),
-            .forceWebsockets(true),
             .reconnects(reconnects),
             .log(false)
         ]
-        if let cookie { configuration.insert(.extraHeaders(["Cookie": cookie])) }
+        // Match the production web client: begin with polling and allow
+        // Socket.IO to upgrade. Forcing a direct WebSocket can stall behind
+        // the deployed reverse proxy without producing a connect/error event.
+        configuration.insert(.extraHeaders(["Cookie": cookie]))
 
         let manager = SocketManager(socketURL: transport.baseURL, config: configuration)
         let socket = manager.defaultSocket
@@ -100,6 +106,7 @@ public final class RealtimeClient: ObservableObject {
         socket.on(clientEvent: .connect) { [weak self] _, _ in
             guard let self else { return }
             self.connected = true
+            self.authenticated = false
             self.publishStatus(.connected)
             guard self.authentication != nil else { return }
             Task { @MainActor [weak self] in
@@ -109,6 +116,7 @@ public final class RealtimeClient: ObservableObject {
         socket.on(clientEvent: .disconnect) { [weak self] _, _ in
             guard let self else { return }
             self.connected = false
+            self.authenticated = false
             self.publishStatus(self.isClosing ? .disconnected : .reconnecting)
         }
         socket.on(clientEvent: .error) { [weak self] _, _ in
@@ -144,13 +152,32 @@ public final class RealtimeClient: ObservableObject {
                 resumed = true
                 continuation.resume(throwing: RealtimeError.connectionFailed(String(describing: data.first ?? "unknown")))
             }
-            socket.connect()
+            socket.connect(timeoutAfter: 10) {
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(
+                    throwing: RealtimeError.connectionFailed("connection timed out")
+                )
+            }
         }
     }
 
     public func login(deviceId: String, deviceKey: any DeviceSigningKey) async throws {
         authentication = (deviceId, deviceKey)
+        try await authenticate(deviceId: deviceId, deviceKey: deviceKey)
+    }
+
+    private func authenticate(deviceId: String, deviceKey: any DeviceSigningKey) async throws {
+        guard connected else { throw RealtimeError.notConnected }
+        guard !isAuthenticating else { throw RealtimeError.authenticationInProgress }
+        isAuthenticating = true
+        authenticated = false
+        publishStatus(.authenticating)
+        defer { isAuthenticating = false }
+
         try await performLogin(deviceId: deviceId, deviceKey: deviceKey)
+        guard connected else { throw RealtimeError.notConnected }
+        authenticated = true
         publishStatus(.authenticated)
     }
 
@@ -169,15 +196,13 @@ public final class RealtimeClient: ObservableObject {
 
     private func reauthenticateAfterReconnect() async {
         guard let authentication, !isAuthenticating else { return }
-        isAuthenticating = true
-        defer { isAuthenticating = false }
         do {
-            try await performLogin(
+            try await authenticate(
                 deviceId: authentication.deviceID,
                 deviceKey: authentication.deviceKey
             )
-            publishStatus(.authenticated)
         } catch {
+            authenticated = false
             publishStatus(.authenticationFailed)
         }
     }
@@ -193,6 +218,7 @@ public final class RealtimeClient: ObservableObject {
     /// server authorizes and relays it without an acknowledgement.
     public func setTyping(access: MessageAccess, isTyping: Bool) throws {
         guard let socket, connected else { throw RealtimeError.notConnected }
+        guard authenticated else { throw RealtimeError.notAuthenticated }
         let encoded = try JSONEncoder().encode(access)
         guard let accessObject = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         else { throw RealtimeError.invalidPayload }
@@ -234,6 +260,7 @@ public final class RealtimeClient: ObservableObject {
     public func close() {
         isClosing = true
         authentication = nil
+        authenticated = false
         tearDownSocket()
         greeting = nil
         publishStatus(.disconnected)
@@ -246,6 +273,7 @@ public final class RealtimeClient: ObservableObject {
         socket = nil
         manager = nil
         connected = false
+        authenticated = false
     }
 
     private func publishStatus(_ status: RealtimeConnectionStatus) {
@@ -279,6 +307,10 @@ public final class RealtimeClient: ObservableObject {
 public enum RealtimeError: Error, LocalizedError {
     case alreadyConnected
     case notConnected
+    case notAuthenticated
+    case authenticationInProgress
+    case authenticationNotEstablished
+    case missingSessionCookie
     case connectionFailed(String)
     case invalidPayload
     case invalidAcknowledgement
@@ -289,6 +321,10 @@ public enum RealtimeError: Error, LocalizedError {
         switch self {
         case .alreadyConnected: return "Realtime is already connected."
         case .notConnected: return "Realtime is not connected."
+        case .notAuthenticated: return "Realtime is not authenticated."
+        case .authenticationInProgress: return "Realtime authentication is already in progress."
+        case .authenticationNotEstablished: return "Realtime login did not establish server presence."
+        case .missingSessionCookie: return "Realtime cannot connect without a server session."
         case .connectionFailed(let reason): return "Realtime connection failed: \(reason)"
         case .invalidPayload: return "The realtime payload could not be encoded."
         case .invalidAcknowledgement: return "The realtime server returned an invalid acknowledgement."

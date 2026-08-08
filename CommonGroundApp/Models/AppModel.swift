@@ -1,5 +1,6 @@
 import CommonGroundKit
 import Foundation
+import OSLog
 import SwiftUI
 
 enum CommunityJoinOutcome {
@@ -118,6 +119,7 @@ final class AppModel: ObservableObject {
     }
 
     let store = SyncStore()
+    private let realtimeLogger = Logger(subsystem: "org.commonground.ios", category: "Realtime")
     private(set) var client: CommonGroundClient?
     private var signingKey: (any DeviceSigningKey)?
     private var realtime: RealtimeClient?
@@ -134,6 +136,7 @@ final class AppModel: ObservableObject {
     private var notificationDismissTask: Task<Void, Never>?
     private var presentedNotificationIDs: Set<String> = []
     private var didAttemptLaunchRestore = false
+    private var appIsActive = true
 
     var savedDeviceID: String? {
         guard let instance = try? InstanceURL(instanceInput) else { return nil }
@@ -144,14 +147,37 @@ final class AppModel: ObservableObject {
         client?.instance.url.host ?? "Common Ground"
     }
 
+    var isRealtimeAuthenticated: Bool {
+        realtime?.connected == true && realtime?.authenticated == true
+    }
+
     func communityShareURL(_ community: Community) -> URL? {
         guard let baseURL = client?.instance.url else { return nil }
         return baseURL.appending(path: "c").appending(path: community.url)
     }
 
     func effectiveOnlineStatus(for user: UserProfile) -> String {
-        if user.id == store.ownUser?.id, realtimeNotice == nil { return "online" }
+        if user.id == store.ownUser?.id, isRealtimeAuthenticated { return "online" }
         return user.onlineStatus
+    }
+
+    func sceneDidBecomeActive() async {
+        appIsActive = true
+        guard phase == .home else { return }
+        await refreshHome()
+    }
+
+    func sceneDidBecomeInactive() {
+        finishTyping(access: nil, emitStop: true)
+    }
+
+    func sceneDidEnterBackground() {
+        appIsActive = false
+        guard phase == .home else { return }
+        removeRealtimeListeners()
+        realtime?.close()
+        realtime = nil
+        realtimeNotice = "Live updates paused."
     }
 
     func refreshHome() async {
@@ -177,14 +203,26 @@ final class AppModel: ObservableObject {
                 selectCommunity(nil)
                 selectChannel(nil)
             }
-            if realtime?.connected != true {
+            var realtimeNeedsRestart = !isRealtimeAuthenticated
+            if !realtimeNeedsRestart, let realtime {
+                do {
+                    _ = try await realtime.ping()
+                } catch {
+                    realtimeNeedsRestart = true
+                }
+            }
+            if realtimeNeedsRestart {
                 removeRealtimeListeners()
                 realtime?.close()
                 realtime = nil
                 await startRealtime(session)
             }
             await flushPendingMessages()
-            realtimeNotice = nil
+            if isRealtimeAuthenticated {
+                realtimeNotice = nil
+            } else if realtimeNotice == nil {
+                realtimeNotice = "Live updates are temporarily unavailable. Pull to refresh."
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -2129,8 +2167,55 @@ final class AppModel: ObservableObject {
 
     private func startRealtime(_ session: AuthSession) async {
         guard let client, realtime == nil else { return }
-        let realtime = client.realtime()
-        self.realtime = realtime
+        for attempt in 0..<3 {
+            guard appIsActive else { return }
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(400 * attempt))
+                guard appIsActive else { return }
+            }
+            let realtime = client.realtime()
+            self.realtime = realtime
+            attachRealtimeListeners(to: realtime)
+            do {
+                realtimeLogger.info("Starting realtime authentication attempt \(attempt + 1)")
+                try await realtime.connect()
+                guard appIsActive else { throw CancellationError() }
+                try await realtime.login(deviceId: session.deviceId, deviceKey: session.deviceKey)
+                guard appIsActive else { throw CancellationError() }
+
+                // Until backend issue #61 is deployed, an anonymous socket can
+                // receive a false-positive `OK` login acknowledgement. A real
+                // login has already awaited the online-presence write, so this
+                // public read is also an end-to-end authentication invariant.
+                let ownProfile = try await client.profiles.users(ids: [session.response.ownData.id]).first
+                realtimeLogger.info(
+                    "Realtime authentication presence check: \(ownProfile?.onlineStatus ?? "missing", privacy: .public)"
+                )
+                guard ownProfile?.onlineStatus == "online" else {
+                    throw RealtimeError.authenticationNotEstablished
+                }
+                realtimeNotice = nil
+                return
+            } catch is CancellationError {
+                removeRealtimeListeners()
+                realtime.close()
+                self.realtime = nil
+                return
+            } catch {
+                realtimeLogger.error(
+                    "Realtime authentication attempt \(attempt + 1) failed: \(error.localizedDescription, privacy: .public)"
+                )
+                removeRealtimeListeners()
+                realtime.close()
+                self.realtime = nil
+            }
+        }
+        // REST remains fully usable. A later lifecycle pass or pull-to-refresh
+        // retries with a completely new socket and challenge.
+        realtimeNotice = "Live updates are temporarily unavailable. Pull to refresh."
+    }
+
+    private func attachRealtimeListeners(to realtime: RealtimeClient) {
         store.attach(to: realtime)
         notificationListenerID = realtime.onEvent { [weak self] event in
             self?.handleRealtimeEvent(event)
@@ -2138,6 +2223,8 @@ final class AppModel: ObservableObject {
         realtimeStatusListenerID = realtime.onStatus { [weak self] status in
             guard let self else { return }
             switch status {
+            case .authenticating:
+                self.realtimeNotice = "Authenticating live updates…"
             case .authenticated:
                 self.realtimeNotice = nil
                 Task { await self.flushPendingMessages() }
@@ -2152,15 +2239,6 @@ final class AppModel: ObservableObject {
             case .connected:
                 break
             }
-        }
-        do {
-            try await realtime.connect()
-            try await realtime.login(deviceId: session.deviceId, deviceKey: session.deviceKey)
-            realtimeNotice = nil
-        } catch {
-            // REST remains fully usable. Socket reconnection can be retried in
-            // a later lifecycle pass without invalidating the authenticated UI.
-            realtimeNotice = "Live updates are temporarily unavailable. Pull to refresh."
         }
     }
 
