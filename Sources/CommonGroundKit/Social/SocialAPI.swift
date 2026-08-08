@@ -277,7 +277,7 @@ public struct CommunityAPI: Sendable {
 
     public func createChannel(
         communityID: String,
-        areaID: String?,
+        areaID: String,
         title: String,
         url: String?,
         order: Int,
@@ -295,7 +295,9 @@ public struct CommunityAPI: Sendable {
                 order: order,
                 description: description,
                 emoji: emoji,
-                rolePermissions: roleAccess.map(\.jsonValue)
+                rolePermissions: roleAccess
+                    .filter { $0.roleTitle != "Admin" }
+                    .map(\.jsonValue)
             )
         )
     }
@@ -322,7 +324,9 @@ public struct CommunityAPI: Sendable {
                 order: order,
                 description: description,
                 emoji: emoji,
-                rolePermissions: roleAccess.map(\.jsonValue)
+                rolePermissions: roleAccess
+                    .filter { $0.roleTitle != "Admin" }
+                    .map(\.jsonValue)
             )
         )
     }
@@ -607,7 +611,7 @@ private struct DeleteAreaRequest: Encodable, Sendable {
 }
 private struct CreateChannelRequest: Encodable, Sendable {
     let communityId: String
-    let areaId: String?
+    let areaId: String
     let title: String
     let url: String?
     let order: Int
@@ -621,8 +625,7 @@ private struct CreateChannelRequest: Encodable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(communityId, forKey: .communityId)
-        if let areaId { try container.encode(areaId, forKey: .areaId) }
-        else { try container.encodeNil(forKey: .areaId) }
+        try container.encode(areaId, forKey: .areaId)
         try container.encode(title, forKey: .title)
         if let url { try container.encode(url, forKey: .url) }
         else { try container.encodeNil(forKey: .url) }
@@ -653,7 +656,6 @@ private struct UpdateChannelRequest: Encodable, Sendable {
         try container.encode(channelId, forKey: .channelId)
         try container.encode(communityId, forKey: .communityId)
         if let areaId { try container.encode(areaId, forKey: .areaId) }
-        else { try container.encodeNil(forKey: .areaId) }
         try container.encode(title, forKey: .title)
         if let url { try container.encode(url, forKey: .url) }
         else { try container.encodeNil(forKey: .url) }

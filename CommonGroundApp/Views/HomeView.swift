@@ -1454,6 +1454,7 @@ private struct CommunityChannelsSettingsView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Menu("Add", systemImage: "plus") {
                         Button("New channel", systemImage: "number") { showingNewChannel = true }
+                            .disabled(current.areaInfos.isEmpty)
                         Button("New area", systemImage: "folder") { showingNewArea = true }
                     }
                 }
@@ -1480,6 +1481,10 @@ private struct CommunityChannelsSettingsView: View {
                 }
             }
             .disabled(areaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            if current.areaInfos.isEmpty {
+                Text("Channels belong to an area. Create this area, then add the channel.")
+            }
         }
     }
 
@@ -1563,7 +1568,6 @@ private struct CommunityChannelEditor: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Picker("Area", selection: $areaID) {
-                    Text("Uncategorized").tag(String?.none)
                     ForEach(community.areaInfos) { area in
                         Text(area.title).tag(String?.some(area.id))
                     }
@@ -1625,7 +1629,7 @@ private struct CommunityChannelEditor: View {
     private func save() {
         isSaving = true
         Task {
-            let roleAccess = community.roleInfos.map { role in
+            let roleAccess = community.roleInfos.filter { $0.title != "Admin" }.map { role in
                 ChannelRoleAccess(
                     roleId: role.id,
                     roleTitle: role.title,
@@ -1640,7 +1644,7 @@ private struct CommunityChannelEditor: View {
                 url: url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : url,
                 order: channel?.order ?? ((community.channels.filter { $0.areaId == areaID }.map(\.order).max() ?? -1) + 1),
                 description: description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : description,
-                emoji: emoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : emoji,
+                emoji: emoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "💬" : emoji,
                 roleAccess: roleAccess
             )
             isSaving = false
@@ -2082,6 +2086,7 @@ private struct ArticleReaderView: View {
         case .community(let communityID): store.communities[communityID]?.canManageArticles == true
         }
     }
+    private var isDraft: Bool { model.articleDraftIDs.contains(articleID) }
 
     var body: some View {
         NavigationStack {
@@ -2147,22 +2152,34 @@ private struct ArticleReaderView: View {
                                 }
                             }
                         }
-                        HStack(alignment: .bottom, spacing: 10) {
-                            TextField("Add a comment…", text: $commentText, axis: .vertical)
-                                .lineLimit(1...5)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 11)
-                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 17))
-                            Button("Post", systemImage: "arrow.up.circle.fill") {
-                                sendComment(article)
-                            }
-                            .labelStyle(.iconOnly)
-                            .font(.title2)
-                            .foregroundStyle(AppTheme.accent)
-                            .disabled(
-                                commentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    || isSendingComment
+                        if isDraft {
+                            Label(
+                                "Comments are read-only while this article is a draft.",
+                                systemImage: "lock"
                             )
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        } else {
+                            HStack(alignment: .bottom, spacing: 10) {
+                                TextField("Add a comment…", text: $commentText, axis: .vertical)
+                                    .lineLimit(1...5)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 11)
+                                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 17))
+                                Button("Post", systemImage: "arrow.up.circle.fill") {
+                                    sendComment(article)
+                                }
+                                .labelStyle(.iconOnly)
+                                .font(.title2)
+                                .foregroundStyle(AppTheme.accent)
+                                .disabled(
+                                    commentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                        || isSendingComment
+                                )
+                            }
                         }
                     }
                     .frame(maxWidth: 720, alignment: .leading)
@@ -3986,20 +4003,72 @@ private struct MarkdownArticleText: View {
     let source: String
 
     var body: some View {
-        Group {
-            if let rendered = try? AttributedString(
-                markdown: source.replacingOccurrences(of: "\n", with: "  \n"),
-                options: .init(interpretedSyntax: .full)
-            ) {
-                Text(rendered)
-            } else {
-                Text(source)
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(MarkdownArticleBlock.parse(source)) { block in
+                switch block.kind {
+                case .paragraph:
+                    inlineText(block.text)
+                case .heading(let level):
+                    inlineText(block.text)
+                        .font(headerFont(level))
+                        .padding(.top, level <= 2 ? 8 : 3)
+                case .unordered:
+                    HStack(alignment: .firstTextBaseline, spacing: 9) {
+                        Text("•").fontWeight(.bold)
+                        inlineText(block.text)
+                    }
+                    .padding(.leading, 8)
+                case .ordered(let marker):
+                    HStack(alignment: .firstTextBaseline, spacing: 9) {
+                        Text("\(marker).").fontWeight(.semibold).monospacedDigit()
+                        inlineText(block.text)
+                    }
+                    .padding(.leading, 8)
+                case .quote:
+                    HStack(alignment: .top, spacing: 10) {
+                        Capsule().fill(AppTheme.accent.opacity(0.7)).frame(width: 3)
+                        inlineText(block.text).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
+                case .code:
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(block.text)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(12)
+                    }
+                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                case .divider:
+                    Divider().padding(.vertical, 5)
+                case .spacer:
+                    Color.clear.frame(height: 5)
+                }
             }
         }
         .font(.body)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    private func inlineText(_ text: String) -> Text {
+        if let rendered = try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            return Text(rendered)
+        }
+        return Text(text)
+    }
+
+    private func headerFont(_ level: Int) -> Font {
+        switch level {
+        case 1: .largeTitle.bold()
+        case 2: .title.bold()
+        case 3: .title2.bold()
+        default: .headline
+        }
+    }
+
 }
 
 private extension Chat {

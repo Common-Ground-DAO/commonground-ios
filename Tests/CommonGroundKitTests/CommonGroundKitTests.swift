@@ -732,6 +732,29 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(detail.article.markdownSource, "## Heading\nBody")
     }
 
+    func testMarkdownArticleParserPreservesLinesAndBlockStructure() {
+        let blocks = MarkdownArticleBlock.parse(
+            "First **bold** line\nSecond line\n\n## Heading\n- bullet\n2. numbered\n> quote\n```\nlet value = 1\n```"
+        )
+        XCTAssertEqual(
+            blocks.map(\.kind),
+            [
+                .paragraph,
+                .paragraph,
+                .spacer,
+                .heading(2),
+                .unordered,
+                .ordered("2"),
+                .quote,
+                .code,
+            ]
+        )
+        XCTAssertEqual(blocks[0].text, "First **bold** line")
+        XCTAssertEqual(blocks[1].text, "Second line")
+        XCTAssertEqual(blocks[4].text, "bullet")
+        XCTAssertEqual(blocks[7].text, "let value = 1")
+    }
+
     func testArticleDraftAndCommentRoomContracts() async throws {
         var routes: [String] = []
         MockURLProtocol.handler = { request in
@@ -817,7 +840,9 @@ final class CommonGroundKitTests: XCTestCase {
                 return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
             case "/api/v2/Community/createChannel":
                 XCTAssertTrue(object["url"] is NSNull)
-                XCTAssertEqual((object["rolePermissions"] as? [[String: Any]])?.first?["roleId"] as? String, "role-member")
+                let permissions = try XCTUnwrap(object["rolePermissions"] as? [[String: Any]])
+                XCTAssertEqual(permissions.count, 1)
+                XCTAssertEqual(permissions.first?["roleId"] as? String, "role-member")
                 return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
             default:
                 XCTFail("Unexpected route \(path)")
@@ -854,6 +879,11 @@ final class CommonGroundKitTests: XCTestCase {
             description: nil,
             emoji: "✍️",
             roleAccess: [
+                ChannelRoleAccess(
+                    roleId: "role-admin",
+                    roleTitle: "Admin",
+                    permissions: ["CHANNEL_EXISTS", "CHANNEL_READ", "CHANNEL_WRITE", "CHANNEL_MODERATE"]
+                ),
                 ChannelRoleAccess(
                     roleId: "role-member",
                     roleTitle: "Member",

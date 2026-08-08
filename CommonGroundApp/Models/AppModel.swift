@@ -152,7 +152,7 @@ final class AppModel: ObservableObject {
     }
 
     func signIn(alias: String, password: String) async {
-        await perform(activity: "Signing in…") {
+        await perform(activity: "Signing in…", authentication: true) {
             guard let client, let signingKey else { throw AppError.noInstance }
             let preparation = try await self.preparePasswordLogin(
                 client: client,
@@ -172,7 +172,7 @@ final class AppModel: ObservableObject {
     }
 
     func register(email: String, password: String, displayName: String) async {
-        await perform(activity: "Solving the privacy-friendly challenge…") {
+        await perform(activity: "Solving the privacy-friendly challenge…", authentication: true) {
             guard let client, let signingKey else { throw AppError.noInstance }
             let session = try await client.auth.register(
                 email: email,
@@ -185,7 +185,7 @@ final class AppModel: ObservableObject {
     }
 
     func continueWithDevice() async {
-        await perform(activity: "Signing with this device…") {
+        await perform(activity: "Signing with this device…", authentication: true) {
             guard let client, let signingKey, let deviceID = savedDeviceID else {
                 throw AppError.noSavedDevice
             }
@@ -607,6 +607,10 @@ final class AppModel: ObservableObject {
     }
 
     func sendArticleComment(owner: ArticleOwner, article: ArticleDetail, text: String) async -> Bool {
+        guard !articleDraftIDs.contains(article.articleId) else {
+            errorMessage = "Comments are read-only while this article is a draft."
+            return false
+        }
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, let client else { return false }
         do {
@@ -1108,6 +1112,10 @@ final class AppModel: ObservableObject {
                     roleAccess: roleAccess
                 )
             } else {
+                guard let areaID else {
+                    errorMessage = "Create or choose an area before adding a channel."
+                    return false
+                }
                 try await client.communities.createChannel(
                     communityID: communityID,
                     areaID: areaID,
@@ -1587,7 +1595,11 @@ final class AppModel: ObservableObject {
         error.code == "INVALID_SIGNATURE" || error.code == "NOT_FOUND"
     }
 
-    private func perform(activity: String, operation: () async throws -> Void) async {
+    private func perform(
+        activity: String,
+        authentication: Bool = false,
+        operation: () async throws -> Void
+    ) async {
         guard !isWorking else { return }
         isWorking = true
         self.activity = activity
@@ -1597,13 +1609,15 @@ final class AppModel: ObservableObject {
             self.activity = ""
         }
         do { try await operation() }
-        catch { errorMessage = userMessage(for: error) }
+        catch { errorMessage = userMessage(for: error, authentication: authentication) }
     }
 
-    private func userMessage(for error: Error) -> String {
+    private func userMessage(for error: Error, authentication: Bool = false) -> String {
         if let api = error as? APIError {
             switch api.code {
-            case "NOT_ALLOWED": return "Those credentials weren’t accepted."
+            case "NOT_ALLOWED": return authentication
+                ? "Those credentials weren’t accepted."
+                : "This action isn’t allowed for your account."
             case "EXISTS_ALREADY": return "That email or profile name is already in use."
             case "CAPTCHA_FAILED": return "The registration challenge expired. Please try again."
             case "RATE_LIMIT_EXCEEDED": return "This instance is receiving too many requests. Try later."

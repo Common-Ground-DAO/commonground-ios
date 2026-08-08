@@ -47,3 +47,7 @@ Community list/detail member counts can cross the PostgreSQL boundary as strings
 ## N-11 — article publication workaround resolved upstream
 
 Resolved by backend PR #56 / issue #52 (reference findings F-13 and F-14), deployed on `cg.mogged.eu`. User and community article creation now publishes in one request when `published` contains an ISO timestamp, and the response returns the stored publication value. The iOS client therefore sends the intended draft/published state directly to `createArticle`; it does not create a draft and immediately update it. User article metadata-only updates no longer require a no-op `article: { articleId }` stub, although real edits correctly include the changed shared article body.
+
+## N-12 — channel writes exclude the server-managed Admin role
+
+`Community/createChannel` requires a non-null `areaId`, but callers must omit the predefined Admin role from `rolePermissions`. The server rejects a supplied Admin entry with `NOT_ALLOWED` and injects its canonical full-access preset itself; `updateChannel` follows the same rule. The Swift API filters Admin defensively and the channel editor requires an area before creation. A contract test pins the outgoing role list so this does not regress into a misleading authorization error.
