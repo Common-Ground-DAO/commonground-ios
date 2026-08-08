@@ -130,7 +130,7 @@ public final class SyncStore: ObservableObject {
         replace(message, reactions: counts, ownReaction: .some(reaction))
     }
 
-    private func apply(_ event: RealtimeEvent) {
+    func apply(_ event: RealtimeEvent) {
         guard case .object(let payload) = event.payload else { return }
         switch event.type {
         case .message:
@@ -164,9 +164,33 @@ public final class SyncStore: ObservableObject {
             } else if action == "allread" {
                 markAllNotificationsRead()
             }
+        case .community:
+            guard payload["action"]?.stringValue == "update",
+                  case .object(let patch) = payload["data"],
+                  let id = patch["id"]?.stringValue,
+                  let community = communities[id],
+                  let updated: Community = applying(patch, to: community) else { return }
+            communities[id] = updated
+        case .userOwnData:
+            guard case .object(let patch) = payload["data"],
+                  let ownUser,
+                  let updated: OwnUser = applying(patch, to: ownUser) else { return }
+            self.ownUser = updated
         default:
             break
         }
+    }
+
+    func applying<Value: Codable>(
+        _ patch: [String: JSONValue],
+        to value: Value
+    ) -> Value? {
+        guard let encoded = try? JSONEncoder().encode(value),
+              let root = try? JSONDecoder().decode(JSONValue.self, from: encoded),
+              case .object(var object) = root else { return nil }
+        for (key, value) in patch { object[key] = value }
+        guard let merged = try? JSONEncoder().encode(JSONValue.object(object)) else { return nil }
+        return try? JSONDecoder().decode(Value.self, from: merged)
     }
 
     private func applyMessagePatch(_ patch: [String: JSONValue], to message: Message) {

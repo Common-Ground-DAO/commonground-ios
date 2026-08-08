@@ -167,6 +167,30 @@ final class CommonGroundKitTests: XCTestCase {
             let store = SyncStore()
             store.hydrate(from: response)
             XCTAssertEqual(store.chats[response.chats[0].id]?.unread, 3)
+            store.apply(
+                RealtimeEvent(
+                    type: .community,
+                    payload: .object([
+                        "action": .string("update"),
+                        "data": .object([
+                            "id": .string(response.communities[0].id),
+                            "pointBalance": .number(12_345),
+                        ]),
+                    ]),
+                    receivedAt: Date()
+                )
+            )
+            XCTAssertEqual(store.communities[response.communities[0].id]?.pointBalance, 12_345)
+            store.apply(
+                RealtimeEvent(
+                    type: .userOwnData,
+                    payload: .object([
+                        "data": .object(["pointBalance": .number(54_321)]),
+                    ]),
+                    receivedAt: Date()
+                )
+            )
+            XCTAssertEqual(store.ownUser?.pointBalance, 54_321)
             store.reset()
             XCTAssertNil(store.ownUser)
             XCTAssertTrue(store.communities.isEmpty)
