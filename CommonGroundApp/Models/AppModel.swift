@@ -994,6 +994,41 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func giveSpark(to communityID: String, amount: Int) async -> Bool {
+        guard let client, let balance = store.ownUser?.pointBalance else { return false }
+        guard amount >= 1_000 else {
+            errorMessage = "The minimum amount is 1,000 Spark."
+            return false
+        }
+        guard Double(amount) <= balance else {
+            errorMessage = "You don’t have enough Spark for that contribution."
+            return false
+        }
+        do {
+            try await client.communities.giveSpark(communityID: communityID, amount: amount)
+            await refreshHome()
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func setCommunityUserBots(communityID: String, allowed: Bool) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.setAllowUserBots(
+                communityID: communityID,
+                allowed: allowed
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
     func createCommunityRole(communityID: String, title: String) async -> Bool {
         guard let client else { return false }
         do {
@@ -1719,6 +1754,7 @@ final class AppModel: ObservableObject {
             case "EXISTS_ALREADY": return "That email or profile name is already in use."
             case "CAPTCHA_FAILED": return "The registration challenge expired. Please try again."
             case "RATE_LIMIT_EXCEEDED": return "This instance is receiving too many requests. Try later."
+            case "INSUFFICIENT_BALANCE": return "You don’t have enough Spark for that contribution."
             default: return "The instance returned \(api.code)."
             }
         }

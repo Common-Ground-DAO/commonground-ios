@@ -912,7 +912,15 @@ final class CommonGroundKitTests: XCTestCase {
                 XCTAssertEqual((options["manuallyApprove"] as? [String: Any])?["enabled"] as? Bool, true)
                 return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
             case "/api/v2/Community/updateCommunity":
-                XCTAssertEqual(object["enablePersonalNewsletter"] as? Bool, true)
+                if object["enablePersonalNewsletter"] != nil {
+                    XCTAssertEqual(object["enablePersonalNewsletter"] as? Bool, true)
+                } else {
+                    XCTAssertEqual(object["allowUserBots"] as? Bool, false)
+                }
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/givePointsToCommunity":
+                XCTAssertEqual(object["communityId"] as? String, "community-1")
+                XCTAssertEqual(object["amount"] as? Int, 5_000)
                 return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
             case "/api/v2/Community/createChannel":
                 XCTAssertTrue(object["url"] is NSNull)
@@ -946,6 +954,8 @@ final class CommonGroundKitTests: XCTestCase {
             password: password
         )
         try await api.setPersonalNewsletter(communityID: "community-1", enabled: true)
+        try await api.setAllowUserBots(communityID: "community-1", allowed: false)
+        try await api.giveSpark(communityID: "community-1", amount: 5_000)
         try await api.createChannel(
             communityID: "community-1",
             areaID: "area-1",
@@ -967,7 +977,7 @@ final class CommonGroundKitTests: XCTestCase {
                 )
             ]
         )
-        XCTAssertEqual(routes.count, 9)
+        XCTAssertEqual(routes.count, 11)
     }
 
     func testProfileUpdateContracts() async throws {

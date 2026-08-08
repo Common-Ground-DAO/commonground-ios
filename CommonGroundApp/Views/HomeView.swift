@@ -889,11 +889,7 @@ private struct CommunitySettingsView: View {
                         SettingsRow(icon: "hexagon", color: .mint, title: "Token", badge: current.tokens.count)
                     }
                     NavigationLink {
-                        CommunitySettingsStatusView(
-                            title: "Bots",
-                            icon: "cpu",
-                            rows: [("Member-installed bots", current.allowUserBots ? "Allowed" : "Disabled")]
-                        )
+                        CommunityBotsSettingsView(community: current)
                     } label: {
                         SettingsRow(icon: "cpu", color: .yellow, title: "Bots")
                     }
@@ -999,6 +995,47 @@ private struct CommunityNewsletterSettingsView: View {
                     }
                 }
                 .disabled(isSaving || enabled == community.enablePersonalNewsletter)
+            }
+        }
+        .overlay { if isSaving { ProgressView() } }
+    }
+}
+
+private struct CommunityBotsSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    @State private var allowUserBots: Bool
+    @State private var isSaving = false
+
+    init(community: Community) {
+        self.community = community
+        _allowUserBots = State(initialValue: community.allowUserBots)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Allow member-installed bots", isOn: $allowUserBots)
+            } footer: {
+                Text("When enabled, members may add bots they control to this community. Community-managed bots are unaffected.")
+            }
+        }
+        .navigationTitle("Bots")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    isSaving = true
+                    Task {
+                        if await model.setCommunityUserBots(
+                            communityID: community.id,
+                            allowed: allowUserBots
+                        ) { dismiss() }
+                        isSaving = false
+                    }
+                }
+                .disabled(isSaving || allowUserBots == community.allowUserBots)
             }
         }
         .overlay { if isSaving { ProgressView() } }
@@ -2029,6 +2066,7 @@ private struct CommunityHomeView: View {
     @ObservedObject var store: SyncStore
     @State private var selectedArticle: ArticlePreview?
     @State private var showComposer = false
+    @State private var showSpark = false
 
     private var articles: [CommunityArticlePreview] {
         model.communityArticles[community.id] ?? []
@@ -2056,6 +2094,26 @@ private struct CommunityHomeView: View {
                     Text("\(community.memberCount) members · \(community.channels.count) channels")
                         .foregroundStyle(.secondary)
                 }
+
+                HStack(spacing: 14) {
+                    Image(systemName: "sparkles")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                        .frame(width: 44, height: 44)
+                        .background(Color.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(community.pointBalance.formatted(.number.precision(.fractionLength(0))))
+                            .font(.title3.bold())
+                        Text("Spark in Community Safe")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Give Spark") { showSpark = true }
+                        .buttonStyle(.bordered)
+                }
+                .padding(14)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
 
                 Divider()
                 HStack {
@@ -2126,6 +2184,112 @@ private struct CommunityHomeView: View {
                 showComposer = false
                 Task { await model.loadCommunityArticles(communityID: community.id) }
             }
+        }
+        .sheet(isPresented: $showSpark) {
+            SparkDonationView(community: community)
+        }
+    }
+}
+
+private struct SparkDonationView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    @State private var selectedAmount = 5_000
+    @State private var customAmount = ""
+    @State private var isGiving = false
+    @State private var confirming = false
+
+    private var balance: Double { model.store.ownUser?.pointBalance ?? 0 }
+    private var amount: Int {
+        if !customAmount.isEmpty { return Int(customAmount) ?? 0 }
+        return selectedAmount
+    }
+    private var canGive: Bool {
+        amount >= 1_000 && Double(amount) <= balance && !isGiving
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    LabeledContent("Community Safe") {
+                        Label(
+                            community.pointBalance.formatted(.number.precision(.fractionLength(0))),
+                            systemImage: "sparkles"
+                        )
+                    }
+                    LabeledContent("Your balance") {
+                        Text(balance.formatted(.number.precision(.fractionLength(0))))
+                    }
+                }
+
+                Section("Select amount") {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        ForEach([5_000, 10_000, 20_000, 50_000], id: \.self) { value in
+                            Button {
+                                selectedAmount = value
+                                customAmount = ""
+                            } label: {
+                                Label(value.formatted(), systemImage: "sparkles")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(selectedAmount == value && customAmount.isEmpty ? AppTheme.accent : .secondary)
+                        }
+                    }
+                    TextField("Custom amount (minimum 1,000)", text: $customAmount)
+                        .keyboardType(.numberPad)
+                        .onChange(of: customAmount) { _, value in
+                            customAmount = String(value.filter(\.isNumber).prefix(12))
+                        }
+                }
+
+                Section {
+                    Button("Give \(amount.formatted()) Spark", systemImage: "sparkles") {
+                        confirming = true
+                    }
+                    .disabled(!canGive)
+                } footer: {
+                    Text("Contributions move Spark into the community’s Safe immediately and are non-refundable.")
+                }
+
+                if balance < 1_000 {
+                    Section {
+                        Label("You need at least 1,000 Spark to contribute.", systemImage: "info.circle")
+                            .foregroundStyle(.secondary)
+                    } footer: {
+                        Text("Buying Spark will be added with the native wallet flow in a later milestone.")
+                    }
+                }
+            }
+            .navigationTitle("Give Spark")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .overlay { if isGiving { ProgressView() } }
+            .confirmationDialog(
+                "Give \(amount.formatted()) Spark to \(community.title)?",
+                isPresented: $confirming,
+                titleVisibility: .visible
+            ) {
+                Button("Give Spark") { give() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This contribution cannot be reversed.")
+            }
+        }
+    }
+
+    private func give() {
+        guard canGive else { return }
+        isGiving = true
+        Task {
+            if await model.giveSpark(to: community.id, amount: amount) { dismiss() }
+            isGiving = false
         }
     }
 }
@@ -3757,6 +3921,23 @@ private struct AccountView: View {
                     Button("Edit account and profile", systemImage: "pencil") {
                         showEditor = true
                     }
+                }
+
+                Section {
+                    LabeledContent {
+                        Text(
+                            (store.ownUser?.pointBalance ?? 0)
+                                .formatted(.number.precision(.fractionLength(0)))
+                        )
+                        .fontWeight(.semibold)
+                    } label: {
+                        Label("Available balance", systemImage: "sparkles")
+                            .foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("Spark")
+                } footer: {
+                    Text("Spark is Common Ground’s off-chain currency for supporting and upgrading communities.")
                 }
 
                 Section("Appearance") {

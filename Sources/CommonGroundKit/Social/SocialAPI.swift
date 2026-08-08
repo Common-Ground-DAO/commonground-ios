@@ -196,6 +196,20 @@ public struct CommunityAPI: Sendable {
         )
     }
 
+    public func giveSpark(communityID: String, amount: Int) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/givePointsToCommunity",
+            body: GiveSparkRequest(communityId: communityID, amount: amount)
+        )
+    }
+
+    public func setAllowUserBots(communityID: String, allowed: Bool) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/updateCommunity",
+            body: AllowUserBotsRequest(id: communityID, allowUserBots: allowed)
+        )
+    }
+
     public func createRole(communityID: String, title: String) async throws -> String {
         let response: RoleIDResponse = try await transport.call(
             "Community/createRole",
@@ -573,6 +587,14 @@ private struct SetPendingApprovalRequest: Encodable, Sendable {
 private struct PersonalNewsletterRequest: Encodable, Sendable {
     let id: String
     let enablePersonalNewsletter: Bool
+}
+private struct GiveSparkRequest: Encodable, Sendable {
+    let communityId: String
+    let amount: Int
+}
+private struct AllowUserBotsRequest: Encodable, Sendable {
+    let id: String
+    let allowUserBots: Bool
 }
 private struct RoleIDResponse: Decodable, Sendable { let id: String }
 private struct CreateRoleRequest: Encodable, Sendable {

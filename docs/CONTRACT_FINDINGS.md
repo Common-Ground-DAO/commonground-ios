@@ -22,7 +22,7 @@ Device ids and keys can also drift independently across reinstall, Keychain rese
 
 ## N-05 — push gateway contract is still required
 
-The current `registerWebPushSubscription` endpoint cannot register an APNs token. iOS push is intentionally not shimmed; it needs the publisher-run gateway planned by the native-client roadmap.
+The current `registerWebPushSubscription` endpoint cannot register an APNs token. iOS push is intentionally not shimmed; it needs the publisher-run gateway planned by the native-client roadmap. While the app is active, `cliNotificationEvent` drives native in-app banners and exact destination routing; this complements APNs but cannot replace background delivery.
 
 ## N-06 — sessions are isolated and restored per instance
 

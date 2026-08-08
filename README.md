@@ -21,9 +21,10 @@ The first protocol spine is implemented end-to-end:
 - community channel history and structured text-message sends back the initial SwiftUI experience;
 - adaptive native navigation uses compact iPhone flows and a three-column iPad layout;
 - communities and direct-message sessions are distinct navigation surfaces, with explicit selection restoration;
-- notification history/unread state, read mutations, server-backed user search, public profiles, follows, and mutual-follow DMs are API-backed;
+- notification history, exact message/comment routing, in-app realtime banners, server-backed user search, public profiles, follows, and mutual-follow DMs are API-backed;
 - public community discovery/create/join/leave and community, user, and message reporting are API-backed;
 - replies, structured mentions, reactions, editing/deletion, image upload, and signed attachment rendering are native messaging features;
+- Spark balances and non-refundable community contributions are native, alongside configurable community bot policy;
 - own REST writes are applied locally because the server deliberately sends no same-device echo.
 
 The SDK is a standalone Swift package in `Sources/CommonGroundKit`; views contain no protocol code.
