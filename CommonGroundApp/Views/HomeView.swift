@@ -165,6 +165,7 @@ private struct HomeContent: View {
             }
         }
         .navigationTitle(AppConfiguration.productName)
+        .refreshable { await model.refreshHome() }
     }
 
     private func sidebarRow(
@@ -416,6 +417,7 @@ private struct OverviewView: View {
             .padding(20)
         }
         .navigationTitle("Overview")
+        .refreshable { await model.refreshHome() }
         .task { await model.loadNotifications() }
     }
 }
@@ -1197,6 +1199,7 @@ private struct ChannelListView: View {
             }
         }
         .navigationTitle(community.title)
+        .refreshable { await model.refreshHome() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -1496,6 +1499,9 @@ private struct UserProfileView: View {
     @State private var showComposer = false
 
     private var user: UserProfile? { store.users[userID] }
+    private var onlineStatus: String {
+        user.map { model.effectiveOnlineStatus(for: $0) } ?? "offline"
+    }
     private var articles: [UserArticlePreview] { model.userArticles[userID] ?? [] }
     private var cgDetails: [String: JSONValue] {
         model.profileDetails[userID]?
@@ -1519,9 +1525,9 @@ private struct UserProfileView: View {
                             .padding(28)
                         VStack(spacing: 5) {
                             Text(user.displayName).font(.title2.bold())
-                            Label(user.onlineStatus.capitalized, systemImage: "circle.fill")
+                            Label(onlineStatus.capitalized, systemImage: "circle.fill")
                                 .font(.caption)
-                                .foregroundStyle(user.onlineStatus == "online" ? .green : .secondary)
+                                .foregroundStyle(onlineStatus == "online" ? .green : .secondary)
                         }
 
                         HStack(spacing: 36) {

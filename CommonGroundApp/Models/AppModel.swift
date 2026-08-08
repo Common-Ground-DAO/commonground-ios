@@ -46,6 +46,7 @@ final class AppModel: ObservableObject {
     @Published var isSearchingUsers = false
     @Published private(set) var userSearchResultIDs: [String] = []
     @Published var isLoadingCommunities = false
+    @Published private(set) var isRefreshingHome = false
     @Published private(set) var communityResults: [CommunitySummary] = []
     @Published private(set) var communityArticles: [String: [CommunityArticlePreview]] = [:]
     @Published private(set) var userArticles: [String: [UserArticlePreview]] = [:]
@@ -76,6 +77,41 @@ final class AppModel: ObservableObject {
     func communityShareURL(_ community: Community) -> URL? {
         guard let baseURL = client?.instance.url else { return nil }
         return baseURL.appending(path: "c").appending(path: community.url)
+    }
+
+    func effectiveOnlineStatus(for user: UserProfile) -> String {
+        if user.id == store.ownUser?.id, realtimeNotice == nil { return "online" }
+        return user.onlineStatus
+    }
+
+    func refreshHome() async {
+        guard !isRefreshingHome,
+              let client,
+              let signingKey,
+              let deviceID = savedDeviceID else { return }
+        isRefreshingHome = true
+        defer { isRefreshingHome = false }
+        do {
+            let session = try await client.auth.loginWithDevice(
+                deviceId: deviceID,
+                deviceKey: signingKey
+            )
+            store.hydrate(from: session.response)
+            saveCachedResponse(session.response, for: client.instance)
+            await hydrateUsers(ids: [session.response.ownData.id])
+            await refreshCommunityPresentation(
+                communityIDs: session.response.communities.map(\.id)
+            )
+            let communityIDs = Set(session.response.communities.map(\.id))
+            if let selectedCommunityID, !communityIDs.contains(selectedCommunityID) {
+                selectCommunity(nil)
+                selectChannel(nil)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
     }
 
     func restoreOnLaunch() async {
@@ -912,16 +948,25 @@ final class AppModel: ObservableObject {
         client: CommonGroundClient,
         signingKey: any DeviceSigningKey
     ) async -> Bool {
-        let status: LoginStatus
+        guard let deviceID = savedDeviceID(for: client.instance) else { return false }
         do {
-            status = try await client.auth.checkLoginStatus()
-        } catch {
-            // A transient status-check failure should not destroy a cache that
-            // may still match a valid rolling session on the next launch.
+            let session = try await client.auth.loginWithDevice(
+                deviceId: deviceID,
+                deviceKey: signingKey
+            )
+            await didAuthenticate(session)
+            return true
+        } catch let error as APIError where Self.isStaleDeviceError(error) {
+            _ = try? resetLocalDeviceIdentity(for: client.instance)
             return false
+        } catch {
+            // If fresh device reauthentication is temporarily unavailable, an
+            // already-valid cookie may still support the last local snapshot.
         }
+
+        let status: LoginStatus
+        do { status = try await client.auth.checkLoginStatus() } catch { return false }
         guard let userID = status.userId,
-              let deviceID = savedDeviceID(for: client.instance),
               let response = cachedResponse(for: client.instance),
               response.ownData.id == userID else {
             UserDefaults.standard.removeObject(forKey: Keys.cachedLogin(client.instance))
