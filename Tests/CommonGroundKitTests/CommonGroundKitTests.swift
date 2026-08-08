@@ -880,6 +880,9 @@ final class CommonGroundKitTests: XCTestCase {
                 )
             case "/api/v2/Message/deleteMessage":
                 XCTAssertEqual(object["creatorId"] as? String, "22222222-2222-2222-2222-222222222222")
+            case "/api/v2/Message/deleteAllUserMessages":
+                XCTAssertEqual(object["creatorId"] as? String, "22222222-2222-2222-2222-222222222222")
+                XCTAssertNil(object["messageId"])
             case "/api/v2/Message/setReaction":
                 XCTAssertEqual(object["reaction"] as? String, "👍")
             case "/api/v2/Message/unsetReaction":
@@ -912,9 +915,13 @@ final class CommonGroundKitTests: XCTestCase {
             messageID: messageID,
             creatorID: "22222222-2222-2222-2222-222222222222"
         )
+        try await api.deleteAll(
+            access: access,
+            creatorID: "22222222-2222-2222-2222-222222222222"
+        )
         try await api.setReaction(access: access, messageID: messageID, reaction: "👍")
         try await api.unsetReaction(access: access, messageID: messageID)
-        XCTAssertEqual(routes.count, 4)
+        XCTAssertEqual(routes.count, 5)
     }
 
     func testSyncStoreOrdersMixedISOTimestampsAndDeduplicatesRealtimeEvents() async throws {
@@ -1455,6 +1462,126 @@ final class CommonGroundKitTests: XCTestCase {
         )
         try await api.updateOwnData(email: "alice@example.org", dmNotifications: false)
         XCTAssertEqual(routes, ["/api/v2/User/updateUserAccount", "/api/v2/User/updateOwnData"])
+    }
+
+    func testCommunityEventLifecycleContract() async throws {
+        let eventJSON = #"{"id":"event-1","type":"external","communityId":"community-1","eventCreator":"user-1","url":"swift-night","title":"Swift Night","description":{"version":"2","content":[{"type":"text","value":"Talks"},{"type":"newline"},{"type":"text","value":"Drinks"}]},"externalUrl":"https://example.org/event","location":"Berlin","scheduleDate":"2026-08-09T18:00:00.000Z","duration":90,"createdAt":"2026-08-08T18:00:00.000Z","deletedAt":null,"updatedAt":"2026-08-08T18:00:00.000Z","callId":null,"imageId":null,"rolePermissions":[{"roleId":"role-member","roleTitle":"Member","permissions":["EVENT_PREVIEW","EVENT_ATTEND"]}],"participantIds":["user-1"],"participantCount":"1","isSelfAttending":true}"#
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = try XCTUnwrap(request.url?.path)
+            routes.append(path)
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request))) as? [String: Any]
+            )
+            switch path {
+            case "/api/v2/Community/getEventList":
+                XCTAssertEqual(object["communityId"] as? String, "community-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":[\#(eventJSON)]}"#)
+            case "/api/v2/Community/getMyEvents":
+                XCTAssertNil(object["beforeId"])
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":[\#(eventJSON)]}"#)
+            case "/api/v2/Community/createCommunityEvent":
+                XCTAssertEqual(object["type"] as? String, "external")
+                XCTAssertEqual(object["externalUrl"] as? String, "https://example.org/event")
+                XCTAssertEqual(object["duration"] as? Int, 90)
+                XCTAssertTrue(object["url"] is NSNull)
+                XCTAssertTrue(object["imageId"] is NSNull)
+                let permissions = try XCTUnwrap(object["rolePermissions"] as? [[String: Any]])
+                XCTAssertEqual(permissions.first?["roleTitle"] as? String, "Member")
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":\#(eventJSON)}"#)
+            case "/api/v2/Community/updateCommunityEvent":
+                XCTAssertEqual(object["id"] as? String, "event-1")
+                XCTAssertEqual(object["title"] as? String, "Updated Swift Night")
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":\#(eventJSON)}"#)
+            case "/api/v2/Community/addEventParticipant", "/api/v2/Community/removeEventParticipant":
+                XCTAssertEqual(object["eventId"] as? String, "event-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/deleteCommunityEvent":
+                XCTAssertEqual(object["eventId"] as? String, "event-1")
+                XCTAssertEqual(object["communityId"] as? String, "community-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            default:
+                XCTFail("Unexpected route \(path)")
+                return Self.response(request, status: 404, body: #"{"status":"ERROR"}"#)
+            }
+        }
+        let api = CommunityAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let listed = try await api.events(communityID: "community-1")
+        XCTAssertEqual(listed.first?.descriptionText, "Talks\nDrinks")
+        XCTAssertEqual(listed.first?.participantCount, 1)
+        let mine = try await api.myEvents()
+        XCTAssertEqual(mine.map(\.id), ["event-1"])
+        let created = try await api.createEvent(
+            communityID: "community-1",
+            type: .external,
+            title: "Swift Night",
+            description: "Talks\nDrinks",
+            duration: 90,
+            imageID: nil,
+            scheduledAt: "2026-08-09T18:00:00.000Z",
+            rolePermissions: [
+                CommunityEventRolePermission(
+                    roleId: "role-member",
+                    roleTitle: "Member",
+                    permissions: ["EVENT_PREVIEW", "EVENT_ATTEND"]
+                ),
+            ],
+            externalURL: "https://example.org/event",
+            location: "Berlin"
+        )
+        XCTAssertEqual(created.title, "Swift Night")
+        _ = try await api.updateEvent(
+            id: "event-1",
+            type: .external,
+            title: "Updated Swift Night",
+            description: "Talks\nDrinks",
+            duration: 90,
+            imageID: nil,
+            scheduledAt: "2026-08-09T18:00:00.000Z",
+            rolePermissions: [
+                CommunityEventRolePermission(
+                    roleId: "role-member",
+                    roleTitle: "Member",
+                    permissions: ["EVENT_PREVIEW", "EVENT_ATTEND"]
+                ),
+            ],
+            externalURL: "https://example.org/event",
+            location: "Berlin"
+        )
+        try await api.attendEvent(id: "event-1")
+        try await api.leaveEvent(id: "event-1")
+        try await api.deleteEvent(communityID: "community-1", eventID: "event-1")
+        XCTAssertEqual(routes.count, 7)
+    }
+
+    func testPluginSignedBridgeContract() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Plugins/pluginRequest")
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request))) as? [String: Any]
+            )
+            XCTAssertEqual(object["request"] as? String, "signed-inner-request")
+            XCTAssertEqual(object["signature"] as? String, "plugin-signature")
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":{"response":"signed-inner-response","signature":"server-signature"}}"#
+            )
+        }
+        let api = PluginAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let response = try await api.request("signed-inner-request", signature: "plugin-signature")
+        XCTAssertEqual(response.response, "signed-inner-response")
+        XCTAssertEqual(response.signature, "server-signature")
     }
 
     /// Opt-in compatibility probe for the deployed development instance. It

@@ -40,6 +40,13 @@ public struct PluginAPI: Sendable {
             body: AcceptPluginPermissionsRequest(pluginId: pluginID, permissions: permissions)
         )
     }
+
+    public func request(_ request: String, signature: String) async throws -> PluginBridgeResponse {
+        try await transport.call(
+            "Plugins/pluginRequest",
+            body: PluginBridgeRequest(request: request, signature: signature)
+        )
+    }
 }
 
 private struct AppStorePluginRequest: Encodable, Sendable {
@@ -58,5 +65,9 @@ private struct PluginIDRequest: Encodable, Sendable { let id: String }
 private struct AcceptPluginPermissionsRequest: Encodable, Sendable {
     let pluginId: String
     let permissions: [String]
+}
+private struct PluginBridgeRequest: Encodable, Sendable {
+    let request: String
+    let signature: String
 }
 private struct PluginOKResponse: Decodable, Sendable { let ok: Bool }

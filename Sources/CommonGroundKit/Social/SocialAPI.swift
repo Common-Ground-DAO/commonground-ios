@@ -214,6 +214,106 @@ public struct CommunityAPI: Sendable {
         )
     }
 
+    public func events(communityID: String) async throws -> [CommunityEvent] {
+        try await transport.call(
+            "Community/getEventList",
+            body: CommunityIDRequest(communityId: communityID)
+        )
+    }
+
+    public func myEvents(
+        scheduledBefore: String? = nil
+    ) async throws -> [CommunityEvent] {
+        try await transport.call(
+            "Community/getMyEvents",
+            body: MyEventsRequest(scheduledBefore: scheduledBefore)
+        )
+    }
+
+    public func event(id: String) async throws -> CommunityEvent {
+        try await transport.call("Community/getEvent", body: IDRequest(id: id))
+    }
+
+    public func createEvent(
+        communityID: String,
+        type: CommunityEventType,
+        title: String,
+        description: String,
+        duration: Int,
+        imageID: String?,
+        scheduledAt: String,
+        rolePermissions: [CommunityEventRolePermission],
+        externalURL: String?,
+        location: String?
+    ) async throws -> CommunityEvent {
+        try await transport.call(
+            "Community/createCommunityEvent",
+            body: CreateCommunityEventRequest(
+                type: type,
+                communityId: communityID,
+                title: title,
+                description: description,
+                duration: duration,
+                url: nil,
+                imageId: imageID,
+                scheduleDate: scheduledAt,
+                rolePermissions: rolePermissions.filter { $0.roleTitle != "Admin" },
+                externalUrl: type == .external ? externalURL : nil,
+                location: type == .external ? location : nil
+            )
+        )
+    }
+
+    public func updateEvent(
+        id: String,
+        type: CommunityEventType,
+        title: String,
+        description: String,
+        duration: Int,
+        imageID: String?,
+        scheduledAt: String,
+        rolePermissions: [CommunityEventRolePermission],
+        externalURL: String?,
+        location: String?
+    ) async throws -> CommunityEvent {
+        try await transport.call(
+            "Community/updateCommunityEvent",
+            body: UpdateCommunityEventRequest(
+                id: id,
+                type: type,
+                title: title,
+                description: description,
+                duration: duration,
+                imageId: imageID,
+                scheduleDate: scheduledAt,
+                rolePermissions: rolePermissions.filter { $0.roleTitle != "Admin" },
+                externalUrl: type == .external ? externalURL : nil,
+                location: type == .external ? location : nil
+            )
+        )
+    }
+
+    public func deleteEvent(communityID: String, eventID: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/deleteCommunityEvent",
+            body: DeleteCommunityEventRequest(eventId: eventID, communityId: communityID)
+        )
+    }
+
+    public func attendEvent(id: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/addEventParticipant",
+            body: EventIDRequest(eventId: id)
+        )
+    }
+
+    public func leaveEvent(id: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/removeEventParticipant",
+            body: EventIDRequest(eventId: id)
+        )
+    }
+
     public func giveSpark(communityID: String, amount: Int) async throws {
         let _: EmptyResponse = try await transport.call(
             "Community/givePointsToCommunity",
@@ -552,6 +652,13 @@ public struct MessageAPI: Sendable {
         )
     }
 
+    public func deleteAll(access: MessageAccess, creatorID: String) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Message/deleteAllUserMessages",
+            body: DeleteAllUserMessagesRequest(access: access, creatorId: creatorID)
+        )
+    }
+
     public func setReaction(access: MessageAccess, messageID: String, reaction: String) async throws {
         let _: EmptyResponse = try await transport.call(
             "Message/setReaction",
@@ -726,6 +833,84 @@ private struct NewsletterHistoryResponse: Decodable, Sendable {
 private struct CommunityArticleIDRequest: Encodable, Sendable {
     let communityId: String
     let articleId: String
+}
+private struct EventIDRequest: Encodable, Sendable { let eventId: String }
+private struct MyEventsRequest: Encodable, Sendable {
+    let scheduledBefore: String?
+}
+private struct DeleteCommunityEventRequest: Encodable, Sendable {
+    let eventId: String
+    let communityId: String
+}
+private struct CreateCommunityEventRequest: Encodable, Sendable {
+    let type: CommunityEventType
+    let communityId: String
+    let title: String
+    let description: String
+    let duration: Int
+    let url: String?
+    let imageId: String?
+    let scheduleDate: String
+    let rolePermissions: [CommunityEventRolePermission]
+    let externalUrl: String?
+    let location: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case type, communityId, title, description, duration, url, imageId
+        case scheduleDate, rolePermissions, externalUrl, location
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(type, forKey: .type)
+        try container.encode(communityId, forKey: .communityId)
+        try container.encode(title, forKey: .title)
+        try container.encode(description, forKey: .description)
+        try container.encode(duration, forKey: .duration)
+        try container.encodeNil(forKey: .url)
+        if let imageId { try container.encode(imageId, forKey: .imageId) }
+        else { try container.encodeNil(forKey: .imageId) }
+        try container.encode(scheduleDate, forKey: .scheduleDate)
+        try container.encode(rolePermissions, forKey: .rolePermissions)
+        if let externalUrl { try container.encode(externalUrl, forKey: .externalUrl) }
+        else { try container.encodeNil(forKey: .externalUrl) }
+        if let location { try container.encode(location, forKey: .location) }
+        else { try container.encodeNil(forKey: .location) }
+    }
+}
+private struct UpdateCommunityEventRequest: Encodable, Sendable {
+    let id: String
+    let type: CommunityEventType
+    let title: String
+    let description: String
+    let duration: Int
+    let imageId: String?
+    let scheduleDate: String
+    let rolePermissions: [CommunityEventRolePermission]
+    let externalUrl: String?
+    let location: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type, title, description, duration, imageId
+        case scheduleDate, rolePermissions, externalUrl, location
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(type, forKey: .type)
+        try container.encode(title, forKey: .title)
+        try container.encode(description, forKey: .description)
+        try container.encode(duration, forKey: .duration)
+        if let imageId { try container.encode(imageId, forKey: .imageId) }
+        else { try container.encodeNil(forKey: .imageId) }
+        try container.encode(scheduleDate, forKey: .scheduleDate)
+        try container.encode(rolePermissions, forKey: .rolePermissions)
+        if let externalUrl { try container.encode(externalUrl, forKey: .externalUrl) }
+        else { try container.encodeNil(forKey: .externalUrl) }
+        if let location { try container.encode(location, forKey: .location) }
+        else { try container.encodeNil(forKey: .location) }
+    }
 }
 private struct GiveSparkRequest: Encodable, Sendable {
     let communityId: String
@@ -965,6 +1150,10 @@ private struct EditMessageRequest: Encodable, Sendable {
 private struct DeleteMessageRequest: Encodable, Sendable {
     let access: MessageAccess
     let messageId: String
+    let creatorId: String
+}
+private struct DeleteAllUserMessagesRequest: Encodable, Sendable {
+    let access: MessageAccess
     let creatorId: String
 }
 private struct SetReactionRequest: Encodable, Sendable {

@@ -24,14 +24,25 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
   URL previews, instance-configured GIPHY search, and an image attachment gallery.
 - Ephemeral typing presence is implemented end to end for community channels, direct messages, and
   joined article comment rooms, including refresh, explicit stop, reconnect cleanup, and stale-state expiry.
+- Community events are native: per-community discovery, cross-community “My events”, attendance,
+  external/reminder event creation, role audiences, image uploads, and authorized edit/delete flows.
+  Native calls and broadcasts deliberately remain in the calls workstream.
+- Community apps have a native store/install surface and an isolated, non-persistent WebKit runtime.
+  The bridge validates plugin identity/origin, forwards signed backend requests, rate-limits calls,
+  prompts for declared sensitive permissions, gates camera/microphone, and routes safe internal links.
+- Community administrators can reorder areas/channels, pin and remove messages, remove all channel
+  messages from a member, and open role/ban moderation directly from message context menus.
 
 ## M1.1 — release hardening
 
-- Add account deletion when the server resolves the policy/API backlog.
-- Add user blocking when the server resolves the policy/API backlog.
+- Add account deletion after backend issue #54 resolves the policy/API backlog.
+- Add user blocking after backend issue #55 resolves the policy/API backlog.
 - Add arbitrary file picking/browsing after backend issue #58 defines generic attachment metadata.
-- Add passkeys through AuthenticationServices plus `ASWebAuthenticationSession` fallback for arbitrary instances.
-- Complete localization, VoiceOver/UI automation, privacy manifests, and the supported-instance compatibility matrix.
+- Add passkeys after backend issue #66 supplies a secure native ceremony handoff for arbitrary instances.
+- Complete translation coverage beyond the checked-in string-catalog foundation.
+- Expand UI automation from onboarding/accessibility smoke tests to authenticated iPhone/iPad journeys.
+- Fill the live supported-instance matrix for each release. Privacy manifests, dual-device CI, and the
+  manual TestFlight upload pipeline are implemented.
 
 ## M2 — server-coordinated push
 
@@ -44,6 +55,6 @@ Implement protoo signaling from the documented handshake, then mediasoup/WebRTC 
 ## Release gates
 
 - Server-side user blocking (Apple UGC guideline 1.2).
-- Privacy manifest, nutrition labels, account deletion, moderation contact, age rating.
+- Nutrition labels, account deletion, moderation contact, age rating, and publisher metadata.
 - Maintainer decision on iOS token/payment surfaces.
 - Signing, TestFlight, and a live compatibility matrix for supported API/socket versions.

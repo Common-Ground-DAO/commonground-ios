@@ -109,6 +109,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var communityPendingApprovals: [String: [CommunityPendingApproval]] = [:]
     @Published private(set) var communityNewsletterHistory: [String: [CommunityNewsletterEntry]] = [:]
     @Published private(set) var appStorePlugins: [AppStorePlugin] = []
+    @Published private(set) var communityEvents: [String: [CommunityEvent]] = [:]
+    @Published private(set) var myEvents: [CommunityEvent] = []
     @Published private(set) var linkPreviews: [String: URLPreview] = [:]
     @Published private(set) var gifResults: [GIFSearchResult] = []
     @Published private(set) var isSearchingGIFs = false
@@ -233,6 +235,7 @@ final class AppModel: ObservableObject {
     func restoreOnLaunch() async {
         guard !didAttemptLaunchRestore else { return }
         didAttemptLaunchRestore = true
+        guard !ProcessInfo.processInfo.arguments.contains("-ui-testing") else { return }
         guard UserDefaults.standard.string(forKey: Keys.instance) != nil else { return }
         await connect()
     }
@@ -534,6 +537,168 @@ final class AppModel: ObservableObject {
             return
         } catch {
             errorMessage = userMessage(for: error)
+        }
+    }
+
+    func loadCommunityEvents(communityID: String) async {
+        guard let client else { return }
+        do {
+            let events = try await client.communities.events(communityID: communityID)
+            communityEvents[communityID] = events.sorted { lhs, rhs in
+                (Self.parseISODate(lhs.scheduleDate) ?? .distantFuture)
+                    < (Self.parseISODate(rhs.scheduleDate) ?? .distantFuture)
+            }
+            await hydrateUsers(ids: events.map(\.eventCreator) + events.flatMap(\.participantIds))
+            await loadAttachmentURLs(objectIDs: events.compactMap(\.imageId))
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func loadMyEvents() async {
+        guard let client else { return }
+        do {
+            let events = try await client.communities.myEvents()
+            myEvents = events.sorted { lhs, rhs in
+                (Self.parseISODate(lhs.scheduleDate) ?? .distantFuture)
+                    < (Self.parseISODate(rhs.scheduleDate) ?? .distantFuture)
+            }
+            for event in events {
+                communityEvents[event.communityId] = [event]
+                    + (communityEvents[event.communityId] ?? []).filter { $0.id != event.id }
+            }
+            await hydrateUsers(ids: events.map(\.eventCreator) + events.flatMap(\.participantIds))
+            await loadAttachmentURLs(objectIDs: events.compactMap(\.imageId))
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func saveCommunityEvent(
+        community: Community,
+        editing event: CommunityEvent? = nil,
+        type: CommunityEventType,
+        title: String,
+        description: String,
+        start: Date,
+        end: Date,
+        externalURL: String?,
+        location: String?,
+        rolePermissions: [CommunityEventRolePermission],
+        imageData: Data?
+    ) async -> Bool {
+        guard let client, community.canManageEvents else { return false }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty, start > Date(), end > start else {
+            errorMessage = "Choose a title and a future time range."
+            return false
+        }
+        let duration = Int(end.timeIntervalSince(start) / 60)
+        guard duration <= 8 * 60 else {
+            errorMessage = "Community events can be at most eight hours long."
+            return false
+        }
+        let permissions = rolePermissions.isEmpty
+            ? community.defaultEventRolePermissions
+            : rolePermissions
+        guard !permissions.isEmpty else {
+            errorMessage = "This community has no event audience configured."
+            return false
+        }
+        do {
+            var imageID = event?.imageId
+            if let imageData {
+                let upload = try await client.files.uploadImage(
+                    imageData,
+                    type: .articleImage,
+                    communityID: community.id
+                )
+                imageID = upload.largeImageId ?? upload.imageId
+            }
+            let saved: CommunityEvent
+            if let event {
+                saved = try await client.communities.updateEvent(
+                    id: event.id,
+                    type: type,
+                    title: trimmedTitle,
+                    description: description.trimmingCharacters(in: .whitespacesAndNewlines),
+                    duration: duration,
+                    imageID: imageID,
+                    scheduledAt: ISO8601DateFormatter().string(from: start),
+                    rolePermissions: permissions,
+                    externalURL: externalURL,
+                    location: location
+                )
+            } else {
+                saved = try await client.communities.createEvent(
+                    communityID: community.id,
+                    type: type,
+                    title: trimmedTitle,
+                    description: description.trimmingCharacters(in: .whitespacesAndNewlines),
+                    duration: duration,
+                    imageID: imageID,
+                    scheduledAt: ISO8601DateFormatter().string(from: start),
+                    rolePermissions: permissions,
+                    externalURL: externalURL,
+                    location: location
+                )
+            }
+            communityEvents[community.id] = [saved]
+                + (communityEvents[community.id] ?? []).filter { $0.id != saved.id }
+            communityEvents[community.id]?.sort {
+                (Self.parseISODate($0.scheduleDate) ?? .distantFuture)
+                    < (Self.parseISODate($1.scheduleDate) ?? .distantFuture)
+            }
+            if saved.isSelfAttending || myEvents.contains(where: { $0.id == saved.id }) {
+                myEvents = [saved] + myEvents.filter { $0.id != saved.id }
+                myEvents.sort {
+                    (Self.parseISODate($0.scheduleDate) ?? .distantFuture)
+                        < (Self.parseISODate($1.scheduleDate) ?? .distantFuture)
+                }
+            }
+            await hydrateUsers(ids: [saved.eventCreator] + saved.participantIds)
+            await loadAttachmentURLs(objectIDs: [saved.imageId].compactMap { $0 })
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func deleteCommunityEvent(_ event: CommunityEvent) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.deleteEvent(
+                communityID: event.communityId,
+                eventID: event.id
+            )
+            communityEvents[event.communityId]?.removeAll { $0.id == event.id }
+            myEvents.removeAll { $0.id == event.id }
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func setEventAttendance(_ event: CommunityEvent, attending: Bool) async -> Bool {
+        guard let client else { return false }
+        do {
+            if attending {
+                try await client.communities.attendEvent(id: event.id)
+            } else {
+                try await client.communities.leaveEvent(id: event.id)
+            }
+            await loadCommunityEvents(communityID: event.communityId)
+            await loadMyEvents()
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
         }
     }
 
@@ -1408,6 +1573,60 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func reorderCommunityAreas(communityID: String, from: IndexSet, to: Int) async -> Bool {
+        guard let client, let community = store.communities[communityID] else { return false }
+        var areas = community.areaInfos
+        areas.move(fromOffsets: from, toOffset: to)
+        do {
+            for (index, area) in areas.enumerated() where area.order != index {
+                try await client.communities.updateArea(
+                    communityID: communityID,
+                    areaID: area.id,
+                    title: nil,
+                    order: index
+                )
+            }
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            await refreshCommunity(communityID)
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func reorderCommunityChannels(
+        communityID: String,
+        areaID: String?,
+        from: IndexSet,
+        to: Int
+    ) async -> Bool {
+        guard let client, let community = store.communities[communityID] else { return false }
+        var channels = community.channels.filter { $0.areaId == areaID }.sorted { $0.order < $1.order }
+        channels.move(fromOffsets: from, toOffset: to)
+        do {
+            for (index, channel) in channels.enumerated() where channel.order != index {
+                try await client.communities.updateChannel(
+                    communityID: communityID,
+                    channelID: channel.channelId,
+                    areaID: channel.areaId,
+                    title: channel.title,
+                    url: channel.url,
+                    order: index,
+                    description: channel.description,
+                    emoji: channel.emoji,
+                    roleAccess: channel.roleAccess
+                )
+            }
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            await refreshCommunity(communityID)
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
     func setCommunityMemberBlock(
         communityID: String,
         userID: String,
@@ -1557,6 +1776,24 @@ final class AppModel: ObservableObject {
             errorMessage = userMessage(for: error)
             return false
         }
+    }
+
+    func grantPluginPermission(_ permission: String, to plugin: CommunityPluginInfo) async -> Bool {
+        let available = Set((plugin.permissions?.mandatory ?? []) + (plugin.permissions?.optional ?? []))
+        guard available.contains(permission) else {
+            errorMessage = "This app did not declare that permission."
+            return false
+        }
+        let current = Set(plugin.acceptedPermissions ?? plugin.permissions?.mandatory ?? [])
+        return await updatePluginPermissions(
+            plugin,
+            permissions: Array(current.union([permission])).sorted()
+        )
+    }
+
+    func forwardPluginRequest(request: String, signature: String) async throws -> PluginBridgeResponse {
+        guard let client else { throw PluginRuntimeError.noSession }
+        return try await client.plugins.request(request, signature: signature)
     }
 
     private func refreshCommunity(_ communityID: String) async {
@@ -1732,6 +1969,16 @@ final class AppModel: ObservableObject {
             )
             store.applyOwnDelete(messageID: message.id, channelID: message.channelId)
             if editingMessage?.id == message.id { cancelComposerContext() }
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func deleteAllMessages(by creatorID: String, access: MessageAccess) async {
+        guard let client else { return }
+        do {
+            try await client.messages.deleteAll(access: access, creatorID: creatorID)
+            store.applyModeratorDeleteAll(creatorID: creatorID, channelID: access.channelId)
         } catch {
             errorMessage = userMessage(for: error)
         }
@@ -2580,5 +2827,10 @@ final class AppModel: ObservableObject {
             case .savedDeviceExpired: return "This saved device login expired. Sign in with your password to reconnect it."
             }
         }
+    }
+
+    private enum PluginRuntimeError: Error, LocalizedError {
+        case noSession
+        var errorDescription: String? { "The app session is no longer available." }
     }
 }

@@ -20,11 +20,15 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
-    <key>NSAppTransportSecurity</key>
+	<key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
         <true/>
-    </dict>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Community apps can use the camera only after you grant that app permission.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Community apps can use the microphone only after you grant that app permission.</string>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>

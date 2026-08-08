@@ -13,6 +13,7 @@ struct HomeView: View {
 
 private enum SidebarItem: Hashable {
     case overview
+    case events
     case directMessages
     case notifications
     case search
@@ -35,6 +36,12 @@ private struct NotificationArticleRoute: Identifiable {
 
 private struct NotificationProfileRoute: Identifiable {
     let id: String
+}
+
+private struct EventRoute: Identifiable {
+    let event: CommunityEvent
+    let community: Community
+    var id: String { event.id }
 }
 
 private struct HomeContent: View {
@@ -147,12 +154,17 @@ private struct HomeContent: View {
                 model.selectChannel(nil)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .commonGroundPluginNavigate)) { notification in
+            guard let path = notification.object as? String else { return }
+            openPluginDestination(path)
+        }
     }
 
     private var sidebar: some View {
         List(selection: $sidebarSelection) {
             Section {
                 sidebarRow("Overview", systemImage: "square.grid.2x2", item: .overview)
+                sidebarRow("My events", systemImage: "calendar", item: .events)
                 sidebarRow("Messages", systemImage: "bubble.left.and.bubble.right", item: .directMessages)
                 sidebarRow(
                     "Notifications",
@@ -261,6 +273,8 @@ private struct HomeContent: View {
                 discover: { sidebarSelection = .discover },
                 createCommunity: { showCreateCommunity = true }
             )
+        case .events:
+            MyEventsView(store: store)
         case .directMessages:
             ChatListView(
                 chats: chats,
@@ -337,6 +351,12 @@ private struct HomeContent: View {
                 message: "Choose a community or conversation to get started.",
                 systemImage: "sparkles"
             )
+        case .events:
+            ConversationPlaceholder(
+                title: "Your events",
+                message: "Events you are attending appear in the middle column.",
+                systemImage: "calendar"
+            )
         case .notifications:
             ConversationPlaceholder(
                 title: "Notification details",
@@ -385,6 +405,21 @@ private struct HomeContent: View {
         model.selectChat(id)
         sidebarSelection = .directMessages
         preferredCompactColumn = .detail
+    }
+
+    private func openPluginDestination(_ path: String) {
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count >= 2, parts[0] == "c",
+              let community = store.communities.values.first(where: { $0.url == parts[1] }) else {
+            return
+        }
+        if parts.count >= 4, parts[2] == "channel",
+           let channel = community.channels.first(where: { $0.url == parts[3] }) {
+            openChannel(channel.channelId, communityID: community.id)
+        } else {
+            openCommunity(community.id)
+            preferredCompactColumn = .detail
+        }
     }
 
     private func openNotification(_ notification: AppNotification) {
@@ -442,6 +477,82 @@ private struct HomeContent: View {
                 model.errorMessage = "This notification links to a feature that is not available in the app yet."
             case .unknownArticle:
                 model.errorMessage = "This article notification is missing its owner information."
+            }
+        }
+    }
+}
+
+private struct MyEventsView: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var store: SyncStore
+    @State private var route: EventRoute?
+
+    private var upcoming: [CommunityEvent] {
+        model.myEvents.filter {
+            guard let date = parseEventDate($0.scheduleDate) else { return true }
+            return date.addingTimeInterval(TimeInterval($0.duration * 60)) >= Date()
+        }
+    }
+
+    private var past: [CommunityEvent] {
+        Array(model.myEvents.filter {
+            guard let date = parseEventDate($0.scheduleDate) else { return false }
+            return date.addingTimeInterval(TimeInterval($0.duration * 60)) < Date()
+        }.reversed())
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                Text("My events")
+                    .font(.largeTitle.bold())
+                Text("Events you are attending across your communities.")
+                    .foregroundStyle(.secondary)
+
+                if model.myEvents.isEmpty {
+                    ContentUnavailableView(
+                        "No events yet",
+                        systemImage: "calendar.badge.plus",
+                        description: Text("Attend an event from a community home and it will appear here.")
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 60)
+                } else {
+                    eventSection("Upcoming", events: upcoming)
+                    eventSection("Past", events: past)
+                }
+            }
+            .frame(maxWidth: 720, alignment: .leading)
+            .padding(20)
+            .frame(maxWidth: .infinity)
+        }
+        .navigationTitle("Events")
+        .refreshable { await model.loadMyEvents() }
+        .task { await model.loadMyEvents() }
+        .sheet(item: $route) { route in
+            CommunityEventDetailView(community: route.community, event: route.event)
+        }
+    }
+
+    @ViewBuilder
+    private func eventSection(_ title: String, events: [CommunityEvent]) -> some View {
+        if !events.isEmpty {
+            Text(title)
+                .font(.title3.bold())
+                .padding(.top, 12)
+            ForEach(events) { event in
+                if let community = store.communities[event.communityId] {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(community.title)
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        CommunityEventCard(
+                            event: event,
+                            imageURL: event.imageId.flatMap { model.attachmentURLs[$0] },
+                            open: { route = EventRoute(event: event, community: community) }
+                        )
+                    }
+                }
             }
         }
     }
@@ -1946,6 +2057,7 @@ private struct CommunityChannelsSettingsView: View {
     @State private var showingNewChannel = false
     @State private var showingNewArea = false
     @State private var areaName = ""
+    @State private var isReordering = false
 
     private var current: Community { model.store.communities[community.id] ?? community }
 
@@ -1958,6 +2070,17 @@ private struct CommunityChannelsSettingsView: View {
                             CommunityAreaEditor(community: current, area: area)
                         } label: {
                             LabeledContent(area.title, value: "Order \(area.order + 1)")
+                        }
+                    }
+                    .onMove { source, destination in
+                        isReordering = true
+                        Task {
+                            _ = await model.reorderCommunityAreas(
+                                communityID: current.id,
+                                from: source,
+                                to: destination
+                            )
+                            isReordering = false
                         }
                     }
                 }
@@ -1977,6 +2100,9 @@ private struct CommunityChannelsSettingsView: View {
                             .disabled(current.areaInfos.isEmpty)
                         Button("New area", systemImage: "folder") { showingNewArea = true }
                     }
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    EditButton().disabled(isReordering)
                 }
             }
         }
@@ -2026,6 +2152,18 @@ private struct CommunityChannelsSettingsView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
+                    }
+                }
+                .onMove { source, destination in
+                    isReordering = true
+                    Task {
+                        _ = await model.reorderCommunityChannels(
+                            communityID: current.id,
+                            areaID: areaID,
+                            from: source,
+                            to: destination
+                        )
+                        isReordering = false
                     }
                 }
             }
@@ -2589,7 +2727,9 @@ private struct CommunityHomeView: View {
     let community: Community
     @ObservedObject var store: SyncStore
     @State private var selectedArticle: ArticlePreview?
+    @State private var selectedEvent: CommunityEvent?
     @State private var showComposer = false
+    @State private var showEventComposer = false
     @State private var showSpark = false
 
     private var articles: [CommunityArticlePreview] {
@@ -2598,6 +2738,12 @@ private struct CommunityHomeView: View {
 
     private var drafts: [CommunityArticlePreview] {
         model.communityArticleDrafts[community.id] ?? []
+    }
+
+    private var events: [CommunityEvent] {
+        (model.communityEvents[community.id] ?? []).filter {
+            (parseEventDate($0.scheduleDate) ?? .distantPast).addingTimeInterval(Double($0.duration) * 60) > Date()
+        }
     }
 
     var body: some View {
@@ -2638,6 +2784,38 @@ private struct CommunityHomeView: View {
                 }
                 .padding(14)
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+
+                Divider()
+                HStack {
+                    Text("Upcoming events").font(.title2.bold())
+                    Spacer()
+                    if community.canManageEvents {
+                        Button("Schedule", systemImage: "calendar.badge.plus") {
+                            showEventComposer = true
+                        }
+                    } else {
+                        Image(systemName: "calendar").foregroundStyle(AppTheme.accent)
+                    }
+                }
+
+                if events.isEmpty {
+                    ContentUnavailableView(
+                        "No upcoming events",
+                        systemImage: "calendar",
+                        description: Text("Scheduled community events will appear here.")
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(events) { event in
+                            CommunityEventCard(
+                                event: event,
+                                imageURL: event.imageId.flatMap { model.attachmentURLs[$0] }
+                            ) { selectedEvent = event }
+                        }
+                    }
+                }
 
                 Divider()
                 HStack {
@@ -2693,8 +2871,16 @@ private struct CommunityHomeView: View {
             .frame(maxWidth: .infinity)
         }
         .navigationTitle(community.title)
-        .refreshable { await model.refreshCommunityHome(communityID: community.id) }
-        .task(id: community.id) { await model.loadCommunityArticles(communityID: community.id) }
+        .refreshable {
+            async let home: Void = model.refreshCommunityHome(communityID: community.id)
+            async let events: Void = model.loadCommunityEvents(communityID: community.id)
+            _ = await (home, events)
+        }
+        .task(id: community.id) {
+            async let articles: Void = model.loadCommunityArticles(communityID: community.id)
+            async let events: Void = model.loadCommunityEvents(communityID: community.id)
+            _ = await (articles, events)
+        }
         .sheet(item: $selectedArticle) { article in
             ArticleReaderView(
                 articleID: article.id,
@@ -2709,10 +2895,407 @@ private struct CommunityHomeView: View {
                 Task { await model.loadCommunityArticles(communityID: community.id) }
             }
         }
+        .sheet(item: $selectedEvent) { event in
+            CommunityEventDetailView(community: community, event: event)
+        }
+        .sheet(isPresented: $showEventComposer) {
+            CommunityEventComposer(community: community) {
+                showEventComposer = false
+            }
+        }
         .sheet(isPresented: $showSpark) {
             SparkDonationView(community: community)
         }
     }
+}
+
+private struct CommunityEventCard: View {
+    let event: CommunityEvent
+    let imageURL: URL?
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 14) {
+                if let imageURL {
+                    AsyncImage(url: imageURL) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        Color.secondary.opacity(0.12)
+                    }
+                    .frame(width: 92, height: 84)
+                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                } else {
+                    Image(systemName: event.type == .external ? "globe" : "calendar")
+                        .font(.title2)
+                        .foregroundStyle(AppTheme.accent)
+                        .frame(width: 58, height: 58)
+                        .background(AppTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(event.title).font(.headline).foregroundStyle(.primary)
+                    if let date = parseEventDate(event.scheduleDate) {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.accent)
+                    }
+                    if !event.descriptionText.isEmpty {
+                        Text(event.descriptionText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Label("\(event.participantCount) attending", systemImage: "person.2")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 15))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(event.title), \(event.participantCount) attending")
+    }
+}
+
+private struct CommunityEventDetailView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    let community: Community
+    let event: CommunityEvent
+    @State private var showEditor = false
+    @State private var confirmDelete = false
+    @State private var changingAttendance = false
+
+    private var current: CommunityEvent {
+        model.communityEvents[community.id]?.first { $0.id == event.id } ?? event
+    }
+
+    private var mayAttend: Bool {
+        if current.isSelfAttending || community.isAdmin { return true }
+        let ownRoles = Set(community.myRoleIds)
+        return current.rolePermissions.contains {
+            ownRoles.contains($0.roleId) && $0.permissions.contains("EVENT_ATTEND")
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if let imageID = current.imageId,
+                       let url = model.attachmentURLs[imageID] {
+                        CommunityFeatureImage(url: url, height: 250)
+                    }
+                    Text(current.type.title.uppercased())
+                        .font(.caption.bold())
+                        .foregroundStyle(AppTheme.accent)
+                    Text(current.title).font(.largeTitle.bold())
+                    if let date = parseEventDate(current.scheduleDate) {
+                        Label {
+                            VStack(alignment: .leading) {
+                                Text(date.formatted(date: .complete, time: .shortened))
+                                Text("\(current.duration) minutes")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "calendar")
+                        }
+                    }
+                    if let location = current.location, !location.isEmpty {
+                        Label(location, systemImage: "mappin.and.ellipse")
+                    }
+                    if !current.descriptionText.isEmpty {
+                        Text(current.descriptionText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    Label("\(current.participantCount) attending", systemImage: "person.2")
+                        .foregroundStyle(.secondary)
+
+                    if mayAttend {
+                        Button {
+                            changingAttendance = true
+                            Task {
+                                _ = await model.setEventAttendance(
+                                    current,
+                                    attending: !current.isSelfAttending
+                                )
+                                changingAttendance = false
+                            }
+                        } label: {
+                            Label(
+                                current.isSelfAttending ? "Leave event" : "Attend event",
+                                systemImage: current.isSelfAttending ? "checkmark.circle.fill" : "plus.circle.fill"
+                            )
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(AppTheme.accent)
+                        .disabled(changingAttendance)
+                    }
+
+                    if let external = current.externalUrl.flatMap(URL.init(string:)) {
+                        Button("Open event link", systemImage: "arrow.up.right.square") {
+                            openURL(external)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    if current.type == .call || current.type == .broadcast {
+                        Label(
+                            "Joining native calls will arrive with the calls workstream.",
+                            systemImage: "info.circle"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: 720, alignment: .leading)
+                .padding(24)
+                .frame(maxWidth: .infinity)
+            }
+            .navigationTitle("Event")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if community.canManageEvents {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu("Manage event", systemImage: "ellipsis.circle") {
+                            if current.type == .external || current.type == .reminder {
+                                Button("Edit event", systemImage: "pencil") { showEditor = true }
+                            }
+                            Button("Delete event", systemImage: "trash", role: .destructive) {
+                                confirmDelete = true
+                            }
+                        }
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showEditor) {
+                CommunityEventComposer(community: community, event: current) {
+                    showEditor = false
+                }
+            }
+            .confirmationDialog("Delete this event?", isPresented: $confirmDelete) {
+                Button("Delete event", role: .destructive) {
+                    Task {
+                        if await model.deleteCommunityEvent(current) { dismiss() }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The event and its public listing will be removed.")
+            }
+        }
+    }
+}
+
+private enum EventAudienceAccess: String, CaseIterable, Identifiable {
+    case hidden
+    case preview
+    case attend
+    case moderate
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var permissions: [String] {
+        switch self {
+        case .hidden: []
+        case .preview: ["EVENT_PREVIEW"]
+        case .attend: ["EVENT_PREVIEW", "EVENT_ATTEND"]
+        case .moderate: ["EVENT_PREVIEW", "EVENT_ATTEND", "EVENT_MODERATE"]
+        }
+    }
+
+    init(permissions: [String]) {
+        if permissions.contains("EVENT_MODERATE") { self = .moderate }
+        else if permissions.contains("EVENT_ATTEND") { self = .attend }
+        else if permissions.contains("EVENT_PREVIEW") { self = .preview }
+        else { self = .hidden }
+    }
+}
+
+private struct CommunityEventComposer: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    let event: CommunityEvent?
+    let saved: () -> Void
+    @State private var title: String
+    @State private var details: String
+    @State private var type: CommunityEventType
+    @State private var start: Date
+    @State private var end: Date
+    @State private var externalURL: String
+    @State private var location: String
+    @State private var audience: [String: EventAudienceAccess]
+    @State private var imageSelection: PhotosPickerItem?
+    @State private var imageData: Data?
+    @State private var isSaving = false
+
+    init(community: Community, event: CommunityEvent? = nil, saved: @escaping () -> Void) {
+        self.community = community
+        self.event = event
+        self.saved = saved
+        let eventStart = event.flatMap { parseEventDate($0.scheduleDate) } ?? Date().addingTimeInterval(3_600)
+        _title = State(initialValue: event?.title ?? "")
+        _details = State(initialValue: event?.descriptionText ?? "")
+        _type = State(initialValue: event?.type ?? .external)
+        _start = State(initialValue: eventStart)
+        _end = State(initialValue: eventStart.addingTimeInterval(Double(event?.duration ?? 60) * 60))
+        _externalURL = State(initialValue: event?.externalUrl ?? "")
+        _location = State(initialValue: event?.location ?? "")
+        let permissions = event?.rolePermissions ?? community.defaultEventRolePermissions
+        _audience = State(initialValue: Dictionary(uniqueKeysWithValues: permissions.map {
+            ($0.roleId, EventAudienceAccess(permissions: $0.permissions))
+        }))
+    }
+
+    private var roles: [CommunityRoleInfo] {
+        community.roleInfos.filter { $0.title != "Admin" }
+    }
+
+    private var rolePermissions: [CommunityEventRolePermission] {
+        roles.compactMap { role in
+            let access = audience[role.id] ?? .hidden
+            guard access != .hidden else { return nil }
+            return CommunityEventRolePermission(
+                roleId: role.id,
+                roleTitle: role.title,
+                permissions: access.permissions
+            )
+        }
+    }
+
+    private var validExternalURL: Bool {
+        guard type == .external else { return true }
+        guard let url = URL(string: externalURL), let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "https" || scheme == "http"
+    }
+
+    private var canSave: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && start > Date()
+            && end > start
+            && end.timeIntervalSince(start) <= 8 * 60 * 60
+            && validExternalURL
+            && !rolePermissions.isEmpty
+            && !isSaving
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Event") {
+                    TextField("Title", text: $title)
+                    TextField("Description", text: $details, axis: .vertical)
+                        .lineLimit(3...10)
+                    Picker("Type", selection: $type) {
+                        Text("External event").tag(CommunityEventType.external)
+                        Text("Reminder").tag(CommunityEventType.reminder)
+                    }
+                }
+                Section("Schedule") {
+                    DatePicker("Starts", selection: $start, in: Date()...)
+                    DatePicker("Ends", selection: $end, in: start...)
+                }
+                if type == .external {
+                    Section("Place") {
+                        TextField("https://…", text: $externalURL)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                        TextField("Location (optional)", text: $location)
+                    }
+                }
+                Section("Banner") {
+                    if imageData == nil, let imageID = event?.imageId,
+                       let url = model.attachmentURLs[imageID] {
+                        CommunityFeatureImage(url: url, height: 150)
+                    }
+                    CommunityImagePicker(
+                        title: event?.imageId == nil ? "Choose event image" : "Replace event image",
+                        guidance: "Optional landscape image",
+                        selection: $imageSelection,
+                        data: imageData
+                    )
+                }
+                Section {
+                    ForEach(roles) { role in
+                        Picker(role.title, selection: Binding(
+                            get: { audience[role.id] ?? .hidden },
+                            set: { audience[role.id] = $0 }
+                        )) {
+                            ForEach(EventAudienceAccess.allCases) { access in
+                                Text(access.title).tag(access)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Audience & permissions")
+                } footer: {
+                    Text("Preview can see the listing. Attend can RSVP. Moderate can also manage the event.")
+                }
+            }
+            .navigationTitle(event == nil ? "Schedule Event" : "Edit Event")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }.disabled(!canSave)
+                }
+            }
+            .overlay { if isSaving { ProgressView() } }
+            .onChange(of: start) { old, new in
+                if end <= new { end = new.addingTimeInterval(max(3_600, end.timeIntervalSince(old))) }
+            }
+            .onChange(of: imageSelection) { _, item in
+                guard let item else { return }
+                Task {
+                    if let loaded = try? await item.loadTransferable(type: Data.self) {
+                        imageData = loaded
+                    } else {
+                        model.errorMessage = "That image could not be loaded from the photo library."
+                    }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        isSaving = true
+        Task {
+            let didSave = await model.saveCommunityEvent(
+                community: community,
+                editing: event,
+                type: type,
+                title: title,
+                description: details,
+                start: start,
+                end: end,
+                externalURL: type == .external ? externalURL : nil,
+                location: type == .external && !location.isEmpty ? location : nil,
+                rolePermissions: rolePermissions,
+                imageData: imageData
+            )
+            isSaving = false
+            if didSave { saved() }
+        }
+    }
+}
+
+private func parseEventDate(_ value: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
 }
 
 private struct SparkDonationView: View {
@@ -3172,6 +3755,7 @@ private struct ChannelListView: View {
     @State private var reportTarget: ReportTarget?
     @State private var showCommunitySettings = false
     @State private var showNotificationSettings = false
+    @State private var selectedPlugin: CommunityPluginInfo?
     let community: Community
     let selectedChannelID: String?
     let openHome: () -> Void
@@ -3223,6 +3807,23 @@ private struct ChannelListView: View {
                     .buttonStyle(.plain)
                 }
             }
+            if !community.pluginInfos.isEmpty {
+                Section("Community apps") {
+                    ForEach(community.pluginInfos) { plugin in
+                        Button {
+                            selectedPlugin = plugin
+                        } label: {
+                            HStack {
+                                Label(plugin.name, systemImage: "puzzlepiece.extension")
+                                Spacer()
+                                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
         }
         .navigationTitle(community.title)
         .refreshable { await model.refreshHome() }
@@ -3266,6 +3867,9 @@ private struct ChannelListView: View {
                     Image(systemName: "ellipsis.circle")
                 }
             }
+        }
+        .sheet(item: $selectedPlugin) { plugin in
+            PluginRuntimeView(community: community, plugin: plugin)
         }
         .confirmationDialog(
             "Leave \(community.title)?",
@@ -3876,6 +4480,7 @@ private struct ConversationView: View {
     let context: ConversationContext
     @ObservedObject var store: SyncStore
     @State private var reportTarget: ReportTarget?
+    @State private var moderationMember: ChannelMemberEntry?
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var deleteTarget: Message?
     @State private var showMentionPicker = false
@@ -3895,6 +4500,15 @@ private struct ConversationView: View {
 
     private var typingUserIDs: [String] {
         store.typingUserIDs(for: context.access)
+    }
+
+    private var canModerateChannel: Bool {
+        guard let channel = context.channel,
+              let community = store.communities[channel.communityId] else { return false }
+        let ownRoles = Set(community.myRoleIds)
+        return community.isAdmin || channel.roleAccess.contains {
+            ownRoles.contains($0.roleId) && $0.permissions.contains("CHANNEL_MODERATE")
+        }
     }
 
     var body: some View {
@@ -3967,6 +4581,14 @@ private struct ConversationView: View {
                 model.selectChat(chatID)
             }
         }
+        .sheet(item: $moderationMember) { member in
+            if let channel = context.channel,
+               let community = store.communities[channel.communityId] {
+                NavigationStack {
+                    CommunityMemberModerationView(community: community, member: member)
+                }
+            }
+        }
         .sheet(isPresented: $showMentionPicker) {
             MentionPicker(store: store) { user in
                 model.insertMention(user)
@@ -4036,6 +4658,19 @@ private struct ConversationView: View {
                 guard let message = deleteTarget else { return }
                 deleteTarget = nil
                 Task { await model.deleteMessage(message, access: context.access) }
+            }
+            if let message = deleteTarget,
+               message.creatorId != store.ownUser?.id,
+               canModerateChannel {
+                Button("Delete all messages from this member", role: .destructive) {
+                    deleteTarget = nil
+                    Task {
+                        await model.deleteAllMessages(
+                            by: message.creatorId,
+                            access: context.access
+                        )
+                    }
+                }
             }
             Button("Cancel", role: .cancel) { deleteTarget = nil }
         } message: {
@@ -4139,6 +4774,15 @@ private struct ConversationView: View {
                                         subject: "Message from \(store.users[message.creatorId]?.displayName ?? "member")"
                                     )
                                 },
+                                canModerate: canModerateChannel,
+                                moderate: {
+                                    let roles = model.channelMembers[context.channelID]?.all
+                                        .first { $0.userId == message.creatorId }?.roleIds ?? []
+                                    moderationMember = ChannelMemberEntry(
+                                        userId: message.creatorId,
+                                        roleIds: roles
+                                    )
+                                },
                                 retry: { Task { await model.retryPendingMessage(message.id) } },
                                 discard: { model.discardPendingMessage(message.id) },
                                 focusParent: { parentID in model.focusMessage(parentID) },
@@ -4150,7 +4794,7 @@ private struct ConversationView: View {
                                     )
                                 },
                                 isPinned: context.channel?.pinnedMessageIds?.contains(message.id) == true,
-                                canPin: context.channel != nil,
+                                canPin: canModerateChannel,
                                 togglePinned: {
                                     guard let channel = context.channel else { return }
                                     Task {
@@ -4835,6 +5479,8 @@ private struct MessageRow: View {
     let delete: () -> Void
     let react: (String?) -> Void
     let report: () -> Void
+    let canModerate: Bool
+    let moderate: () -> Void
     let retry: () -> Void
     let discard: () -> Void
     let focusParent: (String) -> Void
@@ -4993,6 +5639,10 @@ private struct MessageRow: View {
                     Button("Delete", systemImage: "trash", role: .destructive, action: delete)
                 }
                 if !isOwn {
+                    if canModerate {
+                        Button("Moderate member", systemImage: "person.badge.shield.checkmark", action: moderate)
+                        Button("Delete message", systemImage: "trash", role: .destructive, action: delete)
+                    }
                     Button("Report message", systemImage: "exclamationmark.bubble", role: .destructive) {
                         report()
                     }

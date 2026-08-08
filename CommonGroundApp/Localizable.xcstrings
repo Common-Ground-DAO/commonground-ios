@@ -1,0 +1,25 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "Account" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Konto" } } } },
+    "Cancel" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Abbrechen" } } } },
+    "Communities" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Communities" } } } },
+    "Create community" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Community erstellen" } } } },
+    "Discover" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Entdecken" } } } },
+    "Done" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Fertig" } } } },
+    "Events" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Veranstaltungen" } } } },
+    "Log out" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Abmelden" } } } },
+    "Messages" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Nachrichten" } } } },
+    "My events" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Meine Veranstaltungen" } } } },
+    "No communities yet" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Noch keine Communities" } } } },
+    "Notifications" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Mitteilungen" } } } },
+    "Overview" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Übersicht" } } } },
+    "Past" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Vergangen" } } } },
+    "Save" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Speichern" } } } },
+    "Search" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Suchen" } } } },
+    "Settings" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Einstellungen" } } } },
+    "Upcoming" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Demnächst" } } } },
+    "Your events" : { "localizations" : { "de" : { "stringUnit" : { "state" : "translated", "value" : "Deine Veranstaltungen" } } } }
+  },
+  "version" : "1.0"
+}

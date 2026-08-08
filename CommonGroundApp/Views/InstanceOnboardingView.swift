@@ -12,11 +12,13 @@ struct InstanceOnboardingView: View {
                     Image(systemName: "circle.hexagongrid.fill")
                         .font(.system(size: 48, weight: .semibold))
                         .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
                     Text("Find common ground.")
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
+                        .font(.largeTitle.bold())
+                        .fontDesign(.rounded)
                     Text("Communities belong to many independent instances. Choose yours to begin.")
                         .font(.title3)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -24,12 +26,14 @@ struct InstanceOnboardingView: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
                     TextField("community.example", text: $model.instanceInput)
+                        .accessibilityIdentifier("instance.address")
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
                         .focused($focused)
                         .submitLabel(.go)
                         .onSubmit { Task { await model.connect() } }
+                        .frame(minHeight: 28)
                         .padding(16)
                         .background(Color.white.opacity(0.075), in: RoundedRectangle(cornerRadius: 15))
                     Button { Task { await model.connect() } } label: {
@@ -45,11 +49,19 @@ struct InstanceOnboardingView: View {
                         .background(.orange, in: RoundedRectangle(cornerRadius: 15))
                     }
                     .disabled(model.isWorking)
+                    .accessibilityIdentifier("instance.continue")
                 }
 
-                Label("Your account and session stay isolated to the instance you select.", systemImage: "lock.shield")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "lock.shield")
+                        .accessibilityHidden(true)
+                    Text("Your account and session stay isolated to the instance you select.")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
             }
             .frame(maxWidth: 560)
             .padding(26)

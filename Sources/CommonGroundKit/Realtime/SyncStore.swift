@@ -264,6 +264,14 @@ public final class SyncStore: ObservableObject {
         messages[channelID]?.removeValue(forKey: messageID)
     }
 
+    public func applyModeratorDeleteAll(creatorID: String, channelID: String) {
+        let ids = messages[channelID]?.values.filter { $0.creatorId == creatorID }.map(\.id) ?? []
+        for id in ids {
+            messages[channelID]?.removeValue(forKey: id)
+            if let database { Task { try? await database.removeMessage(id: id) } }
+        }
+    }
+
     public func applyOwnReaction(messageID: String, channelID: String, reaction: String?) {
         guard let message = messages[channelID]?[messageID] else { return }
         var counts = message.reactions

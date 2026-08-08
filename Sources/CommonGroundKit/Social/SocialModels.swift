@@ -392,6 +392,10 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         managementPermissions.contains("COMMUNITY_MANAGE_USER_APPLICATIONS")
     }
 
+    public var canManageEvents: Bool {
+        managementPermissions.contains("COMMUNITY_MANAGE_EVENTS")
+    }
+
     public var isAdmin: Bool {
         let ownRoles = Set(myRoleIds)
         return roles.contains { role in
@@ -438,6 +442,30 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
                   let title = object["title"]?.stringValue,
                   title == "Member" else { return nil }
             return ArticleRolePermission(roleId: id, roleTitle: title, permissions: visible)
+        }
+    }
+
+    public var defaultEventRolePermissions: [CommunityEventRolePermission] {
+        roles.compactMap { role -> CommunityEventRolePermission? in
+            guard let object = role.objectValue,
+                  let id = object["id"]?.stringValue,
+                  let title = object["title"]?.stringValue else { return nil }
+            switch title {
+            case "Public":
+                return CommunityEventRolePermission(
+                    roleId: id,
+                    roleTitle: title,
+                    permissions: ["EVENT_PREVIEW"]
+                )
+            case "Member":
+                return CommunityEventRolePermission(
+                    roleId: id,
+                    roleTitle: title,
+                    permissions: ["EVENT_PREVIEW", "EVENT_ATTEND"]
+                )
+            default:
+                return nil
+            }
         }
     }
 }
@@ -559,9 +587,120 @@ public struct CommunityNewsletterEntry: Decodable, Equatable, Identifiable, Send
     public let url: String?
 }
 
+public enum CommunityEventType: String, Codable, CaseIterable, Sendable {
+    case external
+    case reminder
+    case call
+    case broadcast
+
+    public var title: String {
+        switch self {
+        case .external: "External event"
+        case .reminder: "Reminder"
+        case .call: "Group call"
+        case .broadcast: "Broadcast"
+        }
+    }
+}
+
+public struct CommunityEventRolePermission: Codable, Equatable, Sendable {
+    public let roleId: String
+    public let roleTitle: String
+    public let permissions: [String]
+
+    public init(roleId: String, roleTitle: String, permissions: [String]) {
+        self.roleId = roleId
+        self.roleTitle = roleTitle
+        self.permissions = permissions
+    }
+}
+
+public struct CommunityEvent: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let type: CommunityEventType
+    public let communityId: String
+    public let eventCreator: String
+    public let url: String?
+    public let title: String
+    public let description: JSONValue
+    public let externalUrl: String?
+    public let location: String?
+    public let scheduleDate: String
+    public let duration: Int
+    public let createdAt: String
+    public let deletedAt: String?
+    public let updatedAt: String
+    public let callId: String?
+    public let imageId: String?
+    public let rolePermissions: [CommunityEventRolePermission]
+    public let participantIds: [String]
+    public let participantCount: Int
+    public let isSelfAttending: Bool
+
+    public var descriptionText: String {
+        guard let root = description.objectValue else { return description.stringValue ?? "" }
+        if root["version"]?.stringValue == "1" { return root["text"]?.stringValue ?? "" }
+        guard case .array(let nodes) = root["content"] else { return "" }
+        return nodes.compactMap { node -> String? in
+            guard let object = node.objectValue else { return nil }
+            switch object["type"]?.stringValue {
+            case "newline": return "\n"
+            case "text", "link", "richTextLink": return object["value"]?.stringValue
+            default: return nil
+            }
+        }.joined()
+    }
+
+    public var canAttend: Bool {
+        rolePermissions.contains { $0.permissions.contains("EVENT_ATTEND") }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type, communityId, eventCreator, url, title, description
+        case externalUrl, location, scheduleDate, duration, createdAt, deletedAt, updatedAt
+        case callId, imageId, rolePermissions, participantIds, participantCount, isSelfAttending
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(CommunityEventType.self, forKey: .type)
+        communityId = try container.decode(String.self, forKey: .communityId)
+        eventCreator = try container.decode(String.self, forKey: .eventCreator)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
+        title = try container.decode(String.self, forKey: .title)
+        description = try container.decode(JSONValue.self, forKey: .description)
+        externalUrl = try container.decodeIfPresent(String.self, forKey: .externalUrl)
+        location = try container.decodeIfPresent(String.self, forKey: .location)
+        scheduleDate = try container.decode(String.self, forKey: .scheduleDate)
+        duration = try container.decode(Int.self, forKey: .duration)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        deletedAt = try container.decodeIfPresent(String.self, forKey: .deletedAt)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        callId = try container.decodeIfPresent(String.self, forKey: .callId)
+        imageId = try container.decodeIfPresent(String.self, forKey: .imageId)
+        rolePermissions = try container.decodeIfPresent(
+            [CommunityEventRolePermission].self,
+            forKey: .rolePermissions
+        ) ?? []
+        participantIds = try container.decodeIfPresent([String].self, forKey: .participantIds) ?? []
+        if let count = try? container.decode(Int.self, forKey: .participantCount) {
+            participantCount = count
+        } else {
+            participantCount = Int(try container.decodeIfPresent(String.self, forKey: .participantCount) ?? "0") ?? 0
+        }
+        isSelfAttending = try container.decodeIfPresent(Bool.self, forKey: .isSelfAttending) ?? false
+    }
+}
+
 public struct PluginPermissionSet: Codable, Equatable, Sendable {
     public let mandatory: [String]
     public let optional: [String]
+}
+
+public struct PluginConfiguration: Codable, Equatable, Sendable {
+    public let canGiveRole: Bool?
+    public let giveableRoleIds: [String]?
 }
 
 public struct CommunityPluginInfo: Codable, Equatable, Identifiable, Sendable {
@@ -572,6 +711,7 @@ public struct CommunityPluginInfo: Codable, Equatable, Identifiable, Sendable {
     public let name: String
     public let description: String?
     public let imageId: String?
+    public let config: PluginConfiguration?
     public let url: String
     public let tags: [String]?
     public let permissions: PluginPermissionSet?
@@ -587,6 +727,11 @@ public struct CommunityPluginInfo: Codable, Equatable, Identifiable, Sendable {
               let decoded = try? JSONDecoder().decode(Self.self, from: data) else { return nil }
         self = decoded
     }
+}
+
+public struct PluginBridgeResponse: Codable, Equatable, Sendable {
+    public let response: String
+    public let signature: String
 }
 
 public struct AppStorePlugin: Codable, Equatable, Identifiable, Sendable {
@@ -671,6 +816,11 @@ public struct ChannelMemberEntry: Decodable, Equatable, Identifiable, Sendable {
     public let userId: String
     public let roleIds: [String]
     public var id: String { userId }
+
+    public init(userId: String, roleIds: [String]) {
+        self.userId = userId
+        self.roleIds = roleIds
+    }
 
     public init(from decoder: Decoder) throws {
         var container = try decoder.unkeyedContainer()
