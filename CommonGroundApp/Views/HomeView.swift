@@ -692,6 +692,395 @@ private struct CommunitySettingsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let community: Community
+
+    private var current: Community {
+        model.store.communities[community.id] ?? community
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if current.canManageInfo || current.creatorId == model.store.ownUser?.id {
+                    Section {
+                        NavigationLink {
+                            CommunityGeneralSettingsView(community: current)
+                        } label: {
+                            SettingsRow(icon: "gearshape", color: .gray, title: "General")
+                        }
+                        NavigationLink {
+                            CommunitySettingsStatusView(
+                                title: "Premium",
+                                icon: "sparkles",
+                                rows: [
+                                    ("Plan", current.premium == nil ? "Free" : "Premium"),
+                                    ("Community points", current.pointBalance.formatted()),
+                                ]
+                            )
+                        } label: {
+                            SettingsRow(icon: "sparkles", color: .purple, title: "Premium")
+                        }
+                        NavigationLink {
+                            CommunityNewsletterSettingsView(community: current)
+                        } label: {
+                            SettingsRow(icon: "envelope", color: .orange, title: "Newsletters")
+                        }
+                    }
+                }
+                if current.canManageRoles || current.canManageApplications {
+                    NavigationLink {
+                        CommunityOnboardingSettingsView(community: current)
+                    } label: {
+                        SettingsRow(icon: "person.badge.plus", color: .blue, title: "Onboarding", badge: current.membersPendingApproval)
+                    }
+                }
+
+                Section("People & access") {
+                    if current.canManageRoles || current.canModerate {
+                        NavigationLink {
+                            CommunityMembersSettingsView(community: current)
+                        } label: {
+                            SettingsRow(icon: "person.2", color: .blue, title: "Members", badge: current.memberCount)
+                        }
+                    }
+                    if current.canModerate {
+                        NavigationLink {
+                            CommunityBansSettingsView(community: current)
+                        } label: {
+                            SettingsRow(icon: "hand.raised", color: .red, title: "Manage Bans")
+                        }
+                    }
+                    if current.canManageChannels {
+                        NavigationLink {
+                            CommunityChannelsSettingsView(community: current)
+                        } label: {
+                            SettingsRow(icon: "number", color: .indigo, title: "Channels", badge: current.channels.count)
+                        }
+                    }
+                    if current.canManageRoles {
+                        NavigationLink {
+                            CommunityRolesSettingsView(community: current)
+                        } label: {
+                            SettingsRow(icon: "person.badge.key", color: .teal, title: "Roles & Permissions", badge: current.roles.count)
+                        }
+                    }
+                }
+
+                if current.canManageInfo || current.creatorId == model.store.ownUser?.id {
+                    Section("Extensions") {
+                    NavigationLink {
+                        CommunitySettingsStatusView(
+                            title: "Token",
+                            icon: "hexagon",
+                            rows: [("Configured tokens", "\(current.tokens.count)")]
+                        )
+                    } label: {
+                        SettingsRow(icon: "hexagon", color: .mint, title: "Token", badge: current.tokens.count)
+                    }
+                    NavigationLink {
+                        CommunitySettingsStatusView(
+                            title: "Bots",
+                            icon: "cpu",
+                            rows: [("Member-installed bots", current.allowUserBots ? "Allowed" : "Disabled")]
+                        )
+                    } label: {
+                        SettingsRow(icon: "cpu", color: .yellow, title: "Bots")
+                    }
+                    NavigationLink {
+                        CommunitySettingsStatusView(
+                            title: "Plugins",
+                            icon: "puzzlepiece.extension",
+                            rows: [("Installed", "\(current.plugins.count)")]
+                        )
+                    } label: {
+                        SettingsRow(icon: "puzzlepiece.extension", color: .pink, title: "Plugins", badge: current.plugins.count)
+                    }
+                    }
+                }
+            }
+            .navigationTitle("Community Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct SettingsRow: View {
+    let icon: String
+    let color: Color
+    let title: String
+    var badge: Int? = nil
+
+    var body: some View {
+        Label {
+            HStack {
+                Text(title)
+                Spacer()
+                if let badge, badge > 0 {
+                    Text("\(badge)").foregroundStyle(.secondary)
+                }
+            }
+        } icon: {
+            Image(systemName: icon)
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(color.gradient, in: RoundedRectangle(cornerRadius: 7))
+        }
+    }
+}
+
+private struct CommunitySettingsStatusView: View {
+    let title: String
+    let icon: String
+    let rows: [(String, String)]
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    LabeledContent(row.0, value: row.1)
+                }
+            } footer: {
+                Text("This section is connected to the community's live configuration. Editing controls will appear here as each workflow is made native on iPhone and iPad.")
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct CommunityNewsletterSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    @State private var enabled: Bool
+    @State private var isSaving = false
+
+    init(community: Community) {
+        self.community = community
+        _enabled = State(initialValue: community.enablePersonalNewsletter)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Personal newsletters", isOn: $enabled)
+            } footer: {
+                Text("Allow members to opt in to personalized email updates from this community.")
+            }
+        }
+        .navigationTitle("Newsletters")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    isSaving = true
+                    Task {
+                        if await model.setCommunityPersonalNewsletter(
+                            communityID: community.id,
+                            enabled: enabled
+                        ) { dismiss() }
+                        isSaving = false
+                    }
+                }
+                .disabled(isSaving || enabled == community.enablePersonalNewsletter)
+            }
+        }
+        .overlay { if isSaving { ProgressView() } }
+    }
+}
+
+private struct CommunityOnboardingSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    @State private var manualApproval: Bool
+    @State private var approvalEmail: String
+    @State private var customWelcome: Bool
+    @State private var welcomeText: String
+    @State private var requirements: Bool
+    @State private var minAccountAge: Bool
+    @State private var minAccountDays: Int
+    @State private var universalProfile: Bool
+    @State private var xProfile: Bool
+    @State private var isSaving = false
+
+    init(community: Community) {
+        self.community = community
+        let options = community.onboardingOptions?.objectValue ?? [:]
+        let approval = options["manuallyApprove"]?.objectValue ?? [:]
+        let welcome = options["customWelcome"]?.objectValue ?? [:]
+        let required = options["requirements"]?.objectValue ?? [:]
+        _manualApproval = State(initialValue: approval["enabled"]?.boolValue ?? false)
+        _approvalEmail = State(initialValue: approval["email"]?.stringValue ?? "")
+        _customWelcome = State(initialValue: welcome["enabled"]?.boolValue ?? false)
+        _welcomeText = State(initialValue: welcome["welcomeString"]?.stringValue ?? "")
+        _requirements = State(initialValue: required["enabled"]?.boolValue ?? false)
+        _minAccountAge = State(initialValue: required["minAccountTimeEnabled"]?.boolValue ?? false)
+        _minAccountDays = State(initialValue: Int(required["minAccountTimeDays"]?.numberValue ?? 0))
+        _universalProfile = State(initialValue: required["universalProfileEnabled"]?.boolValue ?? false)
+        _xProfile = State(initialValue: required["xProfileEnabled"]?.boolValue ?? false)
+    }
+
+    var body: some View {
+        Form {
+            if community.canManageApplications {
+                Section {
+                    NavigationLink {
+                        CommunityPendingApprovalsView(community: community)
+                    } label: {
+                        LabeledContent("Pending applications", value: "\(community.membersPendingApproval)")
+                    }
+                }
+            }
+
+            if community.canManageRoles {
+                Section("Approval") {
+                    Toggle("Approve new members manually", isOn: $manualApproval)
+                    if manualApproval {
+                        TextField("Notification email (optional)", text: $approvalEmail)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                    }
+                }
+
+                Section("Welcome") {
+                    Toggle("Custom welcome message", isOn: $customWelcome)
+                    if customWelcome {
+                        TextField("Welcome message", text: $welcomeText, axis: .vertical)
+                            .lineLimit(3...8)
+                    }
+                }
+
+                Section("Requirements") {
+                    Toggle("Enforce joining requirements", isOn: $requirements)
+                    if requirements {
+                        Toggle("Minimum account age", isOn: $minAccountAge)
+                        if minAccountAge {
+                            Stepper("At least \(minAccountDays) days", value: $minAccountDays, in: 0...3_650)
+                        }
+                        Toggle("Require Universal Profile", isOn: $universalProfile)
+                        Toggle("Require X profile", isOn: $xProfile)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Onboarding")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if community.canManageRoles {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }.disabled(isSaving)
+                }
+            }
+        }
+        .overlay { if isSaving { ProgressView() } }
+    }
+
+    private func save() {
+        var options = community.onboardingOptions?.objectValue ?? [:]
+        var approval = options["manuallyApprove"]?.objectValue ?? [:]
+        approval["enabled"] = .bool(manualApproval)
+        let normalizedEmail = approvalEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedEmail.isEmpty { approval.removeValue(forKey: "email") }
+        else { approval["email"] = .string(normalizedEmail) }
+        options["manuallyApprove"] = .object(approval)
+
+        var welcome = options["customWelcome"]?.objectValue ?? [:]
+        welcome["enabled"] = .bool(customWelcome)
+        let normalizedWelcome = welcomeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedWelcome.isEmpty { welcome.removeValue(forKey: "welcomeString") }
+        else { welcome["welcomeString"] = .string(welcomeText) }
+        options["customWelcome"] = .object(welcome)
+
+        var required = options["requirements"]?.objectValue ?? [:]
+        required["enabled"] = .bool(requirements)
+        required["minAccountTimeEnabled"] = .bool(minAccountAge)
+        required["minAccountTimeDays"] = .number(Double(minAccountDays))
+        required["universalProfileEnabled"] = .bool(universalProfile)
+        required["xProfileEnabled"] = .bool(xProfile)
+        options["requirements"] = .object(required)
+
+        isSaving = true
+        Task {
+            if await model.saveCommunityOnboarding(
+                communityID: community.id,
+                options: .object(options)
+            ) { dismiss() }
+            isSaving = false
+        }
+    }
+}
+
+private struct CommunityPendingApprovalsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @State private var decidingUserID: String?
+
+    private var approvals: [CommunityPendingApproval] {
+        model.communityPendingApprovals[community.id] ?? []
+    }
+
+    var body: some View {
+        List {
+            if approvals.isEmpty {
+                ContentUnavailableView(
+                    "No pending applications",
+                    systemImage: "person.badge.checkmark",
+                    description: Text("New applications will appear here.")
+                )
+            } else {
+                ForEach(approvals) { approval in
+                    VStack(alignment: .leading, spacing: 10) {
+                        let user = model.store.users[approval.userId]
+                        HStack(spacing: 12) {
+                            Avatar(name: user?.displayName ?? "Member", isBot: user?.isBot ?? false, small: true)
+                            Text(user?.displayName ?? "Loading member…").fontWeight(.semibold)
+                        }
+                        if let answers = approval.questionnaireAnswers, !answers.isEmpty {
+                            Text("\(answers.count) questionnaire answers")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Button("Deny", role: .destructive) { decide(approval, state: "DENIED") }
+                                .buttonStyle(.bordered)
+                            Spacer()
+                            Button("Approve") { decide(approval, state: "APPROVED") }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        .disabled(decidingUserID != nil)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .navigationTitle("Applications")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await model.loadPendingApprovals(communityID: community.id) }
+        .refreshable { await model.loadPendingApprovals(communityID: community.id) }
+    }
+
+    private func decide(_ approval: CommunityPendingApproval, state: String) {
+        decidingUserID = approval.userId
+        Task {
+            _ = await model.decidePendingApproval(
+                communityID: community.id,
+                userID: approval.userId,
+                state: state
+            )
+            decidingUserID = nil
+        }
+    }
+}
+
+private struct CommunityGeneralSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
     @State private var title: String
     @State private var shortDescription: String
     @State private var description: String
@@ -717,8 +1106,7 @@ private struct CommunitySettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
+        Form {
                 Section("Community information") {
                     TextField("Community name", text: $title)
                     TextField("Tagline", text: $shortDescription)
@@ -775,7 +1163,7 @@ private struct CommunitySettingsView: View {
                     }
                 }
             }
-            .navigationTitle("Community Settings")
+            .navigationTitle("General")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -790,7 +1178,6 @@ private struct CommunitySettingsView: View {
             .onChange(of: iconSelection) { _, item in loadImage(item, into: $iconData) }
             .onChange(of: sidebarSelection) { _, item in loadImage(item, into: $sidebarData) }
             .onChange(of: heroSelection) { _, item in loadImage(item, into: $heroData) }
-        }
     }
 
     private var trimmedTitle: String {
@@ -834,6 +1221,571 @@ private struct CommunitySettingsView: View {
             } else {
                 model.errorMessage = "That image could not be loaded from the photo library."
             }
+        }
+    }
+}
+
+private struct CommunityMembersSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @State private var search = ""
+    @State private var selectedRoleID: String?
+    @State private var roleMember: ChannelMemberEntry?
+
+    private var result: CommunityMemberList? { model.communityMemberLists[community.id] }
+    private var members: [ChannelMemberEntry] { (result?.online ?? []) + (result?.offline ?? []) }
+
+    var body: some View {
+        List {
+            if community.roleInfos.count > 1 {
+                Section {
+                    Picker("Role", selection: $selectedRoleID) {
+                        Text("All roles").tag(String?.none)
+                        ForEach(community.roleInfos) { role in
+                            Text(role.title).tag(String?.some(role.id))
+                        }
+                    }
+                }
+            }
+            Section {
+                if members.isEmpty {
+                    ContentUnavailableView.search(text: search)
+                } else {
+                    ForEach(members) { member in
+                        if let user = model.store.users[member.userId] {
+                            HStack(spacing: 12) {
+                                NavigationLink {
+                                    UserProfileView(userID: user.id, store: model.store) { _ in }
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Avatar(name: user.displayName, isBot: user.isBot, small: true)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(user.displayName)
+                                            Text(roleNames(member.roleIds))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Circle()
+                                            .fill(model.effectiveOnlineStatus(for: user) == "online" ? .green : .secondary)
+                                            .frame(width: 9, height: 9)
+                                    }
+                                }
+                                if community.canManageRoles {
+                                    Button("Manage roles", systemImage: "person.badge.key") {
+                                        roleMember = member
+                                    }
+                                    .labelStyle(.iconOnly)
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                        } else {
+                            ProgressView().frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+            } header: {
+                Text(result.map { "\($0.resultCount) of \($0.totalCount) members" } ?? "Members")
+            }
+        }
+        .navigationTitle("Members")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $search, prompt: "Find a member")
+        .task(id: "\(search)|\(selectedRoleID ?? "all")") {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            await model.loadCommunityMembers(
+                communityID: community.id,
+                search: search,
+                roleID: selectedRoleID
+            )
+        }
+        .refreshable {
+            await model.loadCommunityMembers(
+                communityID: community.id,
+                search: search,
+                roleID: selectedRoleID
+            )
+        }
+        .sheet(item: $roleMember) { member in
+            NavigationStack {
+                CommunityMemberRoleEditor(community: community, member: member)
+            }
+        }
+    }
+
+    private func roleNames(_ ids: [String]) -> String {
+        let names = community.roleInfos.filter { ids.contains($0.id) }.map(\.title)
+        return names.isEmpty ? "Member" : names.joined(separator: ", ")
+    }
+}
+
+private struct CommunityMemberRoleEditor: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    let member: ChannelMemberEntry
+    @State private var selected: Set<String>
+    @State private var isSaving = false
+
+    init(community: Community, member: ChannelMemberEntry) {
+        self.community = community
+        self.member = member
+        _selected = State(initialValue: Set(member.roleIds))
+    }
+
+    var body: some View {
+        Form {
+            if let user = model.store.users[member.userId] {
+                Section {
+                    HStack(spacing: 12) {
+                        Avatar(name: user.displayName, isBot: user.isBot, small: true)
+                        Text(user.displayName).fontWeight(.semibold)
+                    }
+                }
+            }
+            Section {
+                ForEach(community.roleInfos) { role in
+                    Toggle(role.title, isOn: Binding(
+                        get: { selected.contains(role.id) },
+                        set: { enabled in
+                            if enabled { selected.insert(role.id) }
+                            else { selected.remove(role.id) }
+                        }
+                    ))
+                    .disabled(role.title == "Public")
+                }
+            } header: {
+                Text("Assigned roles")
+            } footer: {
+                Text("Role changes affect community, channel, article, and moderation permissions immediately.")
+            }
+        }
+        .navigationTitle("Member Roles")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    isSaving = true
+                    Task {
+                        if await model.setCommunityMemberRoles(
+                            communityID: community.id,
+                            userID: member.userId,
+                            previous: Set(member.roleIds),
+                            selected: selected
+                        ) { dismiss() }
+                        isSaving = false
+                    }
+                }
+                .disabled(isSaving || selected == Set(member.roleIds))
+            }
+        }
+        .overlay { if isSaving { ProgressView() } }
+    }
+}
+
+private struct CommunityBansSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @State private var unbanning: String?
+
+    private var bans: [CommunityBan] { model.communityBans[community.id] ?? [] }
+
+    var body: some View {
+        List {
+            if bans.isEmpty {
+                ContentUnavailableView(
+                    "No banned members",
+                    systemImage: "hand.raised",
+                    description: Text("Members banned from this community will appear here.")
+                )
+            } else {
+                ForEach(bans) { ban in
+                    HStack(spacing: 12) {
+                        let user = model.store.users[ban.userId]
+                        Avatar(name: user?.displayName ?? "Member", isBot: user?.isBot ?? false, small: true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(user?.displayName ?? "Loading member…")
+                            Text(ban.blockStateUntil.map { "Until \($0)" } ?? "Banned indefinitely")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Unban") {
+                            unbanning = ban.userId
+                            Task {
+                                _ = await model.unbanUser(communityID: community.id, userID: ban.userId)
+                                unbanning = nil
+                            }
+                        }
+                        .disabled(unbanning != nil)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Manage Bans")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await model.loadCommunityBans(communityID: community.id) }
+        .refreshable { await model.loadCommunityBans(communityID: community.id) }
+    }
+}
+
+private struct CommunityChannelsSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @State private var showingNewChannel = false
+    @State private var showingNewArea = false
+    @State private var areaName = ""
+
+    private var current: Community { model.store.communities[community.id] ?? community }
+
+    var body: some View {
+        List {
+            channelSection(title: "Uncategorized", areaID: nil)
+            ForEach(current.areaInfos) { area in
+                channelSection(title: area.title, areaID: area.id)
+            }
+        }
+        .navigationTitle("Channels")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if current.canManageChannels {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu("Add", systemImage: "plus") {
+                        Button("New channel", systemImage: "number") { showingNewChannel = true }
+                        Button("New area", systemImage: "folder") { showingNewArea = true }
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingNewChannel) {
+            NavigationStack {
+                CommunityChannelEditor(community: current, channel: nil)
+            }
+        }
+        .alert("New area", isPresented: $showingNewArea) {
+            TextField("Area name", text: $areaName)
+            Button("Cancel", role: .cancel) { areaName = "" }
+            Button("Create") {
+                let title = areaName.trimmingCharacters(in: .whitespacesAndNewlines)
+                areaName = ""
+                Task {
+                    _ = await model.saveCommunityArea(
+                        communityID: current.id,
+                        areaID: nil,
+                        title: title,
+                        order: (current.areaInfos.map(\.order).max() ?? -1) + 1
+                    )
+                }
+            }
+            .disabled(areaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+    }
+
+    @ViewBuilder
+    private func channelSection(title: String, areaID: String?) -> some View {
+        let channels = current.channels.filter { $0.areaId == areaID }.sorted { $0.order < $1.order }
+        if !channels.isEmpty {
+            Section(title) {
+                ForEach(channels) { channel in
+                    NavigationLink {
+                        CommunityChannelEditor(community: current, channel: channel)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(channel.title, systemImage: "number")
+                            if let description = channel.description, !description.isEmpty {
+                                Text(description).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("\(channel.rolePermissions.count) role access rules")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct CommunityChannelEditor: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    let channel: Channel?
+    @State private var title: String
+    @State private var description: String
+    @State private var emoji: String
+    @State private var url: String
+    @State private var areaID: String?
+    @State private var access: [String: Set<String>]
+    @State private var isSaving = false
+    @State private var confirmingDelete = false
+
+    private static let permissionOptions: [(String, String)] = [
+        ("CHANNEL_EXISTS", "Can see channel"),
+        ("CHANNEL_READ", "Can read"),
+        ("CHANNEL_WRITE", "Can write"),
+        ("CHANNEL_MODERATE", "Can moderate"),
+    ]
+
+    init(community: Community, channel: Channel?) {
+        self.community = community
+        self.channel = channel
+        _title = State(initialValue: channel?.title ?? "")
+        _description = State(initialValue: channel?.description ?? "")
+        _emoji = State(initialValue: channel?.emoji ?? "💬")
+        _url = State(initialValue: channel?.url ?? "")
+        _areaID = State(initialValue: channel?.areaId ?? community.areaInfos.first?.id)
+        var initial = Dictionary(uniqueKeysWithValues: (channel?.roleAccess ?? []).map {
+            ($0.roleId, Set($0.permissions))
+        })
+        if channel == nil {
+            for role in community.roleInfos {
+                switch role.title {
+                case "Admin": initial[role.id] = ["CHANNEL_EXISTS", "CHANNEL_READ", "CHANNEL_WRITE", "CHANNEL_MODERATE"]
+                case "Member": initial[role.id] = ["CHANNEL_EXISTS", "CHANNEL_READ", "CHANNEL_WRITE"]
+                case "Public": initial[role.id] = ["CHANNEL_EXISTS", "CHANNEL_READ"]
+                default: initial[role.id] = []
+                }
+            }
+        }
+        _access = State(initialValue: initial)
+    }
+
+    var body: some View {
+        Form {
+            Section("Channel") {
+                TextField("Name", text: $title)
+                TextField("Description", text: $description, axis: .vertical).lineLimit(2...5)
+                TextField("Emoji", text: $emoji)
+                TextField("URL slug (optional)", text: $url)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Picker("Area", selection: $areaID) {
+                    Text("Uncategorized").tag(String?.none)
+                    ForEach(community.areaInfos) { area in
+                        Text(area.title).tag(String?.some(area.id))
+                    }
+                }
+            }
+
+            ForEach(community.roleInfos) { role in
+                Section(role.title) {
+                    ForEach(Self.permissionOptions, id: \.0) { permission, label in
+                        Toggle(label, isOn: permissionBinding(roleID: role.id, permission: permission))
+                            .disabled(role.title == "Admin")
+                    }
+                }
+            }
+
+            if channel != nil {
+                Section {
+                    Button("Delete Channel", role: .destructive) { confirmingDelete = true }
+                }
+            }
+        }
+        .navigationTitle(channel == nil ? "New Channel" : "Edit Channel")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if channel == nil {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { save() }
+                    .disabled(isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .overlay { if isSaving { ProgressView() } }
+        .confirmationDialog("Delete this channel?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete Channel", role: .destructive) {
+                guard let channel else { return }
+                Task {
+                    if await model.deleteCommunityChannel(
+                        communityID: community.id,
+                        channelID: channel.id
+                    ) { dismiss() }
+                }
+            }
+        } message: {
+            Text("Messages in this channel will no longer be accessible.")
+        }
+    }
+
+    private func permissionBinding(roleID: String, permission: String) -> Binding<Bool> {
+        Binding(
+            get: { access[roleID, default: []].contains(permission) },
+            set: { enabled in
+                if enabled { access[roleID, default: []].insert(permission) }
+                else { access[roleID, default: []].remove(permission) }
+            }
+        )
+    }
+
+    private func save() {
+        isSaving = true
+        Task {
+            let roleAccess = community.roleInfos.map { role in
+                ChannelRoleAccess(
+                    roleId: role.id,
+                    roleTitle: role.title,
+                    permissions: Array(access[role.id, default: []]).sorted()
+                )
+            }
+            let saved = await model.saveCommunityChannel(
+                communityID: community.id,
+                channelID: channel?.id,
+                areaID: areaID,
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                url: url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : url,
+                order: channel?.order ?? ((community.channels.filter { $0.areaId == areaID }.map(\.order).max() ?? -1) + 1),
+                description: description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : description,
+                emoji: emoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : emoji,
+                roleAccess: roleAccess
+            )
+            isSaving = false
+            if saved { dismiss() }
+        }
+    }
+}
+
+private struct CommunityRolesSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    @State private var newRoleName = ""
+    @State private var showingNewRole = false
+
+    private var current: Community { model.store.communities[community.id] ?? community }
+
+    var body: some View {
+        List {
+            ForEach(current.roleInfos) { role in
+                NavigationLink {
+                    CommunityRoleEditor(community: current, role: role)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(role.title)
+                        Text("\(role.permissions.count) community permissions · \(role.type == "PREDEFINED" ? "Built in" : "Custom")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Roles & Permissions")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if current.canManageRoles {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("New role", systemImage: "plus") { showingNewRole = true }
+                }
+            }
+        }
+        .alert("New role", isPresented: $showingNewRole) {
+            TextField("Role name", text: $newRoleName)
+            Button("Cancel", role: .cancel) { newRoleName = "" }
+            Button("Create") {
+                let title = newRoleName
+                newRoleName = ""
+                Task { _ = await model.createCommunityRole(communityID: community.id, title: title) }
+            }
+            .disabled(newRoleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("New roles start without community-wide permissions. Configure the role after creating it.")
+        }
+    }
+}
+
+private struct CommunityRoleEditor: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let community: Community
+    let role: CommunityRoleInfo
+    @State private var title: String
+    @State private var description: String
+    @State private var permissions: Set<String>
+    @State private var isSaving = false
+    @State private var confirmingDelete = false
+
+    private static let permissionOptions: [(String, String)] = [
+        ("COMMUNITY_MANAGE_INFO", "Manage community info"),
+        ("COMMUNITY_MANAGE_CHANNELS", "Manage channels"),
+        ("COMMUNITY_MANAGE_ROLES", "Manage roles"),
+        ("COMMUNITY_MANAGE_ARTICLES", "Manage articles"),
+        ("COMMUNITY_MANAGE_USER_APPLICATIONS", "Manage applications"),
+        ("COMMUNITY_MODERATE", "Moderate members"),
+        ("COMMUNITY_MANAGE_EVENTS", "Manage events"),
+        ("WEBRTC_CREATE", "Create calls"),
+        ("WEBRTC_CREATE_CUSTOM", "Create custom calls"),
+        ("WEBRTC_MODERATE", "Moderate calls"),
+    ]
+
+    init(community: Community, role: CommunityRoleInfo) {
+        self.community = community
+        self.role = role
+        _title = State(initialValue: role.title)
+        _description = State(initialValue: role.description ?? "")
+        _permissions = State(initialValue: Set(role.permissions))
+    }
+
+    private var isAdmin: Bool { role.title == "Admin" }
+    private var isCustom: Bool { role.type != "PREDEFINED" }
+
+    var body: some View {
+        Form {
+            Section("Role") {
+                TextField("Name", text: $title).disabled(!isCustom)
+                TextField("Description", text: $description, axis: .vertical).lineLimit(2...5)
+            }
+            Section("Community permissions") {
+                ForEach(Self.permissionOptions, id: \.0) { permission, label in
+                    Toggle(label, isOn: Binding(
+                        get: { permissions.contains(permission) },
+                        set: { enabled in
+                            if enabled { permissions.insert(permission) }
+                            else { permissions.remove(permission) }
+                        }
+                    ))
+                    .disabled(isAdmin)
+                }
+            }
+            if isCustom {
+                Section {
+                    Button("Delete Role", role: .destructive) { confirmingDelete = true }
+                }
+            }
+        }
+        .navigationTitle(role.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { save() }.disabled(isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .overlay { if isSaving { ProgressView() } }
+        .confirmationDialog("Delete this role?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete Role", role: .destructive) {
+                Task {
+                    if await model.deleteCommunityRole(communityID: community.id, roleID: role.id) { dismiss() }
+                }
+            }
+        } message: {
+            Text("Members assigned only to this role may lose access immediately.")
+        }
+    }
+
+    private func save() {
+        isSaving = true
+        Task {
+            let saved = await model.updateCommunityRole(
+                communityID: community.id,
+                roleID: role.id,
+                title: isCustom ? title.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                description: description,
+                permissions: isAdmin ? nil : Array(permissions).sorted()
+            )
+            isSaving = false
+            if saved { dismiss() }
         }
     }
 }
@@ -960,9 +1912,14 @@ private struct CommunityHomeView: View {
     let community: Community
     @ObservedObject var store: SyncStore
     @State private var selectedArticle: ArticlePreview?
+    @State private var showComposer = false
 
     private var articles: [CommunityArticlePreview] {
         model.communityArticles[community.id] ?? []
+    }
+
+    private var drafts: [CommunityArticlePreview] {
+        model.communityArticleDrafts[community.id] ?? []
     }
 
     var body: some View {
@@ -988,7 +1945,13 @@ private struct CommunityHomeView: View {
                 HStack {
                     Text("Latest articles").font(.title2.bold())
                     Spacer()
-                    Image(systemName: "newspaper").foregroundStyle(AppTheme.accent)
+                    if community.canManageArticles {
+                        Button("New article", systemImage: "square.and.pencil") {
+                            showComposer = true
+                        }
+                    } else {
+                        Image(systemName: "newspaper").foregroundStyle(AppTheme.accent)
+                    }
                 }
 
                 if articles.isEmpty {
@@ -1010,6 +1973,22 @@ private struct CommunityHomeView: View {
                         }
                     }
                 }
+
+                if community.canManageArticles, !drafts.isEmpty {
+                    Divider().padding(.top, 4)
+                    Label("Drafts", systemImage: "doc.badge.clock")
+                        .font(.title2.bold())
+                    LazyVStack(spacing: 12) {
+                        ForEach(drafts) { item in
+                            ArticleCard(
+                                article: item.article,
+                                author: store.users[item.article.creatorId],
+                                imageURL: item.article.thumbnailImageId.flatMap { model.attachmentURLs[$0] },
+                                badge: "Draft"
+                            ) { selectedArticle = item.article }
+                        }
+                    }
+                }
             }
             .frame(maxWidth: 760, alignment: .leading)
             .padding(24)
@@ -1021,18 +2000,20 @@ private struct CommunityHomeView: View {
         .sheet(item: $selectedArticle) { article in
             ArticleReaderView(articleID: article.id, source: .community(community.id), store: store)
         }
+        .sheet(isPresented: $showComposer) {
+            ArticleComposer(owner: .community(community.id)) {
+                showComposer = false
+                Task { await model.loadCommunityArticles(communityID: community.id) }
+            }
+        }
     }
-}
-
-private enum ArticleSource {
-    case community(String)
-    case user(String)
 }
 
 private struct ArticleCard: View {
     let article: ArticlePreview
     let author: UserProfile?
     let imageURL: URL?
+    var badge: String? = nil
     let open: () -> Void
 
     var body: some View {
@@ -1048,7 +2029,17 @@ private struct ArticleCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(article.title).font(.headline).foregroundStyle(.primary)
+                    HStack {
+                        Text(article.title).font(.headline).foregroundStyle(.primary)
+                        if let badge {
+                            Text(badge)
+                                .font(.caption2.bold())
+                                .foregroundStyle(AppTheme.accent)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(AppTheme.accent.opacity(0.12), in: Capsule())
+                        }
+                    }
                     if let preview = article.previewText, !preview.isEmpty {
                         Text(preview).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
                     }
@@ -1073,10 +2064,24 @@ private struct ArticleReaderView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let articleID: String
-    let source: ArticleSource
+    let source: ArticleOwner
     @ObservedObject var store: SyncStore
+    @State private var commentText = ""
+    @State private var isSendingComment = false
+    @State private var showEditor = false
+    @State private var confirmDelete = false
 
     private var article: ArticleDetail? { model.articleDetails[articleID] }
+    private var comments: [Message] {
+        guard let article else { return [] }
+        return store.orderedMessages(channelId: article.channelId)
+    }
+    private var canEdit: Bool {
+        switch source {
+        case .user(let userID): userID == store.ownUser?.id
+        case .community(let communityID): store.communities[communityID]?.canManageArticles == true
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -1114,6 +2119,51 @@ private struct ArticleReaderView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
+                        Divider().padding(.top, 8)
+                        HStack {
+                            Text("Comments").font(.title2.bold())
+                            Spacer()
+                            Text(comments.count, format: .number)
+                                .foregroundStyle(.secondary)
+                        }
+                        if comments.isEmpty {
+                            ContentUnavailableView(
+                                "No comments yet",
+                                systemImage: "bubble.left",
+                                description: Text("Start the conversation about this article.")
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 16) {
+                                ForEach(comments) { comment in
+                                    ArticleCommentRow(
+                                        message: comment,
+                                        author: store.users[comment.creatorId],
+                                        avatarURL: store.users[comment.creatorId]?
+                                            .imageID
+                                            .flatMap { model.attachmentURLs[$0] }
+                                    )
+                                }
+                            }
+                        }
+                        HStack(alignment: .bottom, spacing: 10) {
+                            TextField("Add a comment…", text: $commentText, axis: .vertical)
+                                .lineLimit(1...5)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 11)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 17))
+                            Button("Post", systemImage: "arrow.up.circle.fill") {
+                                sendComment(article)
+                            }
+                            .labelStyle(.iconOnly)
+                            .font(.title2)
+                            .foregroundStyle(AppTheme.accent)
+                            .disabled(
+                                commentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    || isSendingComment
+                            )
+                        }
                     }
                     .frame(maxWidth: 720, alignment: .leading)
                     .padding(24)
@@ -1125,6 +2175,16 @@ private struct ArticleReaderView: View {
             .navigationTitle("Article")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if canEdit {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu("Manage article", systemImage: "ellipsis.circle") {
+                            Button("Edit article", systemImage: "pencil") { showEditor = true }
+                            Button("Delete article", systemImage: "trash", role: .destructive) {
+                                confirmDelete = true
+                            }
+                        }
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
@@ -1136,8 +2196,84 @@ private struct ArticleReaderView: View {
                 case .user(let id):
                     await model.loadUserArticle(userID: id, articleID: articleID)
                 }
+                if let article = model.articleDetails[articleID] {
+                    await model.loadArticleComments(owner: source, article: article)
+                }
+            }
+            .refreshable {
+                guard let article else { return }
+                await model.loadArticleComments(owner: source, article: article)
+            }
+            .sheet(isPresented: $showEditor) {
+                if let article {
+                    ArticleComposer(
+                        owner: source,
+                        article: article,
+                        isDraft: model.articleDraftIDs.contains(articleID)
+                    ) {
+                        showEditor = false
+                    }
+                }
+            }
+            .confirmationDialog("Delete this article?", isPresented: $confirmDelete) {
+                Button("Delete article", role: .destructive) {
+                    Task {
+                        if await model.deleteArticle(owner: source, articleID: articleID) { dismiss() }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the article and its public link.")
+            }
+            .onDisappear {
+                guard let article else { return }
+                Task { await model.leaveArticleComments(owner: source, article: article) }
             }
         }
+    }
+
+    private func sendComment(_ article: ArticleDetail) {
+        let text = commentText
+        isSendingComment = true
+        Task {
+            if await model.sendArticleComment(owner: source, article: article, text: text) {
+                commentText = ""
+            }
+            isSendingComment = false
+        }
+    }
+}
+
+private struct ArticleCommentRow: View {
+    let message: Message
+    let author: UserProfile?
+    let avatarURL: URL?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Avatar(
+                name: author?.displayName ?? "Member",
+                url: avatarURL,
+                isBot: author?.isBot == true,
+                small: true
+            )
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(author?.displayName ?? "Member").font(.subheadline.bold())
+                    Text(commentDate)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Text(message.body.plainText)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var commentDate: String {
+        guard let date = ISO8601DateFormatter().date(from: message.createdAt) else { return "" }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 }
 
@@ -1212,7 +2348,8 @@ private struct ChannelListView: View {
                             Label("Share community", systemImage: "square.and.arrow.up")
                         }
                     }
-                    if community.canManageInfo || community.creatorId == model.store.ownUser?.id {
+                    if !community.managementPermissions.isEmpty
+                        || community.creatorId == model.store.ownUser?.id {
                         Button("Community settings", systemImage: "gearshape") {
                             showCommunitySettings = true
                         }
@@ -1503,6 +2640,7 @@ private struct UserProfileView: View {
         user.map { model.effectiveOnlineStatus(for: $0) } ?? "offline"
     }
     private var articles: [UserArticlePreview] { model.userArticles[userID] ?? [] }
+    private var drafts: [UserArticlePreview] { model.userArticleDrafts[userID] ?? [] }
     private var cgDetails: [String: JSONValue] {
         model.profileDetails[userID]?
             .detailledProfiles
@@ -1618,6 +2756,27 @@ private struct UserProfileView: View {
                                 }
                             }
                         }
+                        if user.id == store.ownUser?.id, !drafts.isEmpty {
+                            Divider().padding(.top, 8)
+                            HStack {
+                                Label("Drafts", systemImage: "doc.badge.clock")
+                                    .font(.title2.bold())
+                                Spacer()
+                                Text(drafts.count, format: .number).foregroundStyle(.secondary)
+                            }
+                            ForEach(drafts) { item in
+                                ArticleCard(
+                                    article: item.article,
+                                    author: user,
+                                    imageURL: item.article.thumbnailImageId.flatMap {
+                                        model.attachmentURLs[$0]
+                                    },
+                                    badge: "Draft"
+                                ) {
+                                    selectedArticle = item.article
+                                }
+                            }
+                        }
                     }
                     .frame(maxWidth: 480)
                     .padding(24)
@@ -1652,7 +2811,7 @@ private struct UserProfileView: View {
                 ArticleReaderView(articleID: article.id, source: .user(userID), store: store)
             }
             .sheet(isPresented: $showComposer) {
-                UserArticleComposer {
+                ArticleComposer(owner: .user(userID)) {
                     showComposer = false
                     Task { await model.loadUserProfile(userID: userID) }
                 }
@@ -2579,15 +3738,34 @@ private struct AccountEditorView: View {
     }
 }
 
-private struct UserArticleComposer: View {
+private struct ArticleComposer: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    let didPublish: () -> Void
-    @State private var title = ""
-    @State private var preview = ""
-    @State private var bodyText = ""
-    @State private var tags = ""
-    @State private var isPublishing = false
+    let owner: ArticleOwner
+    let article: ArticleDetail?
+    let didSave: () -> Void
+    @State private var title: String
+    @State private var preview: String
+    @State private var bodyText: String
+    @State private var tags: String
+    @State private var publish: Bool
+    @State private var isSaving = false
+
+    init(
+        owner: ArticleOwner,
+        article: ArticleDetail? = nil,
+        isDraft: Bool = false,
+        didSave: @escaping () -> Void
+    ) {
+        self.owner = owner
+        self.article = article
+        self.didSave = didSave
+        _title = State(initialValue: article?.title ?? "")
+        _preview = State(initialValue: article?.previewText ?? "")
+        _bodyText = State(initialValue: article?.markdownSource ?? "")
+        _tags = State(initialValue: article?.tags.joined(separator: ", ") ?? "")
+        _publish = State(initialValue: !isDraft)
+    }
 
     var body: some View {
         NavigationStack {
@@ -2608,6 +3786,20 @@ private struct UserArticleComposer: View {
                     TextField("Comma-separated tags", text: $tags)
                         .textInputAutocapitalization(.never)
                 }
+                Section("Publication") {
+                    Picker("Status", selection: $publish) {
+                        Text("Draft").tag(false)
+                        Text("Published").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    Text(
+                        publish
+                            ? "The article will be visible to its audience immediately."
+                            : "Only you and authorized community editors can see drafts."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
                 Section {
                     Label(
                         "Markdown is supported. Rich media blocks can be added later without changing the article API.",
@@ -2617,39 +3809,72 @@ private struct UserArticleComposer: View {
                     .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("New Article")
+            .navigationTitle(article == nil ? "New Article" : "Edit Article")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Publish") {
-                        isPublishing = true
-                        Task {
-                            let parsedTags = tags.split(separator: ",")
-                                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                                .filter { !$0.isEmpty }
-                            if await model.publishUserArticle(
-                                title: title,
-                                preview: preview,
-                                text: bodyText,
-                                tags: parsedTags
-                            ) {
-                                didPublish()
-                                dismiss()
-                            }
-                            isPublishing = false
-                        }
-                    }
+                    Button(article == nil ? (publish ? "Publish" : "Save Draft") : "Save") { save() }
                     .disabled(
                         title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || isPublishing
+                            || isSaving
                     )
                 }
             }
-            .overlay { if isPublishing { ProgressView() } }
+            .overlay { if isSaving { ProgressView() } }
+        }
+    }
+
+    private func save() {
+        isSaving = true
+        Task {
+            let parsedTags = tags.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let saved: Bool
+            if let article {
+                saved = await model.updateArticle(
+                    owner: owner,
+                    articleID: article.articleId,
+                    title: title,
+                    preview: preview,
+                    text: bodyText,
+                    tags: parsedTags,
+                    publish: publish
+                )
+            } else {
+                switch owner {
+                case .user:
+                    saved = await model.createUserArticle(
+                        title: title,
+                        preview: preview,
+                        text: bodyText,
+                        tags: parsedTags,
+                        publish: publish
+                    ) != nil
+                case .community(let communityID):
+                    guard let community = model.store.communities[communityID] else {
+                        isSaving = false
+                        return
+                    }
+                    saved = await model.createCommunityArticle(
+                        community: community,
+                        title: title,
+                        preview: preview,
+                        text: bodyText,
+                        tags: parsedTags,
+                        publish: publish
+                    ) != nil
+                }
+            }
+            isSaving = false
+            if saved {
+                didSave()
+                dismiss()
+            }
         }
     }
 }
@@ -2763,7 +3988,7 @@ private struct MarkdownArticleText: View {
     var body: some View {
         Group {
             if let rendered = try? AttributedString(
-                markdown: source,
+                markdown: source.replacingOccurrences(of: "\n", with: "  \n"),
                 options: .init(interpretedSyntax: .full)
             ) {
                 Text(rendered)

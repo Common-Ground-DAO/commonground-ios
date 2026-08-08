@@ -732,6 +732,138 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(detail.article.markdownSource, "## Heading\nBody")
     }
 
+    func testArticleDraftAndCommentRoomContracts() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = try XCTUnwrap(request.url?.path)
+            routes.append(path)
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            switch path {
+            case "/api/v2/User/getArticleList":
+                XCTAssertEqual(object["drafts"] as? Bool, true)
+                XCTAssertEqual(object["userId"] as? String, "user-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":[]}"#)
+            case "/api/v2/Message/joinArticleEventRoom", "/api/v2/Message/leaveArticleEventRoom":
+                let access = try XCTUnwrap(object["access"] as? [String: Any])
+                XCTAssertEqual(access["articleId"] as? String, "article-1")
+                XCTAssertEqual(access["articleCommunityId"] as? String, "community-1")
+                XCTAssertEqual(access["channelId"] as? String, "channel-1")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            default:
+                XCTFail("Unexpected route \(path)")
+                return Self.response(request, status: 404, body: #"{"status":"ERROR"}"#)
+            }
+        }
+        let api = ArticleAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        _ = try await api.userArticles(userID: "user-1", drafts: true)
+        let access = MessageAccess.communityArticle(
+            "community-1",
+            articleId: "article-1",
+            channelId: "channel-1"
+        )
+        try await api.joinCommentRoom(access: access)
+        try await api.leaveCommentRoom(access: access)
+        XCTAssertEqual(routes, [
+            "/api/v2/User/getArticleList",
+            "/api/v2/Message/joinArticleEventRoom",
+            "/api/v2/Message/leaveArticleEventRoom",
+        ])
+    }
+
+    func testCommunityManagementContracts() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = try XCTUnwrap(request.url?.path)
+            routes.append(path)
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            switch path {
+            case "/api/v2/Community/getMemberList":
+                XCTAssertEqual(object["roleId"] as? String, "role-member")
+                return Self.response(
+                    request,
+                    status: 200,
+                    body: #"{"status":"OK","data":{"totalCount":2,"resultCount":2,"roles":[["role-member",2]],"online":[["user-1",["role-member"]]],"offline":[["user-2",["role-member"]]]}}"#
+                )
+            case "/api/v2/Community/setUserBlockState":
+                XCTAssertTrue(object["until"] is NSNull)
+                XCTAssertTrue(object["blockState"] is NSNull)
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/createRole":
+                XCTAssertTrue(object["imageId"] is NSNull)
+                XCTAssertTrue(object["assignmentRules"] is NSNull)
+                XCTAssertTrue(object["description"] is NSNull)
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":{"id":"role-new"}}"#)
+            case "/api/v2/Community/addUserToRoles", "/api/v2/Community/removeUserFromRoles":
+                XCTAssertEqual(object["userId"] as? String, "user-1")
+                XCTAssertEqual(object["communityId"] as? String, "community-1")
+                XCTAssertEqual(object["roleIds"] as? [String], ["role-new"])
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/getCommunityPassword":
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":{"password":"secret"}}"#)
+            case "/api/v2/Community/setOnboardingOptions":
+                XCTAssertEqual(object["password"] as? String, "secret")
+                let options = try XCTUnwrap(object["onboardingOptions"] as? [String: Any])
+                XCTAssertEqual((options["manuallyApprove"] as? [String: Any])?["enabled"] as? Bool, true)
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/updateCommunity":
+                XCTAssertEqual(object["enablePersonalNewsletter"] as? Bool, true)
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            case "/api/v2/Community/createChannel":
+                XCTAssertTrue(object["url"] is NSNull)
+                XCTAssertEqual((object["rolePermissions"] as? [[String: Any]])?.first?["roleId"] as? String, "role-member")
+                return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+            default:
+                XCTFail("Unexpected route \(path)")
+                return Self.response(request, status: 404, body: #"{"status":"ERROR"}"#)
+            }
+        }
+        let api = CommunityAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let members = try await api.members(communityID: "community-1", roleID: "role-member")
+        XCTAssertEqual(members.online.first?.userId, "user-1")
+        try await api.setBlockState(communityID: "community-1", userID: "user-1", state: nil)
+        let roleID = try await api.createRole(communityID: "community-1", title: "Writers")
+        XCTAssertEqual(roleID, "role-new")
+        try await api.addUserToRoles(communityID: "community-1", userID: "user-1", roleIDs: ["role-new"])
+        try await api.removeUserFromRoles(communityID: "community-1", userID: "user-1", roleIDs: ["role-new"])
+        let password = try await api.communityPassword(communityID: "community-1")
+        XCTAssertEqual(password, "secret")
+        try await api.setOnboardingOptions(
+            communityID: "community-1",
+            options: .object(["manuallyApprove": .object(["enabled": .bool(true)])]),
+            password: password
+        )
+        try await api.setPersonalNewsletter(communityID: "community-1", enabled: true)
+        try await api.createChannel(
+            communityID: "community-1",
+            areaID: "area-1",
+            title: "Writing",
+            url: nil,
+            order: 1,
+            description: nil,
+            emoji: "✍️",
+            roleAccess: [
+                ChannelRoleAccess(
+                    roleId: "role-member",
+                    roleTitle: "Member",
+                    permissions: ["CHANNEL_EXISTS", "CHANNEL_READ"]
+                )
+            ]
+        )
+        XCTAssertEqual(routes.count, 9)
+    }
+
     func testProfileUpdateContracts() async throws {
         var routes: [String] = []
         MockURLProtocol.handler = { request in

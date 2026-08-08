@@ -43,3 +43,7 @@ Community list/detail member counts can cross the PostgreSQL boundary as strings
 ## N-10 — image upload success is not an API envelope
 
 `File/uploadImage` is the sole multipart route and returns its upload result as a bare JSON object, while failures retain the normal `{status:"ERROR"}` envelope. `HTTPTransport.callMultipart` handles both shapes, preserves the instance cookie lifecycle, and leaves signed attachment downloads unauthenticated as designed.
+
+## N-11 — article publication workaround resolved upstream
+
+Resolved by backend PR #56 / issue #52 (reference findings F-13 and F-14), deployed on `cg.mogged.eu`. User and community article creation now publishes in one request when `published` contains an ISO timestamp, and the response returns the stored publication value. The iOS client therefore sends the intended draft/published state directly to `createArticle`; it does not create a draft and immediately update it. User article metadata-only updates no longer require a no-op `article: { articleId }` stub, although real edits correctly include the changed shared article body.

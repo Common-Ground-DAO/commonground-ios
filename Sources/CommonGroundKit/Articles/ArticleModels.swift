@@ -108,12 +108,47 @@ public struct ArticleDetail: Decodable, Equatable, Sendable {
     }
 }
 
+public struct ArticleRolePermission: Codable, Equatable, Sendable {
+    public let roleId: String
+    public let roleTitle: String
+    public let permissions: [String]
+
+    public init(roleId: String, roleTitle: String, permissions: [String]) {
+        self.roleId = roleId
+        self.roleTitle = roleTitle
+        self.permissions = permissions
+    }
+}
+
 public struct CommunityArticle: Decodable, Equatable, Sendable {
     public let communityId: String
     public let articleId: String
     public let url: String?
     public let published: String?
     public let updatedAt: String
+    public let rolePermissions: [ArticleRolePermission]
+    public let sentAsNewsletter: String?
+    public let markAsNewsletter: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case communityId, articleId, url, published, updatedAt
+        case rolePermissions, sentAsNewsletter, markAsNewsletter
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        communityId = try container.decode(String.self, forKey: .communityId)
+        articleId = try container.decode(String.self, forKey: .articleId)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
+        published = try container.decodeIfPresent(String.self, forKey: .published)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        rolePermissions = try container.decodeIfPresent(
+            [ArticleRolePermission].self,
+            forKey: .rolePermissions
+        ) ?? []
+        sentAsNewsletter = try container.decodeIfPresent(String.self, forKey: .sentAsNewsletter)
+        markAsNewsletter = try container.decodeIfPresent(Bool.self, forKey: .markAsNewsletter) ?? false
+    }
 }
 
 public struct UserArticle: Decodable, Equatable, Sendable {
@@ -139,6 +174,13 @@ public struct UserArticlePreview: Decodable, Equatable, Identifiable, Sendable {
 public struct CommunityArticleDetail: Decodable, Equatable, Sendable {
     public let communityArticle: CommunityArticle
     public let article: ArticleDetail
+
+    public var preview: CommunityArticlePreview {
+        CommunityArticlePreview(
+            communityArticle: communityArticle,
+            article: ArticlePreview(detail: article)
+        )
+    }
 }
 
 public struct UserArticleDetail: Decodable, Equatable, Sendable {

@@ -8,6 +8,11 @@ enum CommunityJoinOutcome {
     case failed
 }
 
+enum ArticleOwner: Equatable {
+    case community(String)
+    case user(String)
+}
+
 enum AppearancePreference: String, CaseIterable, Identifiable {
     case system, light, dark
     var id: String { rawValue }
@@ -49,10 +54,18 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRefreshingHome = false
     @Published private(set) var communityResults: [CommunitySummary] = []
     @Published private(set) var communityArticles: [String: [CommunityArticlePreview]] = [:]
+    @Published private(set) var communityArticleDrafts: [String: [CommunityArticlePreview]] = [:]
     @Published private(set) var userArticles: [String: [UserArticlePreview]] = [:]
+    @Published private(set) var userArticleDrafts: [String: [UserArticlePreview]] = [:]
     @Published private(set) var articleDetails: [String: ArticleDetail] = [:]
+    @Published private(set) var articleDraftIDs: Set<String> = []
+    @Published private(set) var articlePublishedAt: [String: String] = [:]
+    @Published private(set) var articleRolePermissions: [String: [ArticleRolePermission]] = [:]
     @Published private(set) var profileDetails: [String: UserProfileDetails] = [:]
     @Published private(set) var channelMembers: [String: ChannelMemberList] = [:]
+    @Published private(set) var communityMemberLists: [String: CommunityMemberList] = [:]
+    @Published private(set) var communityBans: [String: [CommunityBan]] = [:]
+    @Published private(set) var communityPendingApprovals: [String: [CommunityPendingApproval]] = [:]
     @Published var appearance = AppearancePreference(
         rawValue: UserDefaults.standard.string(forKey: "appearancePreference") ?? ""
     ) ?? .system {
@@ -318,8 +331,21 @@ final class AppModel: ObservableObject {
             async let articles = client.articles.userArticles(userID: userID)
             profileDetails[userID] = try await details
             userArticles[userID] = try await articles
+            for item in userArticles[userID] ?? [] {
+                if let published = item.userArticle.published {
+                    articlePublishedAt[item.id] = published
+                }
+            }
+            if userID == store.ownUser?.id,
+               let drafts = try? await client.articles.userArticles(userID: userID, drafts: true) {
+                articleDraftIDs.subtract((userArticleDrafts[userID] ?? []).map(\.id))
+                userArticleDrafts[userID] = drafts
+                articleDraftIDs.formUnion(drafts.map(\.id))
+                for item in drafts { articlePublishedAt.removeValue(forKey: item.id) }
+            }
             await loadAttachmentURLs(
-                objectIDs: userArticles[userID]?.compactMap(\.article.thumbnailImageId) ?? []
+                objectIDs: (userArticles[userID] ?? []).compactMap(\.article.thumbnailImageId)
+                    + (userArticleDrafts[userID] ?? []).compactMap(\.article.thumbnailImageId)
             )
         } catch is CancellationError {
             return
@@ -333,8 +359,27 @@ final class AppModel: ObservableObject {
         do {
             let results = try await client.articles.communityArticles(communityID: communityID)
             communityArticles[communityID] = results
-            await hydrateUsers(ids: results.map(\.article.creatorId))
-            await loadAttachmentURLs(objectIDs: results.compactMap(\.article.thumbnailImageId))
+            for item in results {
+                if let published = item.communityArticle.published {
+                    articlePublishedAt[item.id] = published
+                }
+            }
+            var allResults = results
+            if store.communities[communityID]?.canManageArticles == true,
+               let drafts = try? await client.articles.communityArticles(
+                   communityID: communityID,
+                   drafts: true
+               ) {
+                articleDraftIDs.subtract((communityArticleDrafts[communityID] ?? []).map(\.id))
+                communityArticleDrafts[communityID] = drafts
+                articleDraftIDs.formUnion(drafts.map(\.id))
+                for item in drafts { articlePublishedAt.removeValue(forKey: item.id) }
+                for item in drafts { articleRolePermissions[item.id] = item.communityArticle.rolePermissions }
+                allResults += drafts
+            }
+            for item in results { articleRolePermissions[item.id] = item.communityArticle.rolePermissions }
+            await hydrateUsers(ids: allResults.map(\.article.creatorId))
+            await loadAttachmentURLs(objectIDs: allResults.compactMap(\.article.thumbnailImageId))
         } catch is CancellationError {
             return
         } catch {
@@ -350,6 +395,14 @@ final class AppModel: ObservableObject {
                 articleID: articleID
             )
             articleDetails[articleID] = result.article
+            articleRolePermissions[articleID] = result.communityArticle.rolePermissions
+            if let published = result.communityArticle.published {
+                articleDraftIDs.remove(articleID)
+                articlePublishedAt[articleID] = published
+            } else {
+                articleDraftIDs.insert(articleID)
+                articlePublishedAt.removeValue(forKey: articleID)
+            }
             await hydrateUsers(ids: [result.article.creatorId])
             await loadAttachmentURLs(objectIDs: [result.article.headerImageId].compactMap { $0 })
         } catch {
@@ -362,35 +415,223 @@ final class AppModel: ObservableObject {
         do {
             let result = try await client.articles.userArticle(userID: userID, articleID: articleID)
             articleDetails[articleID] = result.article
+            if let published = result.userArticle.published {
+                articleDraftIDs.remove(articleID)
+                articlePublishedAt[articleID] = published
+            } else {
+                articleDraftIDs.insert(articleID)
+                articlePublishedAt.removeValue(forKey: articleID)
+            }
             await loadAttachmentURLs(objectIDs: [result.article.headerImageId].compactMap { $0 })
         } catch {
             errorMessage = userMessage(for: error)
         }
     }
 
-    func publishUserArticle(title: String, preview: String, text: String, tags: [String]) async -> Bool {
-        guard let client, let userID = store.ownUser?.id else { return false }
+    func createUserArticle(
+        title: String,
+        preview: String,
+        text: String,
+        tags: [String],
+        publish: Bool
+    ) async -> UserArticleDetail? {
+        guard let client, let userID = store.ownUser?.id else { return nil }
         do {
             let created = try await client.articles.createUserArticle(
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                 previewText: preview.trimmingCharacters(in: .whitespacesAndNewlines),
-                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                tags: tags
+                text: text,
+                tags: tags,
+                published: publish ? ISO8601DateFormatter().string(from: Date()) : nil
             )
-            let existing = userArticles[userID] ?? []
-            userArticles[userID] = [created.preview] + existing.filter { $0.id != created.preview.id }
+            if publish {
+                userArticles[userID] = [created.preview]
+                    + (userArticles[userID] ?? []).filter { $0.id != created.preview.id }
+                articleDraftIDs.remove(created.article.articleId)
+                if let published = created.userArticle.published {
+                    articlePublishedAt[created.article.articleId] = published
+                }
+            } else {
+                userArticleDrafts[userID] = [created.preview]
+                    + (userArticleDrafts[userID] ?? []).filter { $0.id != created.preview.id }
+                articleDraftIDs.insert(created.article.articleId)
+                articlePublishedAt.removeValue(forKey: created.article.articleId)
+            }
+            articleDetails[created.article.articleId] = created.article
+            return created
+        } catch {
+            errorMessage = userMessage(for: error)
+            return nil
+        }
+    }
 
-            // Reconcile with the server, while preserving the successful write
-            // if a read replica or publication boundary briefly lags behind.
-            if let fetched = try? await client.articles.userArticles(userID: userID) {
-                userArticles[userID] = fetched.contains(where: { $0.id == created.preview.id })
-                    ? fetched
-                    : [created.preview] + fetched
+    func createCommunityArticle(
+        community: Community,
+        title: String,
+        preview: String,
+        text: String,
+        tags: [String],
+        publish: Bool
+    ) async -> CommunityArticleDetail? {
+        guard let client, community.canManageArticles else { return nil }
+        let permissions = community.defaultArticleRolePermissions
+        guard !permissions.isEmpty else {
+            errorMessage = "This community has no Public or Member role for article visibility."
+            return nil
+        }
+        do {
+            let created = try await client.articles.createCommunityArticle(
+                communityID: community.id,
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                previewText: preview.trimmingCharacters(in: .whitespacesAndNewlines),
+                text: text,
+                tags: tags,
+                rolePermissions: permissions,
+                published: publish ? ISO8601DateFormatter().string(from: Date()) : nil
+            )
+            articleDetails[created.article.articleId] = created.article
+            articleRolePermissions[created.article.articleId] = created.communityArticle.rolePermissions
+            if publish {
+                communityArticles[community.id] = [created.preview]
+                    + (communityArticles[community.id] ?? []).filter { $0.id != created.preview.id }
+                articleDraftIDs.remove(created.article.articleId)
+                if let published = created.communityArticle.published {
+                    articlePublishedAt[created.article.articleId] = published
+                }
+            } else {
+                communityArticleDrafts[community.id] = [created.preview]
+                    + (communityArticleDrafts[community.id] ?? []).filter { $0.id != created.preview.id }
+                articleDraftIDs.insert(created.article.articleId)
+                articlePublishedAt.removeValue(forKey: created.article.articleId)
+            }
+            return created
+        } catch {
+            errorMessage = userMessage(for: error)
+            return nil
+        }
+    }
+
+    func updateArticle(
+        owner: ArticleOwner,
+        articleID: String,
+        title: String,
+        preview: String,
+        text: String,
+        tags: [String],
+        publish: Bool
+    ) async -> Bool {
+        guard let client else { return false }
+        let published = publish
+            ? (articlePublishedAt[articleID] ?? ISO8601DateFormatter().string(from: Date()))
+            : nil
+        do {
+            switch owner {
+            case .user(let userID):
+                guard userID == store.ownUser?.id else { return false }
+                try await client.articles.updateUserArticle(
+                    articleID: articleID,
+                    title: title,
+                    previewText: preview,
+                    text: text,
+                    tags: tags,
+                    published: published
+                )
+                await loadUserProfile(userID: userID)
+                await loadUserArticle(userID: userID, articleID: articleID)
+            case .community(let communityID):
+                guard let community = store.communities[communityID], community.canManageArticles else {
+                    return false
+                }
+                try await client.articles.updateCommunityArticle(
+                    communityID: communityID,
+                    articleID: articleID,
+                    title: title,
+                    previewText: preview,
+                    text: text,
+                    tags: tags,
+                    rolePermissions: articleRolePermissions[articleID]
+                        ?? community.defaultArticleRolePermissions,
+                    published: published
+                )
+                await loadCommunityArticles(communityID: communityID)
+                await loadCommunityArticle(communityID: communityID, articleID: articleID)
+            }
+            if publish {
+                articleDraftIDs.remove(articleID)
+                if let published { articlePublishedAt[articleID] = published }
+            } else {
+                articleDraftIDs.insert(articleID)
+                articlePublishedAt.removeValue(forKey: articleID)
             }
             return true
         } catch {
             errorMessage = userMessage(for: error)
             return false
+        }
+    }
+
+    func deleteArticle(owner: ArticleOwner, articleID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            switch owner {
+            case .user(let userID):
+                guard userID == store.ownUser?.id else { return false }
+                try await client.articles.deleteUserArticle(articleID: articleID)
+                await loadUserProfile(userID: userID)
+            case .community(let communityID):
+                guard store.communities[communityID]?.canManageArticles == true else { return false }
+                try await client.articles.deleteCommunityArticle(
+                    communityID: communityID,
+                    articleID: articleID
+                )
+                await loadCommunityArticles(communityID: communityID)
+            }
+            articleDetails.removeValue(forKey: articleID)
+            articleDraftIDs.remove(articleID)
+            articlePublishedAt.removeValue(forKey: articleID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func loadArticleComments(owner: ArticleOwner, article: ArticleDetail) async {
+        let access = articleAccess(owner: owner, article: article)
+        await loadMessages(access: access, channelID: article.channelId)
+        try? await client?.articles.joinCommentRoom(access: access)
+    }
+
+    func leaveArticleComments(owner: ArticleOwner, article: ArticleDetail) async {
+        try? await client?.articles.leaveCommentRoom(access: articleAccess(owner: owner, article: article))
+    }
+
+    func sendArticleComment(owner: ArticleOwner, article: ArticleDetail, text: String) async -> Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, let client else { return false }
+        do {
+            let sent = try await client.messages.send(
+                access: articleAccess(owner: owner, article: article),
+                text: value
+            )
+            store.applyOwnWrite(sent)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    private func articleAccess(owner: ArticleOwner, article: ArticleDetail) -> MessageAccess {
+        switch owner {
+        case .community(let communityID):
+            .communityArticle(
+                communityID,
+                articleId: article.articleId,
+                channelId: article.channelId
+            )
+        case .user(let userID):
+            .userArticle(userID, articleId: article.articleId, channelId: article.channelId)
         }
     }
 
@@ -606,6 +847,305 @@ final class AppModel: ObservableObject {
             errorMessage = userMessage(for: error)
             return false
         }
+    }
+
+    func loadCommunityMembers(communityID: String, search: String? = nil, roleID: String? = nil) async {
+        guard let client else { return }
+        do {
+            let normalizedSearch = search?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let result = try await client.communities.members(
+                communityID: communityID,
+                search: normalizedSearch?.isEmpty == false ? normalizedSearch : nil,
+                roleID: roleID
+            )
+            communityMemberLists[communityID] = result
+            await hydrateUsers(ids: (result.online + result.offline).map(\.userId))
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func loadCommunityBans(communityID: String) async {
+        guard let client else { return }
+        do {
+            let bans = try await client.communities.bannedUsers(communityID: communityID)
+            communityBans[communityID] = bans
+            await hydrateUsers(ids: bans.map(\.userId))
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func unbanUser(communityID: String, userID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.setBlockState(
+                communityID: communityID,
+                userID: userID,
+                state: nil
+            )
+            await loadCommunityBans(communityID: communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func saveCommunityOnboarding(communityID: String, options: JSONValue) async -> Bool {
+        guard let client else { return false }
+        do {
+            let password = try await client.communities.communityPassword(communityID: communityID)
+            try await client.communities.setOnboardingOptions(
+                communityID: communityID,
+                options: options,
+                password: password
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func loadPendingApprovals(communityID: String) async {
+        guard let client else { return }
+        do {
+            let results = try await client.communities.pendingApprovals(communityID: communityID)
+            communityPendingApprovals[communityID] = results
+            await hydrateUsers(ids: results.map(\.userId))
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    func decidePendingApproval(
+        communityID: String,
+        userID: String,
+        state: String
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.setPendingApproval(
+                communityID: communityID,
+                userID: userID,
+                state: state
+            )
+            await loadPendingApprovals(communityID: communityID)
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func setCommunityPersonalNewsletter(communityID: String, enabled: Bool) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.setPersonalNewsletter(
+                communityID: communityID,
+                enabled: enabled
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func createCommunityRole(communityID: String, title: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            _ = try await client.communities.createRole(
+                communityID: communityID,
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func updateCommunityRole(
+        communityID: String,
+        roleID: String,
+        title: String?,
+        description: String?,
+        permissions: [String]?
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.updateRole(
+                communityID: communityID,
+                roleID: roleID,
+                title: title,
+                description: description,
+                permissions: permissions
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func deleteCommunityRole(communityID: String, roleID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.deleteRole(communityID: communityID, roleID: roleID)
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func setCommunityMemberRoles(
+        communityID: String,
+        userID: String,
+        previous: Set<String>,
+        selected: Set<String>
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            let additions = Array(selected.subtracting(previous))
+            let removals = Array(previous.subtracting(selected))
+            try await client.communities.addUserToRoles(
+                communityID: communityID,
+                userID: userID,
+                roleIDs: additions
+            )
+            try await client.communities.removeUserFromRoles(
+                communityID: communityID,
+                userID: userID,
+                roleIDs: removals
+            )
+            await loadCommunityMembers(communityID: communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func saveCommunityArea(
+        communityID: String,
+        areaID: String?,
+        title: String,
+        order: Int
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            if let areaID {
+                try await client.communities.updateArea(
+                    communityID: communityID,
+                    areaID: areaID,
+                    title: title
+                )
+            } else {
+                try await client.communities.createArea(
+                    communityID: communityID,
+                    title: title,
+                    order: order
+                )
+            }
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func deleteCommunityArea(communityID: String, areaID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.deleteArea(communityID: communityID, areaID: areaID)
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func saveCommunityChannel(
+        communityID: String,
+        channelID: String?,
+        areaID: String?,
+        title: String,
+        url: String?,
+        order: Int,
+        description: String?,
+        emoji: String?,
+        roleAccess: [ChannelRoleAccess]
+    ) async -> Bool {
+        guard let client else { return false }
+        do {
+            if let channelID {
+                try await client.communities.updateChannel(
+                    communityID: communityID,
+                    channelID: channelID,
+                    areaID: areaID,
+                    title: title,
+                    url: url,
+                    order: order,
+                    description: description,
+                    emoji: emoji,
+                    roleAccess: roleAccess
+                )
+            } else {
+                try await client.communities.createChannel(
+                    communityID: communityID,
+                    areaID: areaID,
+                    title: title,
+                    url: url,
+                    order: order,
+                    description: description,
+                    emoji: emoji,
+                    roleAccess: roleAccess
+                )
+            }
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    func deleteCommunityChannel(communityID: String, channelID: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.communities.deleteChannel(
+                communityID: communityID,
+                channelID: channelID
+            )
+            await refreshCommunity(communityID)
+            return true
+        } catch {
+            errorMessage = userMessage(for: error)
+            return false
+        }
+    }
+
+    private func refreshCommunity(_ communityID: String) async {
+        guard let client, let refreshed = try? await client.communities.detail(id: communityID) else { return }
+        store.seed(community: refreshed)
+        await loadCommunityMedia([refreshed])
     }
 
     func leaveCommunity(id: String) async -> Bool {

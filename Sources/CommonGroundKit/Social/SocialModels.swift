@@ -177,6 +177,44 @@ public struct Channel: Codable, Equatable, Identifiable, Sendable {
     public let rolePermissions: [JSONValue]
 
     public var id: String { channelId }
+
+    public var roleAccess: [ChannelRoleAccess] {
+        rolePermissions.compactMap(ChannelRoleAccess.init)
+    }
+}
+
+public struct ChannelRoleAccess: Identifiable, Equatable, Sendable {
+    public let roleId: String
+    public let roleTitle: String
+    public var permissions: [String]
+    public var id: String { roleId }
+
+    public init(roleId: String, roleTitle: String, permissions: [String]) {
+        self.roleId = roleId
+        self.roleTitle = roleTitle
+        self.permissions = permissions
+    }
+
+    init?(_ value: JSONValue) {
+        guard let object = value.objectValue,
+              let roleId = object["roleId"]?.stringValue,
+              let roleTitle = object["roleTitle"]?.stringValue else { return nil }
+        self.roleId = roleId
+        self.roleTitle = roleTitle
+        if case .array(let values) = object["permissions"] {
+            permissions = values.compactMap(\.stringValue)
+        } else {
+            permissions = []
+        }
+    }
+
+    public var jsonValue: JSONValue {
+        .object([
+            "roleId": .string(roleId),
+            "roleTitle": .string(roleTitle),
+            "permissions": .array(permissions.map(JSONValue.string)),
+        ])
+    }
 }
 
 public struct CommunityLink: Codable, Equatable, Sendable {
@@ -209,12 +247,22 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
     public let areas: [JSONValue]
     public let roles: [JSONValue]
     public let calls: [JSONValue]
+    public let official: Bool
+    public let premium: JSONValue?
+    public let tokens: [JSONValue]
+    public let pointBalance: Double
+    public let onboardingOptions: JSONValue?
+    public let membersPendingApproval: Int
+    public let enablePersonalNewsletter: Bool
+    public let allowUserBots: Bool
+    public let plugins: [JSONValue]
 
     private enum CodingKeys: String, CodingKey {
         case id, url, title, logoSmallId, logoLargeId, headerImageId, shortDescription
         case description, links, tags, creatorId
         case createdAt, updatedAt, memberCount, myRoleIds
-        case channels, areas, roles, calls
+        case channels, areas, roles, calls, official, premium, tokens, pointBalance
+        case onboardingOptions, membersPendingApproval, enablePersonalNewsletter, allowUserBots, plugins
     }
 
     public init(from decoder: Decoder) throws {
@@ -245,6 +293,15 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         areas = try container.decodeIfPresent([JSONValue].self, forKey: .areas) ?? []
         roles = try container.decodeIfPresent([JSONValue].self, forKey: .roles) ?? []
         calls = try container.decodeIfPresent([JSONValue].self, forKey: .calls) ?? []
+        official = try container.decodeIfPresent(Bool.self, forKey: .official) ?? false
+        premium = try container.decodeIfPresent(JSONValue.self, forKey: .premium)
+        tokens = try container.decodeIfPresent([JSONValue].self, forKey: .tokens) ?? []
+        pointBalance = try container.decodeIfPresent(Double.self, forKey: .pointBalance) ?? 0
+        onboardingOptions = try container.decodeIfPresent(JSONValue.self, forKey: .onboardingOptions)
+        membersPendingApproval = try container.decodeIfPresent(Int.self, forKey: .membersPendingApproval) ?? 0
+        enablePersonalNewsletter = try container.decodeIfPresent(Bool.self, forKey: .enablePersonalNewsletter) ?? false
+        allowUserBots = try container.decodeIfPresent(Bool.self, forKey: .allowUserBots) ?? false
+        plugins = try container.decodeIfPresent([JSONValue].self, forKey: .plugins) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -268,6 +325,15 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
         try container.encode(areas, forKey: .areas)
         try container.encode(roles, forKey: .roles)
         try container.encode(calls, forKey: .calls)
+        try container.encode(official, forKey: .official)
+        try container.encodeIfPresent(premium, forKey: .premium)
+        try container.encode(tokens, forKey: .tokens)
+        try container.encode(pointBalance, forKey: .pointBalance)
+        try container.encodeIfPresent(onboardingOptions, forKey: .onboardingOptions)
+        try container.encode(membersPendingApproval, forKey: .membersPendingApproval)
+        try container.encode(enablePersonalNewsletter, forKey: .enablePersonalNewsletter)
+        try container.encode(allowUserBots, forKey: .allowUserBots)
+        try container.encode(plugins, forKey: .plugins)
     }
 
     public var managementPermissions: Set<String> {
@@ -284,6 +350,98 @@ public struct Community: Codable, Equatable, Identifiable, Sendable {
 
     public var canManageInfo: Bool {
         managementPermissions.contains("COMMUNITY_MANAGE_INFO")
+    }
+
+    public var canManageArticles: Bool {
+        managementPermissions.contains("COMMUNITY_MANAGE_ARTICLES")
+    }
+
+    public var canManageChannels: Bool {
+        managementPermissions.contains("COMMUNITY_MANAGE_CHANNELS")
+    }
+
+    public var canManageRoles: Bool {
+        managementPermissions.contains("COMMUNITY_MANAGE_ROLES")
+    }
+
+    public var canModerate: Bool {
+        managementPermissions.contains("COMMUNITY_MODERATE")
+    }
+
+    public var canManageApplications: Bool {
+        managementPermissions.contains("COMMUNITY_MANAGE_USER_APPLICATIONS")
+    }
+
+    public var roleInfos: [CommunityRoleInfo] {
+        roles.compactMap(CommunityRoleInfo.init)
+    }
+
+    public var areaInfos: [CommunityAreaInfo] {
+        areas.compactMap(CommunityAreaInfo.init).sorted { $0.order < $1.order }
+    }
+
+    public var defaultArticleRolePermissions: [ArticleRolePermission] {
+        let visible = ["ARTICLE_PREVIEW", "ARTICLE_READ"]
+        let audience = roles.compactMap { role -> ArticleRolePermission? in
+            guard let object = role.objectValue,
+                  let id = object["id"]?.stringValue,
+                  let title = object["title"]?.stringValue,
+                  title == "Public" else { return nil }
+            return ArticleRolePermission(roleId: id, roleTitle: title, permissions: visible)
+        }
+        if !audience.isEmpty { return audience }
+        return roles.compactMap { role -> ArticleRolePermission? in
+            guard let object = role.objectValue,
+                  let id = object["id"]?.stringValue,
+                  let title = object["title"]?.stringValue,
+                  title == "Member" else { return nil }
+            return ArticleRolePermission(roleId: id, roleTitle: title, permissions: visible)
+        }
+    }
+}
+
+public struct CommunityRoleInfo: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let communityId: String
+    public let title: String
+    public let type: String
+    public let permissions: [String]
+    public let description: String?
+    public let imageId: String?
+    public let assignmentRules: JSONValue?
+
+    init?(_ value: JSONValue) {
+        guard let object = value.objectValue,
+              let id = object["id"]?.stringValue,
+              let communityId = object["communityId"]?.stringValue,
+              let title = object["title"]?.stringValue else { return nil }
+        self.id = id
+        self.communityId = communityId
+        self.title = title
+        type = object["type"]?.stringValue ?? "PREDEFINED"
+        if case .array(let values) = object["permissions"] {
+            permissions = values.compactMap(\.stringValue)
+        } else {
+            permissions = []
+        }
+        description = object["description"]?.stringValue
+        imageId = object["imageId"]?.stringValue
+        assignmentRules = object["assignmentRules"]
+    }
+}
+
+public struct CommunityAreaInfo: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let order: Int
+
+    init?(_ value: JSONValue) {
+        guard let object = value.objectValue,
+              let id = object["id"]?.stringValue,
+              let title = object["title"]?.stringValue else { return nil }
+        self.id = id
+        self.title = title
+        order = Int(object["order"]?.numberValue ?? 0)
     }
 }
 
@@ -338,6 +496,42 @@ public struct ChannelMemberEntry: Decodable, Equatable, Identifiable, Sendable {
         userId = try container.decode(String.self)
         roleIds = try container.decode([String].self)
     }
+}
+
+public struct CommunityMemberList: Decodable, Equatable, Sendable {
+    public let totalCount: Int
+    public let resultCount: Int
+    public let roles: [CommunityRoleCount]
+    public let online: [ChannelMemberEntry]
+    public let offline: [ChannelMemberEntry]
+}
+
+public struct CommunityRoleCount: Decodable, Equatable, Identifiable, Sendable {
+    public let roleId: String
+    public let count: Int
+    public var id: String { roleId }
+
+    public init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        roleId = try container.decode(String.self)
+        count = try container.decode(Int.self)
+    }
+}
+
+public struct CommunityBan: Decodable, Equatable, Identifiable, Sendable {
+    public let userId: String
+    public let blockState: String
+    public let blockStateUntil: String?
+    public let blockStateUpdatedAt: String?
+    public var id: String { userId }
+}
+
+public struct CommunityPendingApproval: Decodable, Equatable, Identifiable, Sendable {
+    public let communityId: String
+    public let userId: String
+    public let questionnaireAnswers: [JSONValue]?
+    public let approvalState: String
+    public var id: String { userId }
 }
 
 public struct ChannelMemberList: Decodable, Equatable, Sendable {
@@ -433,6 +627,30 @@ public struct MessageAccess: Encodable, Equatable, Sendable {
 
     public static func chat(_ chatId: String, channelId: String) -> MessageAccess {
         MessageAccess(channelId: channelId, chatId: chatId)
+    }
+
+    public static func communityArticle(
+        _ communityId: String,
+        articleId: String,
+        channelId: String
+    ) -> MessageAccess {
+        MessageAccess(
+            channelId: channelId,
+            articleId: articleId,
+            articleCommunityId: communityId
+        )
+    }
+
+    public static func userArticle(
+        _ userId: String,
+        articleId: String,
+        channelId: String
+    ) -> MessageAccess {
+        MessageAccess(
+            channelId: channelId,
+            articleId: articleId,
+            articleUserId: userId
+        )
     }
 
     private init(
