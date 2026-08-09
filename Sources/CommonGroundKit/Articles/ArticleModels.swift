@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ArticlePreview: Decodable, Equatable, Identifiable, Sendable {
+public struct ArticlePreview: Codable, Equatable, Identifiable, Sendable {
     public let articleId: String
     public let title: String
     public let previewText: String?
@@ -120,7 +120,7 @@ public struct ArticleRolePermission: Codable, Equatable, Sendable {
     }
 }
 
-public struct CommunityArticle: Decodable, Equatable, Sendable {
+public struct CommunityArticle: Codable, Equatable, Sendable {
     public let communityId: String
     public let articleId: String
     public let url: String?
@@ -159,7 +159,7 @@ public struct UserArticle: Decodable, Equatable, Sendable {
     public let updatedAt: String
 }
 
-public struct CommunityArticlePreview: Decodable, Equatable, Identifiable, Sendable {
+public struct CommunityArticlePreview: Codable, Equatable, Identifiable, Sendable {
     public let communityArticle: CommunityArticle
     public let article: ArticlePreview
     public var id: String { article.id }

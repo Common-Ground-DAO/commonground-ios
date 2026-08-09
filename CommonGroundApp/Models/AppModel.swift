@@ -134,6 +134,7 @@ final class AppModel: ObservableObject {
 
     let store = SyncStore()
     private let realtimeLogger = Logger(subsystem: "org.commonground.ios", category: "Realtime")
+    private let contentLogger = Logger(subsystem: "org.commonground.ios", category: "ContentSync")
     private(set) var client: CommonGroundClient?
     private var signingKey: (any DeviceSigningKey)?
     private var realtime: RealtimeClient?
@@ -153,11 +154,16 @@ final class AppModel: ObservableObject {
     private var appIsActive = true
     private var myEventsCursor: (scheduledBefore: String, beforeID: String)?
     private var myEventsRequestID: UUID?
+    private var myEventsLoadTask: Task<Void, Never>?
+    private var myEventsLoadTaskID: UUID?
     private static let myEventsPageSize = 30
     private var feedArticleCursor: (publishedBefore: String, beforeID: String)?
     private var feedEventCursor: (scheduledAfter: String, afterID: String)?
     private var feedArticleRequestID: UUID?
     private var feedEventRequestID: UUID?
+    private var feedLoadTask: Task<Void, Never>?
+    private var feedLoadTaskID: UUID?
+    private var feedLoadTaskKey: String?
     private var feedScope: CommunityFeedScope = .explore
     private var feedTopics: [String] = []
     private static let feedPageSize = 30
@@ -593,11 +599,29 @@ final class AppModel: ObservableObject {
     }
 
     func loadMyEvents() async {
-        await requestMyEvents(reset: true)
+        await runMyEventsRequest(reset: true)
     }
 
     func loadMoreMyEvents() async {
-        await requestMyEvents(reset: false)
+        await runMyEventsRequest(reset: false)
+    }
+
+    private func runMyEventsRequest(reset: Bool) async {
+        if let task = myEventsLoadTask {
+            await task.value
+            return
+        }
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.requestMyEvents(reset: reset)
+            guard self.myEventsLoadTaskID == taskID else { return }
+            self.myEventsLoadTask = nil
+            self.myEventsLoadTaskID = nil
+        }
+        myEventsLoadTaskID = taskID
+        myEventsLoadTask = task
+        await task.value
     }
 
     private func requestMyEvents(reset: Bool) async {
@@ -610,6 +634,7 @@ final class AppModel: ObservableObject {
         let requestID = UUID()
         myEventsRequestID = requestID
         isLoadingMyEvents = true
+        contentLogger.info("My Events request started reset=\(reset) id=\(requestID.uuidString, privacy: .public)")
         defer {
             if myEventsRequestID == requestID {
                 myEventsRequestID = nil
@@ -621,7 +646,11 @@ final class AppModel: ObservableObject {
                 scheduledBefore: cursor?.scheduledBefore,
                 beforeID: cursor?.beforeID
             )
-            guard myEventsRequestID == requestID else { return }
+            contentLogger.info("My Events response count=\(events.count) id=\(requestID.uuidString, privacy: .public)")
+            guard myEventsRequestID == requestID else {
+                contentLogger.notice("My Events response superseded id=\(requestID.uuidString, privacy: .public)")
+                return
+            }
             let previousIDs = Set(myEvents.map(\.id))
             let uniqueNewEvents = events.filter { !previousIDs.contains($0.id) }
             let merged = reset ? events : myEvents + uniqueNewEvents
@@ -631,6 +660,9 @@ final class AppModel: ObservableObject {
                     (Self.parseISODate(lhs.scheduleDate) ?? .distantFuture)
                         < (Self.parseISODate(rhs.scheduleDate) ?? .distantFuture)
                 }
+            if let offlineDatabase {
+                try? await offlineDatabase.replaceMyEvents(myEvents)
+            }
             if let last = events.last {
                 let nextCursor = (scheduledBefore: last.scheduleDate, beforeID: last.id)
                 let cursorAdvanced = cursor?.scheduledBefore != nextCursor.scheduledBefore
@@ -649,8 +681,10 @@ final class AppModel: ObservableObject {
             await hydrateUsers(ids: events.map(\.eventCreator) + events.flatMap(\.participantIds))
             await loadAttachmentURLs(objectIDs: events.compactMap(\.imageId))
         } catch is CancellationError {
+            contentLogger.notice("My Events request cancelled id=\(requestID.uuidString, privacy: .public)")
             return
         } catch {
+            contentLogger.error("My Events request failed id=\(requestID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             errorMessage = userMessage(for: error)
         }
     }
@@ -659,17 +693,60 @@ final class AppModel: ObservableObject {
         let normalizedTopics = topics.sorted {
             $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
         }
+        let taskKey = Self.feedCacheKey(scope: scope, topics: normalizedTopics)
+        if let task = feedLoadTask, feedLoadTaskKey == taskKey {
+            await task.value
+            return
+        }
+        if feedLoadTaskKey != taskKey {
+            feedLoadTask?.cancel()
+            feedLoadTask = nil
+            feedLoadTaskID = nil
+        }
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performFeedLoad(scope: scope, topics: normalizedTopics)
+            guard self.feedLoadTaskID == taskID else { return }
+            self.feedLoadTask = nil
+            self.feedLoadTaskID = nil
+            self.feedLoadTaskKey = nil
+        }
+        feedLoadTaskID = taskID
+        feedLoadTaskKey = taskKey
+        feedLoadTask = task
+        await task.value
+    }
+
+    private func performFeedLoad(scope: CommunityFeedScope, topics: [String]) async {
+        let queryChanged = feedScope != scope || feedTopics != topics
         feedScope = scope
-        feedTopics = normalizedTopics
+        feedTopics = topics
+        feedArticleCursor = nil
+        feedEventCursor = nil
+        canLoadMoreFeedArticles = true
+        canLoadMoreFeedEvents = true
+
+        if queryChanged || (feedArticles.isEmpty && feedEvents.isEmpty) {
+            if let offlineDatabase,
+               let cached = try? await offlineDatabase.feedSnapshot(scope: scope, topics: topics) {
+                feedArticles = cached.articles
+                feedEvents = cached.events
+            } else if queryChanged {
+                feedArticles = []
+                feedEvents = []
+            }
+        }
+
         async let articles: Void = requestFeedArticles(
             reset: true,
             scope: scope,
-            topics: normalizedTopics
+            topics: topics
         )
         async let events: Void = requestFeedEvents(
             reset: true,
             scope: scope,
-            topics: normalizedTopics
+            topics: topics
         )
         _ = await (articles, events)
     }
@@ -711,11 +788,11 @@ final class AppModel: ObservableObject {
         let requestID = UUID()
         feedArticleRequestID = requestID
         if reset {
-            feedArticles = []
             feedArticleCursor = nil
             canLoadMoreFeedArticles = true
         }
         isLoadingFeedArticles = true
+        contentLogger.info("Feed articles request started scope=\(scope.rawValue, privacy: .public) reset=\(reset) id=\(requestID.uuidString, privacy: .public)")
         defer {
             if feedArticleRequestID == requestID {
                 feedArticleRequestID = nil
@@ -730,7 +807,11 @@ final class AppModel: ObservableObject {
                 beforeID: cursor?.beforeID,
                 limit: Self.feedPageSize
             )
-            guard feedArticleRequestID == requestID else { return }
+            contentLogger.info("Feed articles response count=\(page.count) id=\(requestID.uuidString, privacy: .public)")
+            guard feedArticleRequestID == requestID else {
+                contentLogger.notice("Feed articles response superseded id=\(requestID.uuidString, privacy: .public)")
+                return
+            }
             let previousIDs = Set(feedArticles.map(\.id))
             let uniquePage = page.filter { !previousIDs.contains($0.id) }
             feedArticles = reset ? page : feedArticles + uniquePage
@@ -751,15 +832,18 @@ final class AppModel: ObservableObject {
                 }
                 articleRolePermissions[item.id] = item.communityArticle.rolePermissions
             }
+            await persistFeedSnapshot(scope: scope, topics: topics)
             await hydrateFeedPresentation(
                 communityIDs: page.map(\.communityArticle.communityId),
                 userIDs: page.map(\.article.creatorId),
                 objectIDs: page.compactMap(\.article.thumbnailImageId)
             )
         } catch is CancellationError {
+            contentLogger.notice("Feed articles request cancelled id=\(requestID.uuidString, privacy: .public)")
             return
         } catch {
             guard feedArticleRequestID == requestID else { return }
+            contentLogger.error("Feed articles request failed id=\(requestID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             errorMessage = userMessage(for: error)
         }
     }
@@ -778,11 +862,11 @@ final class AppModel: ObservableObject {
         let requestID = UUID()
         feedEventRequestID = requestID
         if reset {
-            feedEvents = []
             feedEventCursor = nil
             canLoadMoreFeedEvents = true
         }
         isLoadingFeedEvents = true
+        contentLogger.info("Feed events request started scope=\(scope.rawValue, privacy: .public) reset=\(reset) id=\(requestID.uuidString, privacy: .public)")
         defer {
             if feedEventRequestID == requestID {
                 feedEventRequestID = nil
@@ -796,7 +880,11 @@ final class AppModel: ObservableObject {
                 scheduledAfter: cursor?.scheduledAfter,
                 afterID: cursor?.afterID
             )
-            guard feedEventRequestID == requestID else { return }
+            contentLogger.info("Feed events response count=\(page.count) id=\(requestID.uuidString, privacy: .public)")
+            guard feedEventRequestID == requestID else {
+                contentLogger.notice("Feed events response superseded id=\(requestID.uuidString, privacy: .public)")
+                return
+            }
             let previousIDs = Set(feedEvents.map(\.id))
             let uniquePage = page.filter { !previousIDs.contains($0.id) }
             feedEvents = reset ? page : feedEvents + uniquePage
@@ -815,15 +903,18 @@ final class AppModel: ObservableObject {
                 communityEvents[event.communityId] = [event]
                     + (communityEvents[event.communityId] ?? []).filter { $0.id != event.id }
             }
+            await persistFeedSnapshot(scope: scope, topics: topics)
             await hydrateFeedPresentation(
                 communityIDs: page.map(\.communityId),
                 userIDs: page.map(\.eventCreator) + page.flatMap(\.participantIds),
                 objectIDs: page.compactMap(\.imageId)
             )
         } catch is CancellationError {
+            contentLogger.notice("Feed events request cancelled id=\(requestID.uuidString, privacy: .public)")
             return
         } catch {
             guard feedEventRequestID == requestID else { return }
+            contentLogger.error("Feed events request failed id=\(requestID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             errorMessage = userMessage(for: error)
         }
     }
@@ -2661,6 +2752,9 @@ final class AppModel: ObservableObject {
     }
 
     private func resetMyEventsPagination() {
+        myEventsLoadTask?.cancel()
+        myEventsLoadTask = nil
+        myEventsLoadTaskID = nil
         myEvents = []
         myEventsCursor = nil
         myEventsRequestID = nil
@@ -2669,6 +2763,10 @@ final class AppModel: ObservableObject {
     }
 
     private func resetFeedPagination() {
+        feedLoadTask?.cancel()
+        feedLoadTask = nil
+        feedLoadTaskID = nil
+        feedLoadTaskKey = nil
         feedArticles = []
         feedEvents = []
         feedCommunitySummaries = [:]
@@ -2685,6 +2783,22 @@ final class AppModel: ObservableObject {
         feedTopics = []
     }
 
+    private func persistFeedSnapshot(scope: CommunityFeedScope, topics: [String]) async {
+        guard feedScope == scope, feedTopics == topics, let offlineDatabase else { return }
+        try? await offlineDatabase.saveFeedSnapshot(
+            OfflineFeedSnapshot(
+                scope: scope,
+                topics: topics,
+                articles: feedArticles,
+                events: feedEvents
+            )
+        )
+    }
+
+    private static func feedCacheKey(scope: CommunityFeedScope, topics: [String]) -> String {
+        scope.rawValue + "\u{1F}" + topics.joined(separator: "\u{1E}")
+    }
+
     private func didAuthenticate(_ session: AuthSession, offline: Bool = false) async {
         guard let client else { return }
         do {
@@ -2697,6 +2811,18 @@ final class AppModel: ObservableObject {
             )
             offlineDatabase = database
             await store.configurePersistence(database)
+            if let cachedMyEvents = try? await database.myEvents() {
+                myEvents = cachedMyEvents.sorted { lhs, rhs in
+                    (Self.parseISODate(lhs.scheduleDate) ?? .distantFuture)
+                        < (Self.parseISODate(rhs.scheduleDate) ?? .distantFuture)
+                }
+            }
+            if let cachedFeed = try? await database.feedSnapshot(scope: .explore, topics: []) {
+                feedArticles = cachedFeed.articles
+                feedEvents = cachedFeed.events
+                feedScope = .explore
+                feedTopics = []
+            }
         } catch {
             // Persistence failure must not block an otherwise healthy session.
             offlineDatabase = nil

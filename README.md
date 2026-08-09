@@ -28,7 +28,7 @@ The first protocol spine is implemented end-to-end:
 - replies, structured mentions, reactions, editing/deletion, image upload, and signed attachment rendering are native messaging features;
 - Spark balances and non-refundable community contributions are native, alongside configurable community bot policy;
 - account-scoped SQLite persistence provides offline launch, cached communities/chats/messages/users/notifications,
-  durable per-conversation drafts, and a retryable message outbox;
+  query-scoped Feed snapshots, My Events, durable per-conversation drafts, and a retryable message outbox;
 - realtime reconnect performs in-band reauthentication, delta message reconciliation, structural refreshes,
   notification replay deduplication, and stable ISO timestamp ordering;
 - community administration covers general assets/info, premium and renewal, onboarding/applications,

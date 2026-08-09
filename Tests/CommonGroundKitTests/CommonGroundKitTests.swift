@@ -1087,6 +1087,53 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertTrue(finalSnapshot.pendingMessages.isEmpty)
     }
 
+    func testOfflineDatabasePersistsMyEventsAndFeedQueries() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "cg-content-cache-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let fileURL = directory.appending(path: "cache.sqlite3")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let event = try JSONDecoder().decode(
+            CommunityEvent.self,
+            from: Data(#"{"id":"event-1","type":"external","communityId":"community-1","eventCreator":"user-1","url":"swift-night","title":"Swift Night","description":{"version":"2","content":[{"type":"text","value":"Talks"}]},"externalUrl":null,"location":"Berlin","scheduleDate":"2026-08-19T18:00:00.000Z","duration":90,"createdAt":"2026-08-08T18:00:00.000Z","deletedAt":null,"updatedAt":"2026-08-08T18:00:00.000Z","callId":null,"imageId":null,"rolePermissions":[],"participantIds":["user-1"],"participantCount":"1","isSelfAttending":true}"#.utf8)
+        )
+        let article = try JSONDecoder().decode(
+            CommunityArticlePreview.self,
+            from: Data(#"{"communityArticle":{"communityId":"community-1","articleId":"article-1","url":"hello","published":"2026-08-08T18:00:00.000Z","updatedAt":"2026-08-08T18:00:00.000Z","rolePermissions":[],"sentAsNewsletter":null,"markAsNewsletter":false},"article":{"articleId":"article-1","title":"Hello","previewText":"Preview","thumbnailImageId":null,"headerImageId":null,"creatorId":"user-1","tags":["Swift"],"commentCount":"0","latestCommentTimestamp":null}}"#.utf8)
+        )
+
+        let database = try OfflineDatabase(fileURL: fileURL, scope: "test-account")
+        try await database.replaceMyEvents([event])
+        try await database.saveFeedSnapshot(
+            OfflineFeedSnapshot(
+                scope: .explore,
+                topics: ["Swift"],
+                articles: [article],
+                events: [event]
+            )
+        )
+        try await database.saveFeedSnapshot(
+            OfflineFeedSnapshot(
+                scope: .myCommunities,
+                topics: [],
+                articles: [],
+                events: [event]
+            )
+        )
+
+        let reopened = try OfflineDatabase(fileURL: fileURL, scope: "test-account")
+        let reopenedMyEvents = try await reopened.myEvents()
+        XCTAssertEqual(reopenedMyEvents, [event])
+        let explore = try await reopened.feedSnapshot(scope: .explore, topics: ["Swift"])
+        XCTAssertEqual(explore?.articles, [article])
+        XCTAssertEqual(explore?.events, [event])
+        let following = try await reopened.feedSnapshot(scope: .myCommunities, topics: [])
+        XCTAssertEqual(following?.articles, [])
+        XCTAssertEqual(following?.events, [event])
+        let missingSnapshot = try await reopened.feedSnapshot(scope: .explore, topics: [])
+        XCTAssertNil(missingSnapshot)
+    }
+
     func testImageUploadUsesMultipartAndAcceptsBareSuccess() async throws {
         MockURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.path, "/api/v2/File/uploadImage")

@@ -14,9 +14,10 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
   are implemented with native iPhone/iPad surfaces.
 - Rich messaging covers replies, structured mentions, emoji reactions,
   editing/deletion, image uploads, and signed media downloads.
-- Native SQLite persists account-scoped communities, chats, messages, users, and notifications,
-  plus durable per-conversation drafts and a retryable send outbox. Offline launch hydrates directly
-  from this cache and reconnect reconciles message deltas before falling back to a full load.
+- Native SQLite persists account-scoped communities, chats, messages, users, notifications, My Events,
+  and query-scoped Feed snapshots, plus durable per-conversation drafts and a retryable send outbox.
+  Offline launch hydrates directly from this cache and reconnect reconciles message deltas before
+  falling back to a full load.
 - Community administration covers general metadata/assets, premium renewal, onboarding and pending
   applications, newsletters, members, timed moderation, bans, areas/channels, roles/permissions,
   tokens, bots, and plugin discovery/installation/permission management/removal.

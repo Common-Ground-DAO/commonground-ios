@@ -851,6 +851,7 @@ private struct FeedView: View {
                 selectedArticle = item
             }
         }
+        .accessibilityIdentifier("feed.article.\(item.id)")
     }
 
     @ViewBuilder
@@ -872,6 +873,7 @@ private struct FeedView: View {
             }
             .disabled(loadingEventID != nil)
         }
+        .accessibilityIdentifier("feed.event.\(event.id)")
     }
 
     @ViewBuilder

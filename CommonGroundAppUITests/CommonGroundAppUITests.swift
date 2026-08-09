@@ -49,25 +49,33 @@ final class CommonGroundAppUITests: XCTestCase {
         }
     }
 
-    /// Opt-in smoke test for a simulator that already has an authenticated
-    /// development-instance session. Normal CI remains deterministic and skips it.
+    /// Smoke test for a simulator that already has an authenticated
+    /// development-instance session. Fresh CI simulators skip after launch.
     func testAuthenticatedFeedLoadsArticlesAndEvents() throws {
-        guard ProcessInfo.processInfo.environment["COMMON_GROUND_UI_FEED_LIVE"] == "1" else {
-            throw XCTSkip("Set COMMON_GROUND_UI_FEED_LIVE=1 on an authenticated simulator")
-        }
         let app = XCUIApplication()
         app.launch()
 
-        let back = app.buttons["Back"]
-        if back.waitForExistence(timeout: 5) { back.tap() }
+        let back = app.buttons["BackButton"]
+        if back.waitForExistence(timeout: 30) { back.tap() }
 
         let feed = app.staticTexts["Feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 5))
+        guard feed.waitForExistence(timeout: 5) else {
+            throw XCTSkip("Requires an authenticated simulator")
+        }
         feed.tap()
         XCTAssertTrue(app.staticTexts["Community Feed"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.segmentedControls.buttons["Explore"].exists)
         XCTAssertTrue(app.segmentedControls.buttons["All"].exists)
         XCTAssertTrue(app.staticTexts["Latest articles"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Upcoming events"].exists)
+
+        let firstArticle = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.article.'"))
+            .firstMatch
+        let firstEvent = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.event.'"))
+            .firstMatch
+        XCTAssertTrue(firstArticle.waitForExistence(timeout: 10))
+        XCTAssertTrue(firstEvent.waitForExistence(timeout: 10))
     }
 }

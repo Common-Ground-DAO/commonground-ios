@@ -13,6 +13,25 @@ public struct OfflineSnapshot: Sendable {
     public let unreadNotificationCount: Int
 }
 
+public struct OfflineFeedSnapshot: Codable, Equatable, Sendable {
+    public let scope: CommunityFeedScope
+    public let topics: [String]
+    public let articles: [CommunityArticlePreview]
+    public let events: [CommunityEvent]
+
+    public init(
+        scope: CommunityFeedScope,
+        topics: [String],
+        articles: [CommunityArticlePreview],
+        events: [CommunityEvent]
+    ) {
+        self.scope = scope
+        self.topics = topics
+        self.articles = articles
+        self.events = events
+    }
+}
+
 public enum OfflineDatabaseError: Error, LocalizedError {
     case open(String)
     case statement(String)
@@ -205,6 +224,38 @@ public actor OfflineDatabase {
         }
     }
 
+    public func myEvents() throws -> [CommunityEvent] {
+        try load(kind: "myEvent", as: CommunityEvent.self)
+    }
+
+    public func replaceMyEvents(_ values: [CommunityEvent]) throws {
+        try transaction {
+            try delete(kind: "myEvent")
+            for value in values {
+                try upsert(kind: "myEvent", id: value.id, value: value)
+            }
+        }
+    }
+
+    public func feedSnapshot(
+        scope: CommunityFeedScope,
+        topics: [String]
+    ) throws -> OfflineFeedSnapshot? {
+        try load(
+            kind: "communityFeed",
+            id: Self.feedCacheID(scope: scope, topics: topics),
+            as: OfflineFeedSnapshot.self
+        )
+    }
+
+    public func saveFeedSnapshot(_ snapshot: OfflineFeedSnapshot) throws {
+        try upsert(
+            kind: "communityFeed",
+            id: Self.feedCacheID(scope: snapshot.scope, topics: snapshot.topics),
+            value: snapshot
+        )
+    }
+
     public func save(notification: AppNotification, unreadCount: Int) throws {
         try transaction {
             try upsert(kind: "notification", id: notification.id, value: notification)
@@ -284,6 +335,26 @@ public actor OfflineDatabase {
             values.append(try decoder.decode(Value.self, from: Data(bytes: bytes, count: count)))
         }
         return values
+    }
+
+    private func load<Value: Decodable>(
+        kind: String,
+        id: String,
+        as type: Value.Type
+    ) throws -> Value? {
+        let statement = try prepare(
+            "SELECT payload FROM records WHERE scope = ? AND kind = ? AND id = ?"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind([.text(scope), .text(kind), .text(id)], to: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let bytes = sqlite3_column_blob(statement, 0) else { return nil }
+        let count = Int(sqlite3_column_bytes(statement, 0))
+        return try decoder.decode(Value.self, from: Data(bytes: bytes, count: count))
+    }
+
+    private static func feedCacheID(scope: CommunityFeedScope, topics: [String]) -> String {
+        scope.rawValue + "\u{1F}" + topics.sorted().joined(separator: "\u{1E}")
     }
 
     private func remove(kind: String, id: String) throws {
