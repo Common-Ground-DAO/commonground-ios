@@ -64,7 +64,7 @@ final class CommonGroundAppUITests: XCTestCase {
         }
         feed.tap()
         XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.segmentedControls.buttons["Explore"].exists)
+        XCTAssertTrue(app.buttons["Filters"].exists)
 
         let firstArticle = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.article.'"))

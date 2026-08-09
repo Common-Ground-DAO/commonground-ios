@@ -834,21 +834,6 @@ private struct FeedView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                Text("Posts from communities across this Common Ground instance.")
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 20)
-
-                Picker("Feed scope", selection: $scope) {
-                    ForEach(CommunityFeedScope.allCases, id: \.self) { option in
-                        Text(option.feedTitle).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 20)
-
-                SelectedTopicChips(topics: $topics)
-                    .padding(.horizontal, 20)
-
                 if isInitiallyLoading {
                     ProgressView("Loading Feed…")
                         .frame(maxWidth: .infinity)
@@ -866,18 +851,31 @@ private struct FeedView: View {
                 }
             }
             .frame(maxWidth: 720, alignment: .leading)
-            .padding(.vertical, 20)
+            .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("Feed")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showTopicPicker = true
+                Menu {
+                    Picker("Scope", selection: $scope) {
+                        ForEach(CommunityFeedScope.allCases, id: \.self) { option in
+                            Text(option.feedTitle).tag(option)
+                        }
+                    }
+
+                    Button {
+                        showTopicPicker = true
+                    } label: {
+                        Label(
+                            topics.isEmpty ? "Choose topics" : "Topics (\(topics.count))",
+                            systemImage: "number"
+                        )
+                    }
                 } label: {
                     Label(
-                        topics.isEmpty ? "Topics" : "Topics (\(topics.count))",
+                        "Filters",
                         systemImage: topics.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
                     )
                 }
@@ -930,57 +928,108 @@ private struct FeedView: View {
 
     @ViewBuilder
     private func feedArticle(_ item: CommunityArticlePreview) -> some View {
-        Button {
-            selectedArticle = item
-        } label: {
-            VStack(alignment: .leading, spacing: 12) {
-                FeedCommunityLabel(
-                    community: model.feedCommunitySummaries[item.communityArticle.communityId],
-                    date: item.communityArticle.published.flatMap(parseEventDate)
-                )
+        let community = model.feedCommunitySummaries[item.communityArticle.communityId]
+        let author = store.users[item.article.creatorId]
+        let imageID = item.article.thumbnailImageId ?? item.article.headerImageId
+        let imageURL = imageID.flatMap { model.attachmentURLs[$0] }
+        let published = item.communityArticle.published.flatMap(parseEventDate)
+        let shareURL = model.communityArticleShareURL(
+            item.communityArticle,
+            community: community
+        )
 
-                Text(item.article.title)
-                    .font(.title3.bold())
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
+        VStack(spacing: 0) {
+            Button {
+                selectedArticle = item
+            } label: {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .top, spacing: 11) {
+                            CommunityMark(
+                                name: community?.title ?? "Community",
+                                url: community?.logoSmallId.flatMap { model.attachmentURLs[$0] },
+                                size: 48
+                            )
 
-                if let preview = item.article.previewText, !preview.isEmpty {
-                    Text(preview)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(5)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(community?.title ?? "Community")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+
+                                if let author {
+                                    Text("By \(author.displayName)")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+
+                                if let published {
+                                    HStack(spacing: 5) {
+                                        Text(published.formatted(.relative(presentation: .named)))
+                                        Text("·")
+                                        Image(systemName: "globe")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            Spacer(minLength: 0)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(item.article.title)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+
+                            if let preview = item.article.previewText, !preview.isEmpty {
+                                Text(preview)
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(6)
+                            }
+                        }
                         .multilineTextAlignment(.leading)
-                }
-
-                if let imageURL = item.article.thumbnailImageId.flatMap({ model.attachmentURLs[$0] }) {
-                    CommunityFeatureImage(url: imageURL, height: 240)
-                }
-
-                HStack(spacing: 7) {
-                    if let author = store.users[item.article.creatorId] {
-                        Avatar(
-                            name: author.displayName,
-                            url: author.imageID.flatMap { model.attachmentURLs[$0] },
-                            isBot: author.isBot,
-                            small: true
-                        )
-                        Text(author.displayName)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    Label("\(item.article.commentCount)", systemImage: "bubble.left")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+
+                    if let imageURL {
+                        FeedPostImage(url: imageURL)
+                    }
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(uiColor: .secondarySystemBackground))
-            .overlay(alignment: .bottom) { Divider() }
+            .buttonStyle(.plain)
+
+            Divider()
+                .padding(.horizontal, 16)
+
+            HStack(spacing: 24) {
+                Button {
+                    selectedArticle = item
+                } label: {
+                    Label("\(item.article.commentCount)", systemImage: "bubble.left")
+                }
+
+                Spacer()
+
+                if let shareURL {
+                    ShareLink(
+                        item: shareURL,
+                        subject: Text(item.article.title)
+                    ) {
+                        Label("Share", systemImage: "paperplane")
+                    }
+                }
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .systemBackground))
         .accessibilityIdentifier("feed.article.\(item.id)")
     }
 
@@ -7189,6 +7238,7 @@ private struct Avatar: View {
 private struct CommunityMark: View {
     let name: String
     var url: URL? = nil
+    var size: CGFloat = 30
 
     var body: some View {
         Group {
@@ -7202,8 +7252,8 @@ private struct CommunityMark: View {
                 fallback
             }
         }
-            .frame(width: 30, height: 30)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.26))
             .accessibilityHidden(true)
     }
 
@@ -7213,6 +7263,62 @@ private struct CommunityMark: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(.white)
             .background(AppTheme.accent.gradient)
+    }
+}
+
+private struct FeedPostImage: View {
+    let url: URL
+    @State private var retryID = 0
+    private let maximumAutomaticRetries = 3
+
+    var body: some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity)
+            case .empty:
+                placeholder
+                    .overlay { ProgressView() }
+            case .failure:
+                placeholder
+                    .overlay {
+                        if retryID < maximumAutomaticRetries {
+                            ProgressView()
+                                .task(id: retryID) {
+                                    try? await Task.sleep(
+                                        for: .milliseconds(Int64(250 * (retryID + 1)))
+                                    )
+                                    guard !Task.isCancelled else { return }
+                                    retryID += 1
+                                }
+                        } else {
+                            VStack(spacing: 6) {
+                                Image(systemName: "photo.badge.exclamationmark")
+                                    .font(.title2)
+                                Text("Image unavailable")
+                                    .font(.caption)
+                            }
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+            @unknown default:
+                EmptyView()
+            }
+        }
+        .id("\(url.absoluteString):\(retryID)")
+        .frame(maxWidth: .infinity)
+        .background(Color.secondary.opacity(0.08))
+        .accessibilityLabel("Article image")
+        .onChange(of: url) { retryID = 0 }
+    }
+
+    private var placeholder: some View {
+        Color.secondary.opacity(0.08)
+            .aspectRatio(4 / 3, contentMode: .fit)
+            .frame(maxWidth: .infinity)
     }
 }
 

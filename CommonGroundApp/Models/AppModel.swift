@@ -198,6 +198,20 @@ final class AppModel: ObservableObject {
         return baseURL.appending(path: "c").appending(path: community.url)
     }
 
+    func communityArticleShareURL(
+        _ article: CommunityArticle,
+        community: CommunitySummary?
+    ) -> URL? {
+        guard let baseURL = client?.instance.url,
+              let community,
+              let articleURL = article.url else { return nil }
+        return baseURL
+            .appending(path: "c")
+            .appending(path: community.url)
+            .appending(path: "article")
+            .appending(path: articleURL)
+    }
+
     func effectiveOnlineStatus(for user: UserProfile) -> String {
         if user.id == store.ownUser?.id, isRealtimeAuthenticated { return "online" }
         return user.onlineStatus
@@ -837,7 +851,9 @@ final class AppModel: ObservableObject {
             await hydrateFeedPresentation(
                 communityIDs: page.map(\.communityArticle.communityId),
                 userIDs: page.map(\.article.creatorId),
-                objectIDs: page.compactMap(\.article.thumbnailImageId)
+                objectIDs: page.flatMap {
+                    [$0.article.thumbnailImageId, $0.article.headerImageId].compactMap { $0 }
+                }
             )
         } catch is CancellationError {
             contentLogger.notice("Feed articles request cancelled id=\(requestID.uuidString, privacy: .public)")
