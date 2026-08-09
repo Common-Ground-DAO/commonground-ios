@@ -18,6 +18,7 @@ public struct CommunityAPI: Sendable {
 
     public func list(
         search: String? = nil,
+        tags: [String] = [],
         sort: CommunitySort = .popular,
         offset: Int = 0,
         limit: Int = 50
@@ -27,7 +28,7 @@ public struct CommunityAPI: Sendable {
             body: CommunityListRequest(
                 offset: offset,
                 sort: sort,
-                tags: [],
+                tags: tags,
                 limit: limit,
                 search: search
             )

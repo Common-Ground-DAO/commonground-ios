@@ -65,17 +65,29 @@ final class CommonGroundAppUITests: XCTestCase {
         feed.tap()
         XCTAssertTrue(app.staticTexts["Community Feed"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.segmentedControls.buttons["Explore"].exists)
-        XCTAssertTrue(app.segmentedControls.buttons["All"].exists)
-        XCTAssertTrue(app.staticTexts["Latest articles"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Upcoming events"].exists)
 
         let firstArticle = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.article.'"))
             .firstMatch
-        let firstEvent = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.event.'"))
-            .firstMatch
         XCTAssertTrue(firstArticle.waitForExistence(timeout: 10))
+
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+        let events = app.staticTexts["Events"]
+        XCTAssertTrue(events.waitForExistence(timeout: 5))
+        events.tap()
+        XCTAssertTrue(app.segmentedControls.buttons["Upcoming"].waitForExistence(timeout: 10))
+        let firstEvent = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'events.event.'"))
+            .firstMatch
         XCTAssertTrue(firstEvent.waitForExistence(timeout: 10))
+
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+        let discover = app.staticTexts["Discover Communities"]
+        XCTAssertTrue(discover.waitForExistence(timeout: 5))
+        discover.tap()
+        XCTAssertTrue(app.searchFields["Community name or tag"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Tags"].exists)
     }
 }

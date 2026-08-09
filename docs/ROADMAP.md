@@ -25,12 +25,12 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
   URL previews, instance-configured GIPHY search, and an image attachment gallery.
 - Ephemeral typing presence is implemented end to end for community channels, direct messages, and
   joined article comment rooms, including refresh, explicit stop, reconnect cleanup, and stale-state expiry.
-- Community events are native: per-community discovery, cross-community “My events”, attendance,
-  external/reminder event creation, role audiences, image uploads, and authorized edit/delete flows.
+- Community events are native: per-community discovery, a global upcoming-events view, an attending
+  history, external/reminder event creation, role audiences, image uploads, and authorized edit/delete flows.
   Native calls and broadcasts deliberately remain in the calls workstream.
-- The global Feed presents community articles and upcoming events with deterministic pagination,
-  Explore/My communities scope, content and attendance controls, consistent community-topic filters,
-  batch community identity hydration, and a retained public-community browser.
+- The social-style global Feed presents community posts with deterministic pagination, Explore/My
+  communities scope, consistent community-topic filters, and batch identity hydration. Public community
+  discovery is a dedicated searchable and tag-filtered root destination.
 - Community apps have a native store/install surface and an isolated, non-persistent WebKit runtime.
   The bridge validates plugin identity/origin, forwards signed backend requests, rate-limits calls,
   prompts for declared sensitive permissions, gates camera/microphone, and routes safe internal links.

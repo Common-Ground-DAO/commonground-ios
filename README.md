@@ -23,12 +23,13 @@ The first protocol spine is implemented end-to-end:
 - communities and direct-message sessions are distinct navigation surfaces, with explicit selection restoration;
 - notification history, exact message/comment routing, in-app realtime banners, server-backed user search, public profiles, follows, and mutual-follow DMs are API-backed;
 - public community discovery/create/join/leave and community, user, and message reporting are API-backed;
-- the global Feed combines paginated community articles and upcoming events with Explore/My communities,
-  content-type, attendance, and community-topic filters while retaining the public community browser;
+- the social-style Feed presents paginated community posts with Explore/My communities and topic filters;
+- Events combines global upcoming-event discovery with an attending history, while Discover Communities
+  provides a dedicated searchable, tag-filtered public-community browser;
 - replies, structured mentions, reactions, editing/deletion, image upload, and signed attachment rendering are native messaging features;
 - Spark balances and non-refundable community contributions are native, alongside configurable community bot policy;
 - account-scoped SQLite persistence provides offline launch, cached communities/chats/messages/users/notifications,
-  query-scoped Feed snapshots, My Events, durable per-conversation drafts, and a retryable message outbox;
+  query-scoped Feed snapshots, Events, durable per-conversation drafts, and a retryable message outbox;
 - realtime reconnect performs in-band reauthentication, delta message reconciliation, structural refreshes,
   notification replay deduplication, and stable ISO timestamp ordering;
 - community administration covers general assets/info, premium and renewal, onboarding/applications,

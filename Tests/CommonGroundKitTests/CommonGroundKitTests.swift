@@ -349,6 +349,7 @@ final class CommonGroundKitTests: XCTestCase {
                 XCTAssertEqual(object["offset"] as? Int, 0)
                 XCTAssertEqual(object["sort"] as? String, "popular")
                 XCTAssertEqual(object["limit"] as? Int, 50)
+                XCTAssertEqual(object["tags"] as? [String], ["ios", "swift"])
                 return Self.response(
                     request,
                     status: 200,
@@ -384,7 +385,7 @@ final class CommonGroundKitTests: XCTestCase {
             )
         )
 
-        let communities = try await api.list()
+        let communities = try await api.list(tags: ["ios", "swift"])
         XCTAssertEqual(communities[0].memberCount, 42)
         XCTAssertEqual(communities[0].tags, ["swift"])
         XCTAssertEqual(communities[0].logoSmallId, "icon-1")

@@ -152,6 +152,7 @@ final class AppModel: ObservableObject {
     private var presentedNotificationIDs: Set<String> = []
     private var didAttemptLaunchRestore = false
     private var appIsActive = true
+    private var communityDiscoveryRequestID: UUID?
     private var myEventsCursor: (scheduledBefore: String, beforeID: String)?
     private var myEventsRequestID: UUID?
     private var myEventsLoadTask: Task<Void, Never>?
@@ -1427,16 +1428,26 @@ final class AppModel: ObservableObject {
         await refreshUsers(ids: chats.flatMap(\.userIds))
     }
 
-    func discoverCommunities(query: String = "") async {
-        guard let client, !isLoadingCommunities else { return }
+    func discoverCommunities(query: String = "", tags: Set<String> = []) async {
+        guard let client else { return }
+        let requestID = UUID()
+        communityDiscoveryRequestID = requestID
         isLoadingCommunities = true
-        defer { isLoadingCommunities = false }
+        defer {
+            if communityDiscoveryRequestID == requestID {
+                communityDiscoveryRequestID = nil
+                isLoadingCommunities = false
+            }
+        }
         do {
             let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            communityResults = try await client.communities.list(
+            let results = try await client.communities.list(
                 search: value.isEmpty ? nil : value,
+                tags: tags.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
                 sort: value.isEmpty ? .popular : .new
             )
+            guard communityDiscoveryRequestID == requestID else { return }
+            communityResults = results
             await loadAttachmentURLs(
                 objectIDs: communityResults.flatMap {
                     [$0.logoSmallId, $0.logoLargeId, $0.headerImageId].compactMap { $0 }
