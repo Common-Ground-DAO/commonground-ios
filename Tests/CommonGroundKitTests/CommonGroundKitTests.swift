@@ -1530,7 +1530,8 @@ final class CommonGroundKitTests: XCTestCase {
                 XCTAssertEqual(object["communityId"] as? String, "community-1")
                 return Self.response(request, status: 200, body: #"{"status":"OK","data":[\#(eventJSON)]}"#)
             case "/api/v2/Community/getMyEvents":
-                XCTAssertNil(object["beforeId"])
+                XCTAssertTrue(object["scheduledBefore"] is NSNull)
+                XCTAssertTrue(object["beforeId"] is NSNull)
                 return Self.response(request, status: 200, body: #"{"status":"OK","data":[\#(eventJSON)]}"#)
             case "/api/v2/Community/createCommunityEvent":
                 XCTAssertEqual(object["type"] as? String, "external")
@@ -1609,6 +1610,30 @@ final class CommonGroundKitTests: XCTestCase {
         try await api.leaveEvent(id: "event-1")
         try await api.deleteEvent(communityID: "community-1", eventID: "event-1")
         XCTAssertEqual(routes.count, 7)
+    }
+
+    func testMyEventsEncodesBothCursorFields() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Community/getMyEvents")
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request))) as? [String: Any]
+            )
+            XCTAssertEqual(object["scheduledBefore"] as? String, "2026-08-09T18:00:00.000Z")
+            XCTAssertEqual(object["beforeId"] as? String, "11111111-1111-1111-1111-111111111111")
+            return Self.response(request, status: 200, body: #"{"status":"OK","data":[]}"#)
+        }
+
+        let api = CommunityAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let page = try await api.myEvents(
+            scheduledBefore: "2026-08-09T18:00:00.000Z",
+            beforeID: "11111111-1111-1111-1111-111111111111"
+        )
+        XCTAssertTrue(page.isEmpty)
     }
 
     func testPluginSignedBridgeContract() async throws {

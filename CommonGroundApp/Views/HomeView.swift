@@ -520,7 +520,11 @@ private struct MyEventsView: View {
                 Text("Events you are attending across your communities.")
                     .foregroundStyle(.secondary)
 
-                if model.myEvents.isEmpty {
+                if model.myEvents.isEmpty, model.isLoadingMyEvents {
+                    ProgressView("Loading events…")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 60)
+                } else if model.myEvents.isEmpty {
                     ContentUnavailableView(
                         "No events yet",
                         systemImage: "calendar.badge.plus",
@@ -531,6 +535,27 @@ private struct MyEventsView: View {
                 } else {
                     eventSection("Upcoming", events: upcoming)
                     eventSection("Past", events: past)
+                    if model.canLoadMoreMyEvents {
+                        Group {
+                            if model.isLoadingMyEvents {
+                                HStack(spacing: 10) {
+                                    ProgressView()
+                                    Text("Loading more events…")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Button("Load more events", systemImage: "arrow.down.circle") {
+                                    Task { await model.loadMoreMyEvents() }
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 18)
+                        .id(model.myEvents.count)
+                        .task { await model.loadMoreMyEvents() }
+                    }
                 }
             }
             .frame(maxWidth: 720, alignment: .leading)

@@ -113,6 +113,8 @@ final class AppModel: ObservableObject {
     private var appStoreRequestID: UUID?
     @Published private(set) var communityEvents: [String: [CommunityEvent]] = [:]
     @Published private(set) var myEvents: [CommunityEvent] = []
+    @Published private(set) var isLoadingMyEvents = false
+    @Published private(set) var canLoadMoreMyEvents = true
     @Published private(set) var linkPreviews: [String: URLPreview] = [:]
     @Published private(set) var gifResults: [GIFSearchResult] = []
     @Published private(set) var isSearchingGIFs = false
@@ -141,6 +143,9 @@ final class AppModel: ObservableObject {
     private var presentedNotificationIDs: Set<String> = []
     private var didAttemptLaunchRestore = false
     private var appIsActive = true
+    private var myEventsCursor: (scheduledBefore: String, beforeID: String)?
+    private var myEventsRequestID: UUID?
+    private static let myEventsPageSize = 30
 
     var savedDeviceID: String? {
         guard let instance = try? InstanceURL(instanceInput) else { return nil }
@@ -562,12 +567,54 @@ final class AppModel: ObservableObject {
     }
 
     func loadMyEvents() async {
+        await requestMyEvents(reset: true)
+    }
+
+    func loadMoreMyEvents() async {
+        await requestMyEvents(reset: false)
+    }
+
+    private func requestMyEvents(reset: Bool) async {
         guard let client else { return }
+        guard reset || !isLoadingMyEvents else { return }
+        if !reset {
+            guard canLoadMoreMyEvents, myEventsCursor != nil else { return }
+        }
+        let cursor = reset ? nil : myEventsCursor
+        let requestID = UUID()
+        myEventsRequestID = requestID
+        isLoadingMyEvents = true
+        defer {
+            if myEventsRequestID == requestID {
+                myEventsRequestID = nil
+                isLoadingMyEvents = false
+            }
+        }
         do {
-            let events = try await client.communities.myEvents()
-            myEvents = events.sorted { lhs, rhs in
-                (Self.parseISODate(lhs.scheduleDate) ?? .distantFuture)
-                    < (Self.parseISODate(rhs.scheduleDate) ?? .distantFuture)
+            let events = try await client.communities.myEvents(
+                scheduledBefore: cursor?.scheduledBefore,
+                beforeID: cursor?.beforeID
+            )
+            guard myEventsRequestID == requestID else { return }
+            let previousIDs = Set(myEvents.map(\.id))
+            let uniqueNewEvents = events.filter { !previousIDs.contains($0.id) }
+            let merged = reset ? events : myEvents + uniqueNewEvents
+            myEvents = Dictionary(merged.map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
+                .values
+                .sorted { lhs, rhs in
+                    (Self.parseISODate(lhs.scheduleDate) ?? .distantFuture)
+                        < (Self.parseISODate(rhs.scheduleDate) ?? .distantFuture)
+                }
+            if let last = events.last {
+                let nextCursor = (scheduledBefore: last.scheduleDate, beforeID: last.id)
+                let cursorAdvanced = cursor?.scheduledBefore != nextCursor.scheduledBefore
+                    || cursor?.beforeID != nextCursor.beforeID
+                myEventsCursor = nextCursor
+                canLoadMoreMyEvents = events.count == Self.myEventsPageSize
+                    && (reset || (!uniqueNewEvents.isEmpty && cursorAdvanced))
+            } else {
+                myEventsCursor = nil
+                canLoadMoreMyEvents = false
             }
             for event in events {
                 communityEvents[event.communityId] = [event]
@@ -2346,6 +2393,7 @@ final class AppModel: ObservableObject {
         selectedCommunityID = nil
         selectedChannelID = nil
         selectedChatID = nil
+        resetMyEventsPagination()
         attachmentURLs = [:]
         attachmentURLExpirations = [:]
         await store.clearPersistentData()
@@ -2380,12 +2428,21 @@ final class AppModel: ObservableObject {
         selectedCommunityID = nil
         selectedChannelID = nil
         selectedChatID = nil
+        resetMyEventsPagination()
         attachmentURLs = [:]
         attachmentURLExpirations = [:]
         store.reset()
         store.detachPersistence()
         offlineDatabase = nil
         phase = .instance
+    }
+
+    private func resetMyEventsPagination() {
+        myEvents = []
+        myEventsCursor = nil
+        myEventsRequestID = nil
+        canLoadMoreMyEvents = true
+        isLoadingMyEvents = false
     }
 
     private func didAuthenticate(_ session: AuthSession, offline: Bool = false) async {

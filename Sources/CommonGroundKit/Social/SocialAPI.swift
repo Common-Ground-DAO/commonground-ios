@@ -222,11 +222,12 @@ public struct CommunityAPI: Sendable {
     }
 
     public func myEvents(
-        scheduledBefore: String? = nil
+        scheduledBefore: String? = nil,
+        beforeID: String? = nil
     ) async throws -> [CommunityEvent] {
         try await transport.call(
             "Community/getMyEvents",
-            body: MyEventsRequest(scheduledBefore: scheduledBefore)
+            body: MyEventsRequest(scheduledBefore: scheduledBefore, beforeId: beforeID)
         )
     }
 
@@ -856,6 +857,17 @@ private struct CommunityArticleIDRequest: Encodable, Sendable {
 private struct EventIDRequest: Encodable, Sendable { let eventId: String }
 private struct MyEventsRequest: Encodable, Sendable {
     let scheduledBefore: String?
+    let beforeId: String?
+
+    enum CodingKeys: String, CodingKey { case scheduledBefore, beforeId }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let scheduledBefore { try container.encode(scheduledBefore, forKey: .scheduledBefore) }
+        else { try container.encodeNil(forKey: .scheduledBefore) }
+        if let beforeId { try container.encode(beforeId, forKey: .beforeId) }
+        else { try container.encodeNil(forKey: .beforeId) }
+    }
 }
 private struct DeleteCommunityEventRequest: Encodable, Sendable {
     let eventId: String
