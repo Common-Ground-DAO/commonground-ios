@@ -34,6 +34,14 @@ public struct CommunityAPI: Sendable {
         )
     }
 
+    public func summaries(ids: [String]) async throws -> [CommunitySummary] {
+        guard !ids.isEmpty else { return [] }
+        return try await transport.call(
+            "Community/getCommunitiesById",
+            body: CommunityIDsRequest(ids: Array(Set(ids)))
+        )
+    }
+
     public func create(
         title: String,
         shortDescription: String = "",
@@ -228,6 +236,24 @@ public struct CommunityAPI: Sendable {
         try await transport.call(
             "Community/getMyEvents",
             body: MyEventsRequest(scheduledBefore: scheduledBefore, beforeId: beforeID)
+        )
+    }
+
+    public func upcomingEvents(
+        scope: CommunityFeedScope,
+        anyCommunityTopics: [String] = [],
+        scheduledAfter: String? = nil,
+        afterID: String? = nil
+    ) async throws -> [CommunityEvent] {
+        try await transport.call(
+            "Community/getUpcomingEvents",
+            body: UpcomingEventsRequest(
+                scheduledAfter: scheduledAfter,
+                afterId: afterID,
+                tags: nil,
+                anyTags: anyCommunityTopics.isEmpty ? nil : anyCommunityTopics,
+                type: scope
+            )
         )
     }
 
@@ -735,6 +761,7 @@ public struct ChatAPI: Sendable {
 }
 
 private struct IDRequest: Encodable, Sendable { let id: String }
+private struct CommunityIDsRequest: Encodable, Sendable { let ids: [String] }
 private struct CommunityListRequest: Encodable, Sendable {
     let offset: Int
     let sort: CommunitySort
@@ -867,6 +894,28 @@ private struct MyEventsRequest: Encodable, Sendable {
         else { try container.encodeNil(forKey: .scheduledBefore) }
         if let beforeId { try container.encode(beforeId, forKey: .beforeId) }
         else { try container.encodeNil(forKey: .beforeId) }
+    }
+}
+private struct UpcomingEventsRequest: Encodable, Sendable {
+    let scheduledAfter: String?
+    let afterId: String?
+    let tags: [String]?
+    let anyTags: [String]?
+    let type: CommunityFeedScope
+
+    enum CodingKeys: String, CodingKey { case scheduledAfter, afterId, tags, anyTags, type }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let scheduledAfter { try container.encode(scheduledAfter, forKey: .scheduledAfter) }
+        else { try container.encodeNil(forKey: .scheduledAfter) }
+        if let afterId { try container.encode(afterId, forKey: .afterId) }
+        else { try container.encodeNil(forKey: .afterId) }
+        if let tags { try container.encode(tags, forKey: .tags) }
+        else { try container.encodeNil(forKey: .tags) }
+        if let anyTags { try container.encode(anyTags, forKey: .anyTags) }
+        else { try container.encodeNil(forKey: .anyTags) }
+        try container.encode(type, forKey: .type)
     }
 }
 private struct DeleteCommunityEventRequest: Encodable, Sendable {

@@ -115,6 +115,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var myEvents: [CommunityEvent] = []
     @Published private(set) var isLoadingMyEvents = false
     @Published private(set) var canLoadMoreMyEvents = true
+    @Published private(set) var feedArticles: [CommunityArticlePreview] = []
+    @Published private(set) var feedEvents: [CommunityEvent] = []
+    @Published private(set) var feedCommunitySummaries: [String: CommunitySummary] = [:]
+    @Published private(set) var feedCommunityDetails: [String: Community] = [:]
+    @Published private(set) var isLoadingFeedArticles = false
+    @Published private(set) var isLoadingFeedEvents = false
+    @Published private(set) var canLoadMoreFeedArticles = true
+    @Published private(set) var canLoadMoreFeedEvents = true
     @Published private(set) var linkPreviews: [String: URLPreview] = [:]
     @Published private(set) var gifResults: [GIFSearchResult] = []
     @Published private(set) var isSearchingGIFs = false
@@ -146,10 +154,28 @@ final class AppModel: ObservableObject {
     private var myEventsCursor: (scheduledBefore: String, beforeID: String)?
     private var myEventsRequestID: UUID?
     private static let myEventsPageSize = 30
+    private var feedArticleCursor: (publishedBefore: String, beforeID: String)?
+    private var feedEventCursor: (scheduledAfter: String, afterID: String)?
+    private var feedArticleRequestID: UUID?
+    private var feedEventRequestID: UUID?
+    private var feedScope: CommunityFeedScope = .explore
+    private var feedTopics: [String] = []
+    private static let feedPageSize = 30
 
     var savedDeviceID: String? {
         guard let instance = try? InstanceURL(instanceInput) else { return nil }
         return savedDeviceID(for: instance)
+    }
+
+    var feedTopicOptions: [String] {
+        Array(
+            Set(
+                communityResults.flatMap(\.tags)
+                    + feedCommunitySummaries.values.flatMap(\.tags)
+                    + store.communities.values.flatMap(\.tags)
+            )
+        )
+        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     var instanceHost: String {
@@ -627,6 +653,201 @@ final class AppModel: ObservableObject {
         } catch {
             errorMessage = userMessage(for: error)
         }
+    }
+
+    func loadFeed(scope: CommunityFeedScope, topics: Set<String>) async {
+        let normalizedTopics = topics.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        feedScope = scope
+        feedTopics = normalizedTopics
+        async let articles: Void = requestFeedArticles(
+            reset: true,
+            scope: scope,
+            topics: normalizedTopics
+        )
+        async let events: Void = requestFeedEvents(
+            reset: true,
+            scope: scope,
+            topics: normalizedTopics
+        )
+        _ = await (articles, events)
+    }
+
+    func loadMoreFeedArticles() async {
+        await requestFeedArticles(reset: false, scope: feedScope, topics: feedTopics)
+    }
+
+    func loadMoreFeedEvents() async {
+        await requestFeedEvents(reset: false, scope: feedScope, topics: feedTopics)
+    }
+
+    func feedCommunityDetail(id: String) async -> Community? {
+        if let joined = store.communities[id] { return joined }
+        if let cached = feedCommunityDetails[id] { return cached }
+        guard let client else { return nil }
+        do {
+            let community = try await client.communities.detail(id: id)
+            feedCommunityDetails[id] = community
+            await loadCommunityMedia([community])
+            return community
+        } catch {
+            errorMessage = userMessage(for: error)
+            return nil
+        }
+    }
+
+    private func requestFeedArticles(
+        reset: Bool,
+        scope: CommunityFeedScope,
+        topics: [String]
+    ) async {
+        guard let client else { return }
+        guard reset || !isLoadingFeedArticles else { return }
+        if !reset {
+            guard canLoadMoreFeedArticles, feedArticleCursor != nil else { return }
+        }
+        let cursor = reset ? nil : feedArticleCursor
+        let requestID = UUID()
+        feedArticleRequestID = requestID
+        if reset {
+            feedArticles = []
+            feedArticleCursor = nil
+            canLoadMoreFeedArticles = true
+        }
+        isLoadingFeedArticles = true
+        defer {
+            if feedArticleRequestID == requestID {
+                feedArticleRequestID = nil
+                isLoadingFeedArticles = false
+            }
+        }
+        do {
+            let page = try await client.articles.globalCommunityArticles(
+                scope: scope,
+                anyCommunityTopics: topics,
+                publishedBefore: cursor?.publishedBefore,
+                beforeID: cursor?.beforeID,
+                limit: Self.feedPageSize
+            )
+            guard feedArticleRequestID == requestID else { return }
+            let previousIDs = Set(feedArticles.map(\.id))
+            let uniquePage = page.filter { !previousIDs.contains($0.id) }
+            feedArticles = reset ? page : feedArticles + uniquePage
+            if let last = page.last, let published = last.communityArticle.published {
+                let nextCursor = (publishedBefore: published, beforeID: last.id)
+                let cursorAdvanced = cursor?.publishedBefore != nextCursor.publishedBefore
+                    || cursor?.beforeID != nextCursor.beforeID
+                feedArticleCursor = nextCursor
+                canLoadMoreFeedArticles = page.count == Self.feedPageSize
+                    && (reset || (!uniquePage.isEmpty && cursorAdvanced))
+            } else {
+                feedArticleCursor = nil
+                canLoadMoreFeedArticles = false
+            }
+            for item in page {
+                if let published = item.communityArticle.published {
+                    articlePublishedAt[item.id] = published
+                }
+                articleRolePermissions[item.id] = item.communityArticle.rolePermissions
+            }
+            await hydrateFeedPresentation(
+                communityIDs: page.map(\.communityArticle.communityId),
+                userIDs: page.map(\.article.creatorId),
+                objectIDs: page.compactMap(\.article.thumbnailImageId)
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard feedArticleRequestID == requestID else { return }
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    private func requestFeedEvents(
+        reset: Bool,
+        scope: CommunityFeedScope,
+        topics: [String]
+    ) async {
+        guard let client else { return }
+        guard reset || !isLoadingFeedEvents else { return }
+        if !reset {
+            guard canLoadMoreFeedEvents, feedEventCursor != nil else { return }
+        }
+        let cursor = reset ? nil : feedEventCursor
+        let requestID = UUID()
+        feedEventRequestID = requestID
+        if reset {
+            feedEvents = []
+            feedEventCursor = nil
+            canLoadMoreFeedEvents = true
+        }
+        isLoadingFeedEvents = true
+        defer {
+            if feedEventRequestID == requestID {
+                feedEventRequestID = nil
+                isLoadingFeedEvents = false
+            }
+        }
+        do {
+            let page = try await client.communities.upcomingEvents(
+                scope: scope,
+                anyCommunityTopics: topics,
+                scheduledAfter: cursor?.scheduledAfter,
+                afterID: cursor?.afterID
+            )
+            guard feedEventRequestID == requestID else { return }
+            let previousIDs = Set(feedEvents.map(\.id))
+            let uniquePage = page.filter { !previousIDs.contains($0.id) }
+            feedEvents = reset ? page : feedEvents + uniquePage
+            if let last = page.last {
+                let nextCursor = (scheduledAfter: last.scheduleDate, afterID: last.id)
+                let cursorAdvanced = cursor?.scheduledAfter != nextCursor.scheduledAfter
+                    || cursor?.afterID != nextCursor.afterID
+                feedEventCursor = nextCursor
+                canLoadMoreFeedEvents = page.count == Self.feedPageSize
+                    && (reset || (!uniquePage.isEmpty && cursorAdvanced))
+            } else {
+                feedEventCursor = nil
+                canLoadMoreFeedEvents = false
+            }
+            for event in page {
+                communityEvents[event.communityId] = [event]
+                    + (communityEvents[event.communityId] ?? []).filter { $0.id != event.id }
+            }
+            await hydrateFeedPresentation(
+                communityIDs: page.map(\.communityId),
+                userIDs: page.map(\.eventCreator) + page.flatMap(\.participantIds),
+                objectIDs: page.compactMap(\.imageId)
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard feedEventRequestID == requestID else { return }
+            errorMessage = userMessage(for: error)
+        }
+    }
+
+    private func hydrateFeedPresentation(
+        communityIDs: [String],
+        userIDs: [String],
+        objectIDs: [String]
+    ) async {
+        guard let client else { return }
+        let missingCommunityIDs = Array(Set(communityIDs)).filter {
+            feedCommunitySummaries[$0] == nil
+        }
+        if !missingCommunityIDs.isEmpty,
+           let summaries = try? await client.communities.summaries(ids: missingCommunityIDs) {
+            for summary in summaries { feedCommunitySummaries[summary.id] = summary }
+            await loadAttachmentURLs(
+                objectIDs: summaries.flatMap {
+                    [$0.logoSmallId, $0.logoLargeId, $0.headerImageId].compactMap { $0 }
+                }
+            )
+        }
+        await hydrateUsers(ids: userIDs)
+        await loadAttachmentURLs(objectIDs: objectIDs)
     }
 
     func saveCommunityEvent(
@@ -2394,6 +2615,7 @@ final class AppModel: ObservableObject {
         selectedChannelID = nil
         selectedChatID = nil
         resetMyEventsPagination()
+        resetFeedPagination()
         attachmentURLs = [:]
         attachmentURLExpirations = [:]
         await store.clearPersistentData()
@@ -2429,6 +2651,7 @@ final class AppModel: ObservableObject {
         selectedChannelID = nil
         selectedChatID = nil
         resetMyEventsPagination()
+        resetFeedPagination()
         attachmentURLs = [:]
         attachmentURLExpirations = [:]
         store.reset()
@@ -2443,6 +2666,23 @@ final class AppModel: ObservableObject {
         myEventsRequestID = nil
         canLoadMoreMyEvents = true
         isLoadingMyEvents = false
+    }
+
+    private func resetFeedPagination() {
+        feedArticles = []
+        feedEvents = []
+        feedCommunitySummaries = [:]
+        feedCommunityDetails = [:]
+        feedArticleCursor = nil
+        feedEventCursor = nil
+        feedArticleRequestID = nil
+        feedEventRequestID = nil
+        canLoadMoreFeedArticles = true
+        canLoadMoreFeedEvents = true
+        isLoadingFeedArticles = false
+        isLoadingFeedEvents = false
+        feedScope = .explore
+        feedTopics = []
     }
 
     private func didAuthenticate(_ session: AuthSession, offline: Bool = false) async {
@@ -2492,7 +2732,7 @@ final class AppModel: ObservableObject {
         guard !offline else { return }
 
         await startRealtime(session)
-        // Warm the read-only public directory after authentication so Discover
+        // Warm the read-only public directory after authentication so the Feed
         // opens immediately and restored sessions continuously smoke-test the
         // deployed community-list contract.
         await discoverCommunities()

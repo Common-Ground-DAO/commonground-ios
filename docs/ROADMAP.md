@@ -27,6 +27,9 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
 - Community events are native: per-community discovery, cross-community “My events”, attendance,
   external/reminder event creation, role audiences, image uploads, and authorized edit/delete flows.
   Native calls and broadcasts deliberately remain in the calls workstream.
+- The global Feed presents community articles and upcoming events with deterministic pagination,
+  Explore/My communities scope, content and attendance controls, consistent community-topic filters,
+  batch community identity hydration, and a retained public-community browser.
 - Community apps have a native store/install surface and an isolated, non-persistent WebKit runtime.
   The bridge validates plugin identity/origin, forwards signed backend requests, rate-limits calls,
   prompts for declared sensitive permissions, gates camera/microphone, and routes safe internal links.

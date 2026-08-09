@@ -48,4 +48,26 @@ final class CommonGroundAppUITests: XCTestCase {
             )
         }
     }
+
+    /// Opt-in smoke test for a simulator that already has an authenticated
+    /// development-instance session. Normal CI remains deterministic and skips it.
+    func testAuthenticatedFeedLoadsArticlesAndEvents() throws {
+        guard ProcessInfo.processInfo.environment["COMMON_GROUND_UI_FEED_LIVE"] == "1" else {
+            throw XCTSkip("Set COMMON_GROUND_UI_FEED_LIVE=1 on an authenticated simulator")
+        }
+        let app = XCUIApplication()
+        app.launch()
+
+        let back = app.buttons["Back"]
+        if back.waitForExistence(timeout: 5) { back.tap() }
+
+        let feed = app.staticTexts["Feed"]
+        XCTAssertTrue(feed.waitForExistence(timeout: 5))
+        feed.tap()
+        XCTAssertTrue(app.staticTexts["Community Feed"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.segmentedControls.buttons["Explore"].exists)
+        XCTAssertTrue(app.segmentedControls.buttons["All"].exists)
+        XCTAssertTrue(app.staticTexts["Latest articles"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Upcoming events"].exists)
+    }
 }

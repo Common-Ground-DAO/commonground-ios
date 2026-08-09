@@ -615,6 +615,11 @@ public struct CommunityEventRolePermission: Codable, Equatable, Sendable {
     }
 }
 
+public enum CommunityFeedScope: String, Codable, CaseIterable, Hashable, Sendable {
+    case explore = "verified"
+    case myCommunities = "following"
+}
+
 public struct CommunityEvent: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let type: CommunityEventType

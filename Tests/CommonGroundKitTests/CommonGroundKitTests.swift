@@ -1636,6 +1636,70 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertTrue(page.isEmpty)
     }
 
+    func testGlobalFeedContractsEncodeScopeTopicsAndStableCursors() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = try XCTUnwrap(request.url?.path)
+            routes.append(path)
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request))) as? [String: Any]
+            )
+            switch path {
+            case "/api/v2/Community/getArticleList":
+                XCTAssertNil(object["communityId"])
+                XCTAssertEqual(object["order"] as? String, "DESC")
+                XCTAssertEqual(object["orderBy"] as? String, "published")
+                XCTAssertEqual(object["verification"] as? String, "verified")
+                XCTAssertEqual(object["publishedBefore"] as? String, "2026-08-09T18:00:00.000Z")
+                XCTAssertEqual(object["beforeId"] as? String, "11111111-1111-1111-1111-111111111111")
+                XCTAssertEqual(object["anyCommunityTags"] as? [String], ["DeFi", "ReFi"])
+                XCTAssertEqual(object["limit"] as? Int, 30)
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":[]}"#)
+            case "/api/v2/Community/getUpcomingEvents":
+                XCTAssertEqual(object["type"] as? String, "following")
+                XCTAssertEqual(object["scheduledAfter"] as? String, "2026-08-10T18:00:00.000Z")
+                XCTAssertEqual(object["afterId"] as? String, "22222222-2222-2222-2222-222222222222")
+                XCTAssertTrue(object["tags"] is NSNull)
+                XCTAssertEqual(object["anyTags"] as? [String], ["Gaming"])
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":[]}"#)
+            case "/api/v2/Community/getCommunitiesById":
+                XCTAssertEqual(object["ids"] as? [String], ["community-1"])
+                return Self.response(request, status: 200, body: #"{"status":"OK","data":[]}"#)
+            default:
+                XCTFail("Unexpected route \(path)")
+                return Self.response(request, status: 404, body: #"{"status":"ERROR"}"#)
+            }
+        }
+
+        let transport = HTTPTransport(
+            baseURL: URL(string: "https://example.org")!,
+            sessionConfiguration: configuration()
+        )
+        let articles = ArticleAPI(transport: transport)
+        let communities = CommunityAPI(transport: transport)
+        _ = try await articles.globalCommunityArticles(
+            scope: .explore,
+            anyCommunityTopics: ["DeFi", "ReFi"],
+            publishedBefore: "2026-08-09T18:00:00.000Z",
+            beforeID: "11111111-1111-1111-1111-111111111111"
+        )
+        _ = try await communities.upcomingEvents(
+            scope: .myCommunities,
+            anyCommunityTopics: ["Gaming"],
+            scheduledAfter: "2026-08-10T18:00:00.000Z",
+            afterID: "22222222-2222-2222-2222-222222222222"
+        )
+        _ = try await communities.summaries(ids: ["community-1"])
+        XCTAssertEqual(
+            routes,
+            [
+                "/api/v2/Community/getArticleList",
+                "/api/v2/Community/getUpcomingEvents",
+                "/api/v2/Community/getCommunitiesById",
+            ]
+        )
+    }
+
     func testPluginSignedBridgeContract() async throws {
         MockURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.path, "/api/v2/Plugins/pluginRequest")
@@ -1741,6 +1805,19 @@ final class CommonGroundKitTests: XCTestCase {
         let notifications = try await client.notifications.load()
         let unreadCount = try await client.notifications.unreadCount()
         let publicCommunities = try await client.communities.list(limit: 10)
+        let feedArticles = try await client.articles.globalCommunityArticles(scope: .explore)
+        let feedEvents = try await client.communities.upcomingEvents(scope: .explore)
+        let feedCommunityIDs = Array(
+            Set(
+                feedArticles.map(\.communityArticle.communityId)
+                    + feedEvents.map(\.communityId)
+            )
+        )
+        let feedCommunities = try await client.communities.summaries(ids: feedCommunityIDs)
+        XCTAssertEqual(
+            Set(feedCommunities.map(\.id)),
+            Set(feedCommunityIDs)
+        )
         let hits = try await client.profiles.searchUsers(query: login.response.ownData.displayName)
         let profiles = try await client.profiles.users(ids: [login.response.ownData.id])
         XCTAssertTrue(hits.contains(where: { $0.id == login.response.ownData.id }))
@@ -1772,7 +1849,9 @@ final class CommonGroundKitTests: XCTestCase {
             "channelID=\(selectedChannel.channelId) messages=\(messages.count) " +
             "latestOwnID=\(latestOwn?.id ?? "none") latestOwnAt=\(latestOwn?.createdAt ?? "none") " +
             "notifications=\(notifications.count) unread=\(unreadCount) " +
-            "publicCommunities=\(publicCommunities.count)"
+            "publicCommunities=\(publicCommunities.count) " +
+            "feedArticles=\(feedArticles.count) feedEvents=\(feedEvents.count) " +
+            "feedCommunities=\(feedCommunities.count)"
         )
         try await client.auth.logout()
     }

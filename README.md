@@ -23,6 +23,8 @@ The first protocol spine is implemented end-to-end:
 - communities and direct-message sessions are distinct navigation surfaces, with explicit selection restoration;
 - notification history, exact message/comment routing, in-app realtime banners, server-backed user search, public profiles, follows, and mutual-follow DMs are API-backed;
 - public community discovery/create/join/leave and community, user, and message reporting are API-backed;
+- the global Feed combines paginated community articles and upcoming events with Explore/My communities,
+  content-type, attendance, and community-topic filters while retaining the public community browser;
 - replies, structured mentions, reactions, editing/deletion, image upload, and signed attachment rendering are native messaging features;
 - Spark balances and non-refundable community contributions are native, alongside configurable community bot policy;
 - account-scoped SQLite persistence provides offline launch, cached communities/chats/messages/users/notifications,

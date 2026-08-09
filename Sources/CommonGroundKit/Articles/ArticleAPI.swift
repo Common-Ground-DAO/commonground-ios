@@ -20,6 +20,25 @@ public struct ArticleAPI: Sendable {
         )
     }
 
+    public func globalCommunityArticles(
+        scope: CommunityFeedScope,
+        anyCommunityTopics: [String] = [],
+        publishedBefore: String? = nil,
+        beforeID: String? = nil,
+        limit: Int = 30
+    ) async throws -> [CommunityArticlePreview] {
+        try await transport.call(
+            "Community/getArticleList",
+            body: GlobalCommunityArticleListRequest(
+                publishedBefore: publishedBefore,
+                beforeId: beforeID,
+                limit: limit,
+                verification: scope,
+                anyCommunityTags: anyCommunityTopics.isEmpty ? nil : anyCommunityTopics
+            )
+        )
+    }
+
     public func communityArticle(communityID: String, articleID: String) async throws -> CommunityArticleDetail {
         try await transport.call(
             "Community/getArticleDetailView",
@@ -214,6 +233,16 @@ private struct ArticleListRequest: Encodable, Sendable {
     let orderBy = "published"
     let limit: Int
     let drafts: Bool?
+}
+
+private struct GlobalCommunityArticleListRequest: Encodable, Sendable {
+    let order = "DESC"
+    let orderBy = "published"
+    let publishedBefore: String?
+    let beforeId: String?
+    let limit: Int
+    let verification: CommunityFeedScope
+    let anyCommunityTags: [String]?
 }
 
 private struct CommunityArticleRequest: Encodable, Sendable {

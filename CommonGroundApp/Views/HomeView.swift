@@ -18,7 +18,7 @@ private enum SidebarItem: Hashable {
     case directMessages
     case notifications
     case search
-    case discover
+    case feed
     case appStore
     case community(String)
 }
@@ -54,6 +54,7 @@ private struct HomeContent: View {
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var showAccount = false
     @State private var showCreateCommunity = false
+    @State private var showCommunityBrowser = false
     @State private var notificationArticle: NotificationArticleRoute?
     @State private var notificationProfile: NotificationProfileRoute?
 
@@ -96,6 +97,14 @@ private struct HomeContent: View {
             CreateCommunityView { communityID in
                 showCreateCommunity = false
                 openCommunity(communityID)
+            }
+        }
+        .sheet(isPresented: $showCommunityBrowser) {
+            NavigationStack {
+                CommunityDiscoveryView(store: store) { communityID in
+                    showCommunityBrowser = false
+                    openCommunity(communityID)
+                }
             }
         }
         .sheet(item: $notificationArticle) { route in
@@ -175,7 +184,7 @@ private struct HomeContent: View {
                     badge: store.unreadNotificationCount
                 )
                 sidebarRow("Search", systemImage: "magnifyingglass", item: .search)
-                sidebarRow("Discover", systemImage: "safari", item: .discover)
+                sidebarRow("Feed", systemImage: "rectangle.stack", item: .feed)
                 sidebarRow("App Store", systemImage: "storefront", item: .appStore)
             }
 
@@ -273,7 +282,7 @@ private struct HomeContent: View {
                 unreadCount: store.unreadNotificationCount,
                 openCommunity: openCommunity,
                 openMessages: { sidebarSelection = .directMessages },
-                discover: { sidebarSelection = .discover },
+                browseCommunities: { showCommunityBrowser = true },
                 createCommunity: { showCreateCommunity = true }
             )
         case .events:
@@ -294,8 +303,11 @@ private struct HomeContent: View {
                 openChannel: openChannel,
                 openChat: openChat
             )
-        case .discover:
-            CommunityDiscoveryView(store: store, openCommunity: openCommunity)
+        case .feed:
+            FeedView(
+                store: store,
+                browseCommunities: { showCommunityBrowser = true }
+            )
         case .appStore:
             RootAppStoreView(store: store)
         case .community(let id):
@@ -374,11 +386,11 @@ private struct HomeContent: View {
                 message: "Find a channel in the middle column to open it here.",
                 systemImage: "magnifyingglass"
             )
-        case .discover:
+        case .feed:
             ConversationPlaceholder(
-                title: "Find your people",
-                message: "Browse public communities or create a new space.",
-                systemImage: "safari"
+                title: "Your Feed",
+                message: "Explore community articles and upcoming events.",
+                systemImage: "rectangle.stack"
             )
         case .appStore:
             ConversationPlaceholder(
@@ -594,6 +606,463 @@ private struct MyEventsView: View {
     }
 }
 
+private enum FeedContentMode: String, CaseIterable, Identifiable {
+    case all
+    case articles
+    case events
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+private struct FeedQuery: Hashable {
+    let scope: CommunityFeedScope
+    let topics: [String]
+}
+
+private extension CommunityFeedScope {
+    var feedTitle: String {
+        switch self {
+        case .explore: "Explore"
+        case .myCommunities: "My communities"
+        }
+    }
+}
+
+private struct FeedView: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var store: SyncStore
+    let browseCommunities: () -> Void
+    @State private var scope: CommunityFeedScope = .explore
+    @State private var contentMode: FeedContentMode = .all
+    @State private var topics: Set<String> = []
+    @State private var attendingOnly = false
+    @State private var showTopicPicker = false
+    @State private var selectedArticle: CommunityArticlePreview?
+    @State private var eventRoute: EventRoute?
+    @State private var loadingEventID: String?
+
+    private var query: FeedQuery {
+        FeedQuery(
+            scope: scope,
+            topics: topics.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        )
+    }
+
+    private var visibleEvents: [CommunityEvent] {
+        attendingOnly ? model.feedEvents.filter(\.isSelfAttending) : model.feedEvents
+    }
+
+    private var isInitiallyLoading: Bool {
+        model.feedArticles.isEmpty
+            && model.feedEvents.isEmpty
+            && (model.isLoadingFeedArticles || model.isLoadingFeedEvents)
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Community Feed")
+                        .font(.largeTitle.bold())
+                    Text("Articles and events from across this Common Ground instance.")
+                        .foregroundStyle(.secondary)
+                }
+
+                Picker("Feed scope", selection: $scope) {
+                    ForEach(CommunityFeedScope.allCases, id: \.self) { option in
+                        Text(option.feedTitle).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Picker("Content", selection: $contentMode) {
+                    ForEach(FeedContentMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if !topics.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(query.topics, id: \.self) { topic in
+                                Button {
+                                    topics.remove(topic)
+                                } label: {
+                                    Label(topic, systemImage: "xmark")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .buttonStyle(.bordered)
+                                .buttonBorderShape(.capsule)
+                            }
+                            Button("Clear") { topics.removeAll() }
+                                .font(.caption.weight(.semibold))
+                        }
+                    }
+                }
+
+                if isInitiallyLoading {
+                    ProgressView("Loading Feed…")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 70)
+                } else if model.feedArticles.isEmpty && model.feedEvents.isEmpty {
+                    ContentUnavailableView(
+                        "Nothing in this Feed yet",
+                        systemImage: "rectangle.stack",
+                        description: Text(emptyDescription)
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 50)
+                } else {
+                    switch contentMode {
+                    case .all:
+                        allContent
+                    case .articles:
+                        articleContent
+                    case .events:
+                        eventContent
+                    }
+                }
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(20)
+            .frame(maxWidth: .infinity)
+        }
+        .navigationTitle("Feed")
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    showTopicPicker = true
+                } label: {
+                    Label(
+                        topics.isEmpty ? "Topics" : "Topics (\(topics.count))",
+                        systemImage: topics.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
+                    )
+                }
+                Button("Browse communities", systemImage: "person.3", action: browseCommunities)
+            }
+        }
+        .refreshable { await model.loadFeed(scope: scope, topics: topics) }
+        .task(id: query) { await model.loadFeed(scope: scope, topics: topics) }
+        .sheet(isPresented: $showTopicPicker) {
+            FeedTopicPicker(
+                availableTopics: model.feedTopicOptions,
+                initialSelection: topics
+            ) { topics = $0 }
+        }
+        .sheet(item: $selectedArticle) { item in
+            ArticleReaderView(
+                articleID: item.id,
+                source: .community(item.communityArticle.communityId),
+                store: store,
+                focusedCommentID: nil
+            )
+        }
+        .sheet(item: $eventRoute) { route in
+            CommunityEventDetailView(community: route.community, event: route.event)
+        }
+    }
+
+    private var emptyDescription: String {
+        if !topics.isEmpty {
+            return "Try removing a topic or switching between Explore and My communities."
+        }
+        return scope == .myCommunities
+            ? "Join communities or switch to Explore to find more articles and events."
+            : "Published community articles and upcoming events will appear here."
+    }
+
+    @ViewBuilder
+    private var allContent: some View {
+        if !model.feedEvents.isEmpty {
+            FeedSectionHeader(title: "Upcoming events", actionTitle: "See all") {
+                contentMode = .events
+            }
+            ForEach(model.feedEvents.prefix(3)) { event in
+                feedEvent(event)
+            }
+        }
+
+        if !model.feedArticles.isEmpty {
+            FeedSectionHeader(title: "Latest articles")
+                .padding(.top, model.feedEvents.isEmpty ? 0 : 8)
+            ForEach(model.feedArticles) { item in
+                feedArticle(item)
+            }
+            feedArticleFooter
+        }
+    }
+
+    @ViewBuilder
+    private var articleContent: some View {
+        if model.feedArticles.isEmpty {
+            ContentUnavailableView(
+                "No matching articles",
+                systemImage: "newspaper",
+                description: Text("Try another scope or topic filter.")
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 50)
+        } else {
+            FeedSectionHeader(title: "Latest articles")
+            ForEach(model.feedArticles) { item in
+                feedArticle(item)
+            }
+            feedArticleFooter
+        }
+    }
+
+    @ViewBuilder
+    private var eventContent: some View {
+        Toggle("Attending only", isOn: $attendingOnly)
+            .fontWeight(.semibold)
+            .padding(14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+
+        if visibleEvents.isEmpty && !model.canLoadMoreFeedEvents {
+            ContentUnavailableView(
+                attendingOnly ? "No events you are attending" : "No upcoming events",
+                systemImage: "calendar",
+                description: Text("Try another scope or topic filter.")
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 50)
+        } else {
+            ForEach(visibleEvents) { event in
+                feedEvent(event)
+            }
+            feedEventFooter
+        }
+    }
+
+    @ViewBuilder
+    private func feedArticle(_ item: CommunityArticlePreview) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            FeedCommunityLabel(
+                community: model.feedCommunitySummaries[item.communityArticle.communityId],
+                date: item.communityArticle.published.flatMap(parseEventDate)
+            )
+            ArticleCard(
+                article: item.article,
+                author: store.users[item.article.creatorId],
+                imageURL: item.article.thumbnailImageId.flatMap { model.attachmentURLs[$0] }
+            ) {
+                selectedArticle = item
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func feedEvent(_ event: CommunityEvent) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                FeedCommunityLabel(
+                    community: model.feedCommunitySummaries[event.communityId],
+                    date: nil
+                )
+                Spacer()
+                if loadingEventID == event.id { ProgressView().controlSize(.small) }
+            }
+            CommunityEventCard(
+                event: event,
+                imageURL: event.imageId.flatMap { model.attachmentURLs[$0] }
+            ) {
+                openEvent(event)
+            }
+            .disabled(loadingEventID != nil)
+        }
+    }
+
+    @ViewBuilder
+    private var feedArticleFooter: some View {
+        if model.canLoadMoreFeedArticles {
+            FeedLoadMoreFooter(
+                isLoading: model.isLoadingFeedArticles,
+                title: "Load more articles"
+            ) {
+                await model.loadMoreFeedArticles()
+            }
+            .id(model.feedArticles.count)
+        }
+    }
+
+    @ViewBuilder
+    private var feedEventFooter: some View {
+        if model.canLoadMoreFeedEvents {
+            FeedLoadMoreFooter(
+                isLoading: model.isLoadingFeedEvents,
+                title: "Load more events"
+            ) {
+                await model.loadMoreFeedEvents()
+            }
+            .id(model.feedEvents.count)
+        }
+    }
+
+    private func openEvent(_ event: CommunityEvent) {
+        guard loadingEventID == nil else { return }
+        loadingEventID = event.id
+        Task {
+            if let community = await model.feedCommunityDetail(id: event.communityId) {
+                eventRoute = EventRoute(event: event, community: community)
+            }
+            loadingEventID = nil
+        }
+    }
+}
+
+private struct FeedSectionHeader: View {
+    let title: String
+    var actionTitle: String?
+    var action: (() -> Void)?
+
+    init(title: String, actionTitle: String? = nil, action: (() -> Void)? = nil) {
+        self.title = title
+        self.actionTitle = actionTitle
+        self.action = action
+    }
+
+    var body: some View {
+        HStack {
+            Text(title).font(.title2.bold())
+            Spacer()
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .fontWeight(.semibold)
+            }
+        }
+    }
+}
+
+private struct FeedCommunityLabel: View {
+    @EnvironmentObject private var model: AppModel
+    let community: CommunitySummary?
+    let date: Date?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            CommunityMark(
+                name: community?.title ?? "Community",
+                url: community?.logoSmallId.flatMap { model.attachmentURLs[$0] }
+            )
+            .frame(width: 26, height: 26)
+            Text(community?.title ?? "Community")
+                .font(.caption.weight(.semibold))
+            if let date {
+                Text("·")
+                    .foregroundStyle(.tertiary)
+                Text(date.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct FeedLoadMoreFooter: View {
+    let isLoading: Bool
+    let title: String
+    let load: () async -> Void
+
+    var body: some View {
+        Group {
+            if isLoading {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading more…").foregroundStyle(.secondary)
+                }
+            } else {
+                Button(title, systemImage: "arrow.down.circle") {
+                    Task { await load() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+        .task { await load() }
+    }
+}
+
+private struct FeedTopicPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    let availableTopics: [String]
+    let apply: (Set<String>) -> Void
+    @State private var selectedTopics: Set<String>
+    @State private var search = ""
+
+    init(
+        availableTopics: [String],
+        initialSelection: Set<String>,
+        apply: @escaping (Set<String>) -> Void
+    ) {
+        self.availableTopics = availableTopics
+        self.apply = apply
+        _selectedTopics = State(initialValue: initialSelection)
+    }
+
+    private var topics: [String] {
+        let all = Array(Set(availableTopics).union(selectedTopics))
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return all }
+        return all.filter { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(topics, id: \.self) { topic in
+                        Button {
+                            if selectedTopics.contains(topic) {
+                                selectedTopics.remove(topic)
+                            } else {
+                                selectedTopics.insert(topic)
+                            }
+                        } label: {
+                            HStack {
+                                Text(topic).foregroundStyle(.primary)
+                                Spacer()
+                                if selectedTopics.contains(topic) {
+                                    Image(systemName: "checkmark")
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(AppTheme.accent)
+                                }
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Selecting several topics matches communities with any of them.")
+                }
+            }
+            .navigationTitle("Topics")
+            .searchable(text: $search, prompt: "Find a topic")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply") {
+                        apply(selectedTopics)
+                        dismiss()
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if !selectedTopics.isEmpty {
+                    Button("Clear all topics") { selectedTopics.removeAll() }
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(.regularMaterial)
+                }
+            }
+        }
+    }
+}
+
 private struct OverviewView: View {
     @EnvironmentObject private var model: AppModel
     let communities: [Community]
@@ -601,7 +1070,7 @@ private struct OverviewView: View {
     let unreadCount: Int
     let openCommunity: (String) -> Void
     let openMessages: () -> Void
-    let discover: () -> Void
+    let browseCommunities: () -> Void
     let createCommunity: () -> Void
 
     var body: some View {
@@ -662,8 +1131,8 @@ private struct OverviewView: View {
                 }
                 .buttonStyle(.bordered)
 
-                Button(action: discover) {
-                    Label("Discover communities", systemImage: "safari")
+                Button(action: browseCommunities) {
+                    Label("Browse communities", systemImage: "person.3")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -745,7 +1214,7 @@ private struct CommunityDiscoveryView: View {
                 .refreshable { await model.discoverCommunities(query: query) }
             }
         }
-        .navigationTitle("Discover")
+        .navigationTitle("Communities")
         .searchable(text: $query, prompt: "Community name or tag")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
