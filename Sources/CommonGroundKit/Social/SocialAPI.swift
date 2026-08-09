@@ -484,6 +484,25 @@ public struct CommunityAPI: Sendable {
         )
     }
 
+    /// Updates only the fields needed when moving a channel. Keeping this request
+    /// partial avoids rewriting channel metadata and role permissions during a drag.
+    public func updateChannelOrder(
+        communityID: String,
+        channelID: String,
+        areaID: String,
+        order: Int
+    ) async throws {
+        let _: EmptyResponse = try await transport.call(
+            "Community/updateChannel",
+            body: UpdateChannelOrderRequest(
+                channelId: channelID,
+                communityId: communityID,
+                areaId: areaID,
+                order: order
+            )
+        )
+    }
+
     public func deleteChannel(communityID: String, channelID: String) async throws {
         let _: EmptyResponse = try await transport.call(
             "Community/deleteChannel",
@@ -1072,6 +1091,12 @@ private struct UpdateChannelRequest: Encodable, Sendable {
         else { try container.encodeNil(forKey: .emoji) }
         try container.encode(rolePermissions, forKey: .rolePermissions)
     }
+}
+private struct UpdateChannelOrderRequest: Encodable, Sendable {
+    let channelId: String
+    let communityId: String
+    let areaId: String
+    let order: Int
 }
 private struct DeleteChannelRequest: Encodable, Sendable {
     let channelId: String

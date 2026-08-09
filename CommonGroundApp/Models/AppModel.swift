@@ -1586,17 +1586,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func reorderCommunityAreas(communityID: String, from: IndexSet, to: Int) async -> Bool {
+    func reorderCommunityAreas(communityID: String, orderedIDs: [String]) async -> Bool {
         guard let client, let community = store.communities[communityID] else { return false }
-        var areas = community.areaInfos
-        areas.move(fromOffsets: from, toOffset: to)
+        let areasByID = Dictionary(uniqueKeysWithValues: community.areaInfos.map { ($0.id, $0) })
+        guard orderedIDs.count == areasByID.count,
+              Set(orderedIDs) == Set(areasByID.keys) else { return false }
         do {
-            for (index, area) in areas.enumerated() where area.order != index {
+            for (index, id) in orderedIDs.enumerated() {
+                guard let area = areasByID[id] else { continue }
+                let order = (index + 1) * 1_000_000
+                guard area.order != order else { continue }
                 try await client.communities.updateArea(
                     communityID: communityID,
                     areaID: area.id,
                     title: nil,
-                    order: index
+                    order: order
                 )
             }
             await refreshCommunity(communityID)
@@ -1610,25 +1614,24 @@ final class AppModel: ObservableObject {
 
     func reorderCommunityChannels(
         communityID: String,
-        areaID: String?,
-        from: IndexSet,
-        to: Int
+        areaID: String,
+        orderedIDs: [String]
     ) async -> Bool {
         guard let client, let community = store.communities[communityID] else { return false }
-        var channels = community.channels.filter { $0.areaId == areaID }.sorted { $0.order < $1.order }
-        channels.move(fromOffsets: from, toOffset: to)
+        let channels = community.channels.filter { $0.areaId == areaID }
+        let channelsByID = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
+        guard orderedIDs.count == channelsByID.count,
+              Set(orderedIDs) == Set(channelsByID.keys) else { return false }
         do {
-            for (index, channel) in channels.enumerated() where channel.order != index {
-                try await client.communities.updateChannel(
+            for (index, id) in orderedIDs.enumerated() {
+                guard let channel = channelsByID[id] else { continue }
+                let order = (index + 1) * 1_000_000
+                guard channel.order != order else { continue }
+                try await client.communities.updateChannelOrder(
                     communityID: communityID,
                     channelID: channel.channelId,
-                    areaID: channel.areaId,
-                    title: channel.title,
-                    url: channel.url,
-                    order: index,
-                    description: channel.description,
-                    emoji: channel.emoji,
-                    roleAccess: channel.roleAccess
+                    areaID: areaID,
+                    order: order
                 )
             }
             await refreshCommunity(communityID)

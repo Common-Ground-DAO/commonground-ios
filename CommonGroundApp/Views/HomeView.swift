@@ -2,6 +2,7 @@ import CommonGroundKit
 import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
@@ -2252,21 +2253,23 @@ private struct CommunityChannelsSettingsView: View {
     let community: Community
     @State private var showingNewArea = false
     @State private var areaName = ""
-    @State private var isReordering = false
+    @State private var orderedAreas: [CommunityAreaInfo] = []
+    @State private var draggedAreaID: String?
+    @State private var isSavingOrder = false
 
     private var current: Community { model.store.communities[community.id] ?? community }
 
     var body: some View {
         List {
             Section("Areas") {
-                if current.areaInfos.isEmpty {
+                if orderedAreas.isEmpty {
                     ContentUnavailableView(
                         "No areas",
                         systemImage: "folder",
                         description: Text("Create an area before adding channels.")
                     )
                 }
-                ForEach(current.areaInfos) { area in
+                ForEach(orderedAreas) { area in
                     NavigationLink {
                         CommunityAreaChannelsView(community: current, area: area)
                     } label: {
@@ -2278,14 +2281,22 @@ private struct CommunityChannelsSettingsView: View {
                             Image(systemName: "line.3.horizontal")
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 4)
-                                .draggable(area.id)
+                                .onDrag {
+                                    draggedAreaID = area.id
+                                    return NSItemProvider(object: area.id as NSString)
+                                }
                                 .accessibilityLabel("Reorder \(area.title)")
                         }
                     }
-                    .dropDestination(for: String.self) { items, _ in
-                        guard let sourceID = items.first else { return false }
-                        return moveArea(sourceID: sourceID, targetID: area.id)
-                    }
+                    .onDrop(
+                        of: [UTType.plainText],
+                        delegate: ReorderDropDelegate(
+                            targetID: area.id,
+                            items: $orderedAreas,
+                            draggedID: $draggedAreaID,
+                            didFinish: persistAreaOrder
+                        )
+                    )
                 }
             }
         }
@@ -2317,25 +2328,26 @@ private struct CommunityChannelsSettingsView: View {
         } message: {
             Text("You can add and reorder channels after opening the area.")
         }
+        .onAppear { synchronizeAreas() }
+        .onChange(of: current.areaInfos) { _, _ in synchronizeAreas() }
     }
 
-    private func moveArea(sourceID: String, targetID: String) -> Bool {
-        let areas = current.areaInfos
-        guard !isReordering,
-              let sourceIndex = areas.firstIndex(where: { $0.id == sourceID }),
-              let targetIndex = areas.firstIndex(where: { $0.id == targetID }),
-              sourceIndex != targetIndex else { return false }
-        isReordering = true
-        let destination = targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
+    private func synchronizeAreas() {
+        guard draggedAreaID == nil, !isSavingOrder else { return }
+        orderedAreas = current.areaInfos
+    }
+
+    private func persistAreaOrder(_ orderedIDs: [String]) {
+        guard !isSavingOrder else { return }
+        isSavingOrder = true
         Task {
-            _ = await model.reorderCommunityAreas(
+            let saved = await model.reorderCommunityAreas(
                 communityID: current.id,
-                from: IndexSet(integer: sourceIndex),
-                to: destination
+                orderedIDs: orderedIDs
             )
-            isReordering = false
+            isSavingOrder = false
+            if !saved { orderedAreas = current.areaInfos }
         }
-        return true
     }
 }
 
@@ -2345,27 +2357,29 @@ private struct CommunityAreaChannelsView: View {
     let area: CommunityAreaInfo
     @State private var showingNewChannel = false
     @State private var showingAreaSettings = false
-    @State private var isReordering = false
+    @State private var orderedChannels: [Channel] = []
+    @State private var draggedChannelID: String?
+    @State private var isSavingOrder = false
 
     private var current: Community { model.store.communities[community.id] ?? community }
     private var currentArea: CommunityAreaInfo {
         current.areaInfos.first(where: { $0.id == area.id }) ?? area
     }
-    private var channels: [Channel] {
+    private var currentChannels: [Channel] {
         current.channels.filter { $0.areaId == area.id }.sorted { $0.order < $1.order }
     }
 
     var body: some View {
         List {
             Section {
-                if channels.isEmpty {
+                if orderedChannels.isEmpty {
                     ContentUnavailableView(
                         "No channels",
                         systemImage: "number",
                         description: Text("Add the first channel to this area.")
                     )
                 }
-                ForEach(channels) { channel in
+                ForEach(orderedChannels) { channel in
                     NavigationLink {
                         CommunityChannelEditor(community: current, channel: channel)
                     } label: {
@@ -2383,14 +2397,22 @@ private struct CommunityAreaChannelsView: View {
                             Image(systemName: "line.3.horizontal")
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 4)
-                                .draggable(channel.id)
+                                .onDrag {
+                                    draggedChannelID = channel.id
+                                    return NSItemProvider(object: channel.id as NSString)
+                                }
                                 .accessibilityLabel("Reorder \(channel.title)")
                         }
                     }
-                    .dropDestination(for: String.self) { items, _ in
-                        guard let sourceID = items.first else { return false }
-                        return moveChannel(sourceID: sourceID, targetID: channel.id)
-                    }
+                    .onDrop(
+                        of: [UTType.plainText],
+                        delegate: ReorderDropDelegate(
+                            targetID: channel.id,
+                            items: $orderedChannels,
+                            draggedID: $draggedChannelID,
+                            didFinish: persistChannelOrder
+                        )
+                    )
                 }
             }
         }
@@ -2422,24 +2444,57 @@ private struct CommunityAreaChannelsView: View {
                 CommunityAreaEditor(community: current, area: currentArea)
             }
         }
+        .onAppear { synchronizeChannels() }
+        .onChange(of: currentChannels) { _, _ in synchronizeChannels() }
     }
 
-    private func moveChannel(sourceID: String, targetID: String) -> Bool {
-        guard !isReordering,
-              let sourceIndex = channels.firstIndex(where: { $0.id == sourceID }),
-              let targetIndex = channels.firstIndex(where: { $0.id == targetID }),
-              sourceIndex != targetIndex else { return false }
-        isReordering = true
-        let destination = targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
+    private func synchronizeChannels() {
+        guard draggedChannelID == nil, !isSavingOrder else { return }
+        orderedChannels = currentChannels
+    }
+
+    private func persistChannelOrder(_ orderedIDs: [String]) {
+        guard !isSavingOrder else { return }
+        isSavingOrder = true
         Task {
-            _ = await model.reorderCommunityChannels(
+            let saved = await model.reorderCommunityChannels(
                 communityID: current.id,
                 areaID: area.id,
-                from: IndexSet(integer: sourceIndex),
-                to: destination
+                orderedIDs: orderedIDs
             )
-            isReordering = false
+            isSavingOrder = false
+            if !saved { orderedChannels = currentChannels }
         }
+    }
+}
+
+private struct ReorderDropDelegate<Item: Identifiable & Equatable>: DropDelegate where Item.ID == String {
+    let targetID: String
+    @Binding var items: [Item]
+    @Binding var draggedID: String?
+    let didFinish: ([String]) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedID,
+              draggedID != targetID,
+              let sourceIndex = items.firstIndex(where: { $0.id == draggedID }),
+              let targetIndex = items.firstIndex(where: { $0.id == targetID }) else { return }
+        withAnimation(.snappy) {
+            items.move(
+                fromOffsets: IndexSet(integer: sourceIndex),
+                toOffset: targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
+            )
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let orderedIDs = items.map(\.id)
+        draggedID = nil
+        didFinish(orderedIDs)
         return true
     }
 }
@@ -3184,11 +3239,7 @@ private struct CommunityEventCard: View {
         Button(action: open) {
             HStack(spacing: 14) {
                 if let imageURL {
-                    AsyncImage(url: imageURL) { image in
-                        image.resizable().scaledToFill()
-                    } placeholder: {
-                        Color.secondary.opacity(0.12)
-                    }
+                    CommunityFeatureImage(url: imageURL, height: 84)
                     .frame(width: 92, height: 84)
                     .clipShape(RoundedRectangle(cornerRadius: 11))
                 } else {

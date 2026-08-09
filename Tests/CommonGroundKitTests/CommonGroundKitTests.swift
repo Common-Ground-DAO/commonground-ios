@@ -820,6 +820,36 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(routes.count, 12)
     }
 
+    func testChannelOrderUpdateUsesPartialContract() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Community/updateChannel")
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request))) as? [String: Any]
+            )
+            XCTAssertEqual(object["communityId"] as? String, "community-1")
+            XCTAssertEqual(object["channelId"] as? String, "channel-1")
+            XCTAssertEqual(object["areaId"] as? String, "area-1")
+            XCTAssertEqual(object["order"] as? Int, 2_000_000)
+            XCTAssertNil(object["title"])
+            XCTAssertNil(object["description"])
+            XCTAssertNil(object["rolePermissions"])
+            return Self.response(request, status: 200, body: #"{"status":"OK"}"#)
+        }
+
+        let api = CommunityAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        try await api.updateChannelOrder(
+            communityID: "community-1",
+            channelID: "channel-1",
+            areaID: "area-1",
+            order: 2_000_000
+        )
+    }
+
     func testNotificationDestinationsAndPersistence() throws {
         func notification(_ json: String) throws -> AppNotification {
             try JSONDecoder().decode(AppNotification.self, from: Data(json.utf8))
