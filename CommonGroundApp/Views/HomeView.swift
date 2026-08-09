@@ -18,6 +18,7 @@ private enum SidebarItem: Hashable {
     case notifications
     case search
     case discover
+    case appStore
     case community(String)
 }
 
@@ -174,6 +175,7 @@ private struct HomeContent: View {
                 )
                 sidebarRow("Search", systemImage: "magnifyingglass", item: .search)
                 sidebarRow("Discover", systemImage: "safari", item: .discover)
+                sidebarRow("App Store", systemImage: "storefront", item: .appStore)
             }
 
             Section("Communities") {
@@ -278,7 +280,7 @@ private struct HomeContent: View {
         case .directMessages:
             ChatListView(
                 chats: chats,
-                ownUserID: store.ownUser?.id,
+                store: store,
                 selectedChatID: model.selectedChatID,
                 select: openChat
             )
@@ -293,6 +295,8 @@ private struct HomeContent: View {
             )
         case .discover:
             CommunityDiscoveryView(store: store, openCommunity: openCommunity)
+        case .appStore:
+            RootAppStoreView(store: store)
         case .community(let id):
             if let community = store.communities[id] {
                 ChannelListView(
@@ -374,6 +378,12 @@ private struct HomeContent: View {
                 title: "Find your people",
                 message: "Browse public communities or create a new space.",
                 systemImage: "safari"
+            )
+        case .appStore:
+            ConversationPlaceholder(
+                title: "Common Ground apps",
+                message: "Browse apps in the middle column and install them in communities you administer.",
+                systemImage: "storefront"
             )
         }
     }
@@ -923,91 +933,101 @@ private struct CommunitySettingsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                if current.canManageInfo || current.creatorId == model.store.ownUser?.id {
-                    Section {
-                        NavigationLink {
-                            CommunityGeneralSettingsView(community: current)
-                        } label: {
-                            SettingsRow(icon: "gearshape", color: .gray, title: "General")
-                        }
-                        NavigationLink {
-                            CommunityNewsletterSettingsView(community: current)
-                        } label: {
-                            SettingsRow(icon: "envelope", color: .orange, title: "Newsletters")
-                        }
-                    }
-                }
-                if current.canManageRoles {
-                    Section("Plan") {
-                        NavigationLink {
-                            CommunityPremiumSettingsView(community: current)
-                        } label: {
-                            SettingsRow(icon: "sparkles", color: .purple, title: "Premium")
-                        }
-                    }
-                }
-                if current.canManageRoles || current.canManageApplications {
-                    NavigationLink {
-                        CommunityOnboardingSettingsView(community: current)
-                    } label: {
-                        SettingsRow(icon: "person.badge.plus", color: .blue, title: "Onboarding", badge: current.membersPendingApproval)
-                    }
-                }
-
-                Section("People & access") {
-                    if current.canManageRoles || current.canModerate {
-                        NavigationLink {
-                            CommunityMembersSettingsView(community: current)
-                        } label: {
-                            SettingsRow(icon: "person.2", color: .blue, title: "Members", badge: current.memberCount)
-                        }
-                    }
-                    if current.canModerate {
-                        NavigationLink {
-                            CommunityBansSettingsView(community: current)
-                        } label: {
-                            SettingsRow(icon: "hand.raised", color: .red, title: "Manage Bans")
-                        }
-                    }
-                    if current.canManageChannels {
-                        NavigationLink {
-                            CommunityChannelsSettingsView(community: current)
-                        } label: {
-                            SettingsRow(icon: "number", color: .indigo, title: "Channels", badge: current.channels.count)
-                        }
-                    }
-                    if current.canManageRoles {
-                        NavigationLink {
-                            CommunityRolesSettingsView(community: current)
-                        } label: {
-                            SettingsRow(icon: "person.badge.key", color: .teal, title: "Roles & Permissions", badge: current.roles.count)
-                        }
-                    }
-                }
-
-                if current.canManageRoles || current.canManageInfo
-                    || current.creatorId == model.store.ownUser?.id || current.isAdmin {
-                    Section("Extensions") {
-                        if current.canManageRoles {
-                            NavigationLink {
-                                CommunityTokenSettingsView(community: current)
-                            } label: {
-                                SettingsRow(icon: "hexagon", color: .mint, title: "Token", badge: current.tokens.count)
-                            }
-                        }
+            Group {
+                if !current.isAdmin {
+                    ContentUnavailableView(
+                        "Administrator access required",
+                        systemImage: "lock.shield",
+                        description: Text("Community settings are available only to administrators.")
+                    )
+                } else {
+                    List {
                         if current.canManageInfo || current.creatorId == model.store.ownUser?.id {
-                            NavigationLink {
-                                CommunityBotsSettingsView(community: current)
-                            } label: {
-                                SettingsRow(icon: "cpu", color: .yellow, title: "Bots")
+                            Section {
+                                NavigationLink {
+                                    CommunityGeneralSettingsView(community: current)
+                                } label: {
+                                    SettingsRow(icon: "gearshape", color: .gray, title: "General")
+                                }
+                                NavigationLink {
+                                    CommunityNewsletterSettingsView(community: current)
+                                } label: {
+                                    SettingsRow(icon: "envelope", color: .orange, title: "Newsletters")
+                                }
                             }
                         }
-                        if current.isAdmin {
+                        if current.canManageRoles {
+                            Section("Plan") {
+                                NavigationLink {
+                                    CommunityPremiumSettingsView(community: current)
+                                } label: {
+                                    SettingsRow(icon: "sparkles", color: .purple, title: "Premium")
+                                }
+                            }
+                        }
+                        if current.canManageRoles || current.canManageApplications {
                             NavigationLink {
-                                CommunityPluginsSettingsView(community: current)
+                                CommunityOnboardingSettingsView(community: current)
                             } label: {
-                                SettingsRow(icon: "puzzlepiece.extension", color: .pink, title: "Plugins", badge: current.plugins.count)
+                                SettingsRow(icon: "person.badge.plus", color: .blue, title: "Onboarding", badge: current.membersPendingApproval)
+                            }
+                        }
+
+                        Section("People & access") {
+                            if current.canManageRoles || current.canModerate {
+                                NavigationLink {
+                                    CommunityMembersSettingsView(community: current)
+                                } label: {
+                                    SettingsRow(icon: "person.2", color: .blue, title: "Members", badge: current.memberCount)
+                                }
+                            }
+                            if current.canModerate {
+                                NavigationLink {
+                                    CommunityBansSettingsView(community: current)
+                                } label: {
+                                    SettingsRow(icon: "hand.raised", color: .red, title: "Manage Bans")
+                                }
+                            }
+                            if current.canManageChannels {
+                                NavigationLink {
+                                    CommunityChannelsSettingsView(community: current)
+                                } label: {
+                                    SettingsRow(icon: "number", color: .indigo, title: "Channels", badge: current.channels.count)
+                                }
+                            }
+                            if current.canManageRoles {
+                                NavigationLink {
+                                    CommunityRolesSettingsView(community: current)
+                                } label: {
+                                    SettingsRow(icon: "person.badge.key", color: .teal, title: "Roles & Permissions", badge: current.roles.count)
+                                }
+                            }
+                        }
+
+                        if current.canManageRoles || current.canManageInfo
+                            || current.creatorId == model.store.ownUser?.id || current.isAdmin {
+                            Section("Extensions") {
+                                if current.canManageRoles {
+                                    NavigationLink {
+                                        CommunityTokenSettingsView(community: current)
+                                    } label: {
+                                        SettingsRow(icon: "hexagon", color: .mint, title: "Token", badge: current.tokens.count)
+                                    }
+                                }
+                                if current.canManageInfo || current.creatorId == model.store.ownUser?.id {
+                                    NavigationLink {
+                                        CommunityBotsSettingsView(community: current)
+                                    } label: {
+                                        SettingsRow(icon: "cpu", color: .yellow, title: "Bots")
+                                    }
+                                }
+                                if current.isAdmin {
+                                    NavigationLink {
+                                        CommunityPluginsSettingsView(community: current)
+                                    } label: {
+                                        SettingsRow(icon: "puzzlepiece.extension", color: .pink, title: "Plugins", badge: current.plugins.count)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1231,6 +1251,182 @@ private struct CommunityPluginsSettingsView: View {
         }
         .navigationTitle("Plugins")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct RootAppStoreView: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var store: SyncStore
+    @State private var search = ""
+    @State private var selectedPlugin: AppStorePlugin?
+
+    var body: some View {
+        Group {
+            if model.isLoadingAppStore && model.appStorePlugins.isEmpty {
+                ProgressView("Loading apps…")
+            } else if model.appStorePlugins.isEmpty {
+                ContentUnavailableView(
+                    search.isEmpty ? "No apps available" : "No apps found",
+                    systemImage: "storefront",
+                    description: Text(
+                        search.isEmpty
+                            ? "Apps published by this instance will appear here."
+                            : "Try a different search."
+                    )
+                )
+            } else {
+                List(model.appStorePlugins) { plugin in
+                    Button { selectedPlugin = plugin } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            AppStoreMark(
+                                name: plugin.name,
+                                url: plugin.imageId.flatMap { model.attachmentURLs[$0] }
+                            )
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(plugin.name).font(.headline)
+                                Text(plugin.description)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                HStack(spacing: 10) {
+                                    Label("\(plugin.communityCount)", systemImage: "person.3")
+                                    if let firstTag = plugin.tags?.first {
+                                        Text("#\(firstTag)")
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .refreshable { await model.loadAppStorePlugins(query: search) }
+            }
+        }
+        .navigationTitle("App Store")
+        .searchable(text: $search, prompt: "Search apps")
+        .task(id: search) {
+            try? await Task.sleep(for: .milliseconds(search.isEmpty ? 0 : 250))
+            guard !Task.isCancelled else { return }
+            await model.loadAppStorePlugins(query: search)
+        }
+        .sheet(item: $selectedPlugin) { plugin in
+            NavigationStack {
+                RootAppStoreDetail(plugin: plugin, store: store)
+            }
+        }
+    }
+}
+
+private struct AppStoreMark: View {
+    let name: String
+    let url: URL?
+
+    var body: some View {
+        Group {
+            if let url {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    ProgressView()
+                }
+            } else {
+                Image(systemName: "puzzlepiece.extension.fill")
+                    .font(.title2)
+                    .foregroundStyle(AppTheme.accent)
+                    .accessibilityLabel(name)
+            }
+        }
+        .frame(width: 52, height: 52)
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct RootAppStoreDetail: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let plugin: AppStorePlugin
+    @ObservedObject var store: SyncStore
+    @State private var installingCommunityID: String?
+
+    private var adminCommunities: [Community] {
+        store.communities.values.filter(\.isAdmin).sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(alignment: .top, spacing: 14) {
+                    AppStoreMark(
+                        name: plugin.name,
+                        url: plugin.imageId.flatMap { model.attachmentURLs[$0] }
+                    )
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(plugin.name).font(.title3.bold())
+                        Text(plugin.description).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let tags = plugin.tags, !tags.isEmpty {
+                Section("Tags") {
+                    Text(tags.map { "#\($0)" }.joined(separator: "  "))
+                }
+            }
+            if !plugin.permissions.mandatory.isEmpty {
+                Section("Required permissions") {
+                    ForEach(plugin.permissions.mandatory, id: \.self) {
+                        Label($0.permissionTitle, systemImage: "checkmark.shield")
+                    }
+                }
+            }
+            Section("Install in a community") {
+                if adminCommunities.isEmpty {
+                    Text("Only community administrators can install apps.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(adminCommunities) { community in
+                        let installed = community.pluginInfos.contains { $0.pluginId == plugin.pluginId }
+                        Button {
+                            installingCommunityID = community.id
+                            Task {
+                                _ = await model.installPlugin(plugin, communityID: community.id)
+                                installingCommunityID = nil
+                            }
+                        } label: {
+                            HStack {
+                                Text(community.title)
+                                Spacer()
+                                if installingCommunityID == community.id {
+                                    ProgressView().controlSize(.small)
+                                } else if installed {
+                                    Label("Installed", systemImage: "checkmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("Install")
+                                }
+                            }
+                        }
+                        .disabled(installed || installingCommunityID != nil)
+                    }
+                }
+            }
+        }
+        .navigationTitle(plugin.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
     }
 }
 
@@ -2054,7 +2250,6 @@ private struct CommunityBansSettingsView: View {
 private struct CommunityChannelsSettingsView: View {
     @EnvironmentObject private var model: AppModel
     let community: Community
-    @State private var showingNewChannel = false
     @State private var showingNewArea = false
     @State private var areaName = ""
     @State private var isReordering = false
@@ -2063,31 +2258,35 @@ private struct CommunityChannelsSettingsView: View {
 
     var body: some View {
         List {
-            if current.canManageChannels && !current.areaInfos.isEmpty {
-                Section("Areas") {
-                    ForEach(current.areaInfos) { area in
-                        NavigationLink {
-                            CommunityAreaEditor(community: current, area: area)
-                        } label: {
-                            LabeledContent(area.title, value: "Order \(area.order + 1)")
+            Section("Areas") {
+                if current.areaInfos.isEmpty {
+                    ContentUnavailableView(
+                        "No areas",
+                        systemImage: "folder",
+                        description: Text("Create an area before adding channels.")
+                    )
+                }
+                ForEach(current.areaInfos) { area in
+                    NavigationLink {
+                        CommunityAreaChannelsView(community: current, area: area)
+                    } label: {
+                        HStack {
+                            Label(area.title, systemImage: "folder")
+                            Spacer()
+                            Text(current.channels.filter { $0.areaId == area.id }.count, format: .number)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "line.3.horizontal")
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 4)
+                                .draggable(area.id)
+                                .accessibilityLabel("Reorder \(area.title)")
                         }
                     }
-                    .onMove { source, destination in
-                        isReordering = true
-                        Task {
-                            _ = await model.reorderCommunityAreas(
-                                communityID: current.id,
-                                from: source,
-                                to: destination
-                            )
-                            isReordering = false
-                        }
+                    .dropDestination(for: String.self) { items, _ in
+                        guard let sourceID = items.first else { return false }
+                        return moveArea(sourceID: sourceID, targetID: area.id)
                     }
                 }
-            }
-            channelSection(title: "Uncategorized", areaID: nil)
-            ForEach(current.areaInfos) { area in
-                channelSection(title: area.title, areaID: area.id)
             }
         }
         .navigationTitle("Channels")
@@ -2095,20 +2294,8 @@ private struct CommunityChannelsSettingsView: View {
         .toolbar {
             if current.canManageChannels {
                 ToolbarItem(placement: .primaryAction) {
-                    Menu("Add", systemImage: "plus") {
-                        Button("New channel", systemImage: "number") { showingNewChannel = true }
-                            .disabled(current.areaInfos.isEmpty)
-                        Button("New area", systemImage: "folder") { showingNewArea = true }
-                    }
+                    Button("New area", systemImage: "plus") { showingNewArea = true }
                 }
-                ToolbarItem(placement: .secondaryAction) {
-                    EditButton().disabled(isReordering)
-                }
-            }
-        }
-        .sheet(isPresented: $showingNewChannel) {
-            NavigationStack {
-                CommunityChannelEditor(community: current, channel: nil)
             }
         }
         .alert("New area", isPresented: $showingNewArea) {
@@ -2128,46 +2315,132 @@ private struct CommunityChannelsSettingsView: View {
             }
             .disabled(areaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
-            if current.areaInfos.isEmpty {
-                Text("Channels belong to an area. Create this area, then add the channel.")
-            }
+            Text("You can add and reorder channels after opening the area.")
         }
     }
 
-    @ViewBuilder
-    private func channelSection(title: String, areaID: String?) -> some View {
-        let channels = current.channels.filter { $0.areaId == areaID }.sorted { $0.order < $1.order }
-        if !channels.isEmpty {
-            Section(title) {
+    private func moveArea(sourceID: String, targetID: String) -> Bool {
+        let areas = current.areaInfos
+        guard !isReordering,
+              let sourceIndex = areas.firstIndex(where: { $0.id == sourceID }),
+              let targetIndex = areas.firstIndex(where: { $0.id == targetID }),
+              sourceIndex != targetIndex else { return false }
+        isReordering = true
+        let destination = targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
+        Task {
+            _ = await model.reorderCommunityAreas(
+                communityID: current.id,
+                from: IndexSet(integer: sourceIndex),
+                to: destination
+            )
+            isReordering = false
+        }
+        return true
+    }
+}
+
+private struct CommunityAreaChannelsView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    let area: CommunityAreaInfo
+    @State private var showingNewChannel = false
+    @State private var showingAreaSettings = false
+    @State private var isReordering = false
+
+    private var current: Community { model.store.communities[community.id] ?? community }
+    private var currentArea: CommunityAreaInfo {
+        current.areaInfos.first(where: { $0.id == area.id }) ?? area
+    }
+    private var channels: [Channel] {
+        current.channels.filter { $0.areaId == area.id }.sorted { $0.order < $1.order }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                if channels.isEmpty {
+                    ContentUnavailableView(
+                        "No channels",
+                        systemImage: "number",
+                        description: Text("Add the first channel to this area.")
+                    )
+                }
                 ForEach(channels) { channel in
                     NavigationLink {
                         CommunityChannelEditor(community: current, channel: channel)
                     } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Label(channel.title, systemImage: "number")
-                            if let description = channel.description, !description.isEmpty {
-                                Text(description).font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Label(channel.title, systemImage: "number")
+                                if let description = channel.description, !description.isEmpty {
+                                    Text(description).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Text("\(channel.rolePermissions.count) role access rules")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             }
-                            Text("\(channel.rolePermissions.count) role access rules")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                            Spacer()
+                            Image(systemName: "line.3.horizontal")
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 4)
+                                .draggable(channel.id)
+                                .accessibilityLabel("Reorder \(channel.title)")
                         }
                     }
-                }
-                .onMove { source, destination in
-                    isReordering = true
-                    Task {
-                        _ = await model.reorderCommunityChannels(
-                            communityID: current.id,
-                            areaID: areaID,
-                            from: source,
-                            to: destination
-                        )
-                        isReordering = false
+                    .dropDestination(for: String.self) { items, _ in
+                        guard let sourceID = items.first else { return false }
+                        return moveChannel(sourceID: sourceID, targetID: channel.id)
                     }
                 }
             }
         }
+        .navigationTitle(currentArea.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if current.canManageChannels {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("New channel", systemImage: "plus") { showingNewChannel = true }
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Area settings", systemImage: "ellipsis.circle") {
+                        showingAreaSettings = true
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingNewChannel) {
+            NavigationStack {
+                CommunityChannelEditor(
+                    community: current,
+                    channel: nil,
+                    initialAreaID: area.id
+                )
+            }
+        }
+        .sheet(isPresented: $showingAreaSettings) {
+            NavigationStack {
+                CommunityAreaEditor(community: current, area: currentArea)
+            }
+        }
+    }
+
+    private func moveChannel(sourceID: String, targetID: String) -> Bool {
+        guard !isReordering,
+              let sourceIndex = channels.firstIndex(where: { $0.id == sourceID }),
+              let targetIndex = channels.firstIndex(where: { $0.id == targetID }),
+              sourceIndex != targetIndex else { return false }
+        isReordering = true
+        let destination = targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
+        Task {
+            _ = await model.reorderCommunityChannels(
+                communityID: current.id,
+                areaID: area.id,
+                from: IndexSet(integer: sourceIndex),
+                to: destination
+            )
+            isReordering = false
+        }
+        return true
     }
 }
 
@@ -2177,7 +2450,6 @@ private struct CommunityAreaEditor: View {
     let community: Community
     let area: CommunityAreaInfo
     @State private var title: String
-    @State private var order: Int
     @State private var confirmingDelete = false
     @State private var isSaving = false
 
@@ -2185,14 +2457,12 @@ private struct CommunityAreaEditor: View {
         self.community = community
         self.area = area
         _title = State(initialValue: area.title)
-        _order = State(initialValue: area.order)
     }
 
     var body: some View {
         Form {
             Section("Area") {
                 TextField("Name", text: $title)
-                Stepper("Position \(order + 1)", value: $order, in: 0...max(0, community.areaInfos.count - 1))
             }
             Section {
                 Button("Delete Area", role: .destructive) { confirmingDelete = true }
@@ -2214,7 +2484,7 @@ private struct CommunityAreaEditor: View {
                             communityID: community.id,
                             areaID: area.id,
                             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                            order: order
+                            order: area.order
                         ) { dismiss() }
                         isSaving = false
                     }
@@ -2245,7 +2515,6 @@ private struct CommunityChannelEditor: View {
     @State private var emoji: String
     @State private var url: String
     @State private var areaID: String?
-    @State private var order: Int
     @State private var access: [String: Set<String>]
     @State private var isSaving = false
     @State private var confirmingDelete = false
@@ -2257,19 +2526,15 @@ private struct CommunityChannelEditor: View {
         ("CHANNEL_MODERATE", "Can moderate"),
     ]
 
-    init(community: Community, channel: Channel?) {
+    init(community: Community, channel: Channel?, initialAreaID: String? = nil) {
         self.community = community
         self.channel = channel
-        let initialAreaID = channel?.areaId ?? community.areaInfos.first?.id
+        let initialAreaID = channel?.areaId ?? initialAreaID ?? community.areaInfos.first?.id
         _title = State(initialValue: channel?.title ?? "")
         _description = State(initialValue: channel?.description ?? "")
         _emoji = State(initialValue: channel?.emoji ?? "💬")
         _url = State(initialValue: channel?.url ?? "")
         _areaID = State(initialValue: initialAreaID)
-        _order = State(
-            initialValue: channel?.order
-                ?? ((community.channels.filter { $0.areaId == initialAreaID }.map(\.order).max() ?? -1) + 1)
-        )
         var initial = Dictionary(uniqueKeysWithValues: (channel?.roleAccess ?? []).map {
             ($0.roleId, Set($0.permissions))
         })
@@ -2300,11 +2565,6 @@ private struct CommunityChannelEditor: View {
                         Text(area.title).tag(String?.some(area.id))
                     }
                 }
-                Stepper(
-                    "Position \(order + 1)",
-                    value: $order,
-                    in: 0...max(0, community.channels.filter { $0.areaId == areaID }.count)
-                )
             }
 
             ForEach(community.roleInfos) { role in
@@ -2368,6 +2628,12 @@ private struct CommunityChannelEditor: View {
                     roleTitle: role.title,
                     permissions: Array(access[role.id, default: []]).sorted()
                 )
+            }
+            let order: Int
+            if let channel, channel.areaId == areaID {
+                order = channel.order
+            } else {
+                order = (community.channels.filter { $0.areaId == areaID }.map(\.order).max() ?? -1) + 1
             }
             let saved = await model.saveCommunityChannel(
                 communityID: community.id,
@@ -3182,10 +3448,14 @@ private struct CommunityEventComposer: View {
 
     private var canSave: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && start > Date()
+            && title.count <= 100
+            && details.count <= 2_000
+            && start > Date().addingTimeInterval(30)
             && end > start
             && end.timeIntervalSince(start) <= 8 * 60 * 60
             && validExternalURL
+            && externalURL.count <= 200
+            && location.count <= 200
             && !rolePermissions.isEmpty
             && !isSaving
     }
@@ -3195,8 +3465,10 @@ private struct CommunityEventComposer: View {
             Form {
                 Section("Event") {
                     TextField("Title", text: $title)
+                        .onChange(of: title) { _, value in title = String(value.prefix(100)) }
                     TextField("Description", text: $details, axis: .vertical)
                         .lineLimit(3...10)
+                        .onChange(of: details) { _, value in details = String(value.prefix(2_000)) }
                     Picker("Type", selection: $type) {
                         Text("External event").tag(CommunityEventType.external)
                         Text("Reminder").tag(CommunityEventType.reminder)
@@ -3205,13 +3477,20 @@ private struct CommunityEventComposer: View {
                 Section("Schedule") {
                     DatePicker("Starts", selection: $start, in: Date()...)
                     DatePicker("Ends", selection: $end, in: start...)
+                    Text("Events must start at least one minute from now.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if type == .external {
                     Section("Place") {
                         TextField("https://…", text: $externalURL)
                             .textInputAutocapitalization(.never)
                             .keyboardType(.URL)
+                            .onChange(of: externalURL) { _, value in
+                                externalURL = String(value.prefix(200))
+                            }
                         TextField("Location (optional)", text: $location)
+                            .onChange(of: location) { _, value in location = String(value.prefix(200)) }
                     }
                 }
                 Section("Banner") {
@@ -3842,8 +4121,7 @@ private struct ChannelListView: View {
                     Button("Notification settings", systemImage: "bell.badge") {
                         showNotificationSettings = true
                     }
-                    if !community.managementPermissions.isEmpty
-                        || community.creatorId == model.store.ownUser?.id {
+                    if community.isAdmin {
                         Button("Community settings", systemImage: "gearshape") {
                             showCommunitySettings = true
                         }
@@ -3963,8 +4241,9 @@ private struct CommunityNotificationSettingsView: View {
 }
 
 private struct ChatListView: View {
+    @EnvironmentObject private var model: AppModel
     let chats: [Chat]
-    let ownUserID: String?
+    @ObservedObject var store: SyncStore
     let selectedChatID: String?
     let select: (String) -> Void
 
@@ -3980,9 +4259,22 @@ private struct ChatListView: View {
                 List(chats) { chat in
                     Button { select(chat.id) } label: {
                         HStack(spacing: 12) {
-                            Avatar(name: chat.displayTitle(excluding: ownUserID), small: true)
+                            Avatar(
+                                name: chat.displayTitle(
+                                    excluding: store.ownUser?.id,
+                                    users: store.users
+                                ),
+                                url: chat.primaryParticipant(
+                                    excluding: store.ownUser?.id,
+                                    users: store.users
+                                )?.imageID.flatMap { model.attachmentURLs[$0] },
+                                small: true
+                            )
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(chat.displayTitle(excluding: ownUserID))
+                                Text(chat.displayTitle(
+                                    excluding: store.ownUser?.id,
+                                    users: store.users
+                                ))
                                     .fontWeight(.semibold)
                                 Text(chat.lastMessage?.body.plainText ?? "No messages yet")
                                     .font(.caption)
@@ -4007,6 +4299,9 @@ private struct ChatListView: View {
             }
         }
         .navigationTitle("Messages")
+        .task(id: chats.flatMap(\.userIds).sorted().joined(separator: ",")) {
+            await model.loadChatMembers(chats: chats)
+        }
     }
 }
 
@@ -6221,9 +6516,23 @@ private struct MarkdownArticleText: View {
 }
 
 private extension Chat {
-    func displayTitle(excluding ownUserID: String?) -> String {
+    func primaryParticipant(
+        excluding ownUserID: String?,
+        users: [String: UserProfile]
+    ) -> UserProfile? {
+        userIds.lazy
+            .filter { $0 != ownUserID }
+            .compactMap { users[$0] }
+            .first
+    }
+
+    func displayTitle(
+        excluding ownUserID: String?,
+        users: [String: UserProfile]
+    ) -> String {
         let others = userIds.filter { $0 != ownUserID }
         guard !others.isEmpty else { return "Direct message" }
-        return others.map { "Member \($0.prefix(4))" }.joined(separator: ", ")
+        return others.map { users[$0]?.displayName ?? "Member \($0.prefix(4))" }
+            .joined(separator: ", ")
     }
 }

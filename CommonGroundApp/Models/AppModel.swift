@@ -109,6 +109,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var communityPendingApprovals: [String: [CommunityPendingApproval]] = [:]
     @Published private(set) var communityNewsletterHistory: [String: [CommunityNewsletterEntry]] = [:]
     @Published private(set) var appStorePlugins: [AppStorePlugin] = []
+    @Published private(set) var isLoadingAppStore = false
+    private var appStoreRequestID: UUID?
     @Published private(set) var communityEvents: [String: [CommunityEvent]] = [:]
     @Published private(set) var myEvents: [CommunityEvent] = []
     @Published private(set) var linkPreviews: [String: URLPreview] = [:]
@@ -196,7 +198,9 @@ final class AppModel: ObservableObject {
             )
             store.hydrate(from: session.response)
             saveCachedResponse(session.response, for: client.instance)
-            await hydrateUsers(ids: [session.response.ownData.id])
+            await hydrateUsers(
+                ids: [session.response.ownData.id] + session.response.chats.flatMap(\.userIds)
+            )
             await refreshCommunityPresentation(
                 communityIDs: session.response.communities.map(\.id)
             )
@@ -614,11 +618,16 @@ final class AppModel: ObservableObject {
             if let imageData {
                 let upload = try await client.files.uploadImage(
                     imageData,
-                    type: .articleImage,
-                    communityID: community.id
+                    type: .articleImage
                 )
                 imageID = upload.largeImageId ?? upload.imageId
             }
+            guard start > Date().addingTimeInterval(30) else {
+                errorMessage = "Choose a start time at least a minute from now."
+                return false
+            }
+            let scheduleFormatter = ISO8601DateFormatter()
+            scheduleFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let saved: CommunityEvent
             if let event {
                 saved = try await client.communities.updateEvent(
@@ -628,7 +637,7 @@ final class AppModel: ObservableObject {
                     description: description.trimmingCharacters(in: .whitespacesAndNewlines),
                     duration: duration,
                     imageID: imageID,
-                    scheduledAt: ISO8601DateFormatter().string(from: start),
+                    scheduledAt: scheduleFormatter.string(from: start),
                     rolePermissions: permissions,
                     externalURL: externalURL,
                     location: location
@@ -641,7 +650,7 @@ final class AppModel: ObservableObject {
                     description: description.trimmingCharacters(in: .whitespacesAndNewlines),
                     duration: duration,
                     imageID: imageID,
-                    scheduledAt: ISO8601DateFormatter().string(from: start),
+                    scheduledAt: scheduleFormatter.string(from: start),
                     rolePermissions: permissions,
                     externalURL: externalURL,
                     location: location
@@ -1053,6 +1062,10 @@ final class AppModel: ObservableObject {
 
     func loadChatMembers(chat: Chat) async {
         await refreshUsers(ids: chat.userIds)
+    }
+
+    func loadChatMembers(chats: [Chat]) async {
+        await refreshUsers(ids: chats.flatMap(\.userIds))
     }
 
     func discoverCommunities(query: String = "") async {
@@ -1724,10 +1737,19 @@ final class AppModel: ObservableObject {
 
     func loadAppStorePlugins(query: String = "") async {
         guard let client else { return }
+        let requestID = UUID()
+        appStoreRequestID = requestID
+        isLoadingAppStore = true
+        defer {
+            if appStoreRequestID == requestID { isLoadingAppStore = false }
+        }
         do {
-            appStorePlugins = try await client.plugins.appStore(
+            let plugins = try await client.plugins.appStore(
                 query: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : query
             )
+            guard appStoreRequestID == requestID else { return }
+            appStorePlugins = plugins
+            await loadAttachmentURLs(objectIDs: plugins.compactMap(\.imageId))
         } catch is CancellationError {
             return
         } catch {
@@ -2380,7 +2402,11 @@ final class AppModel: ObservableObject {
             offlineDatabase = nil
         }
         store.hydrate(from: session.response)
-        if !offline { await hydrateUsers(ids: [session.response.ownData.id]) }
+        if !offline {
+            await hydrateUsers(
+                ids: [session.response.ownData.id] + session.response.chats.flatMap(\.userIds)
+            )
+        }
         UserDefaults.standard.set(session.deviceId, forKey: Keys.deviceID(client.instance))
         saveCachedResponse(session.response, for: client.instance)
         let communityIDs = Set(session.response.communities.map(\.id))

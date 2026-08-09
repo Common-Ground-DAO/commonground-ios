@@ -1110,6 +1110,28 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(result.imageId, "sidebar-image")
     }
 
+    func testArticleImageUploadOmitsCommunityID() async throws {
+        MockURLProtocol.handler = { request in
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let string = String(decoding: body, as: UTF8.self)
+            XCTAssertTrue(string.contains("articleImage"))
+            XCTAssertFalse(string.contains("communityId"))
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"imageId":"event-image","largeImageId":"event-image-large"}"#
+            )
+        }
+        let api = FileAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let result = try await api.uploadImage(Data([0x01]), type: .articleImage)
+        XCTAssertEqual(result.largeImageId, "event-image-large")
+    }
+
     func testMessageLoadTreatsNullReactionsAsEmpty() async throws {
         MockURLProtocol.handler = { request in
             let response = #"{"status":"OK","data":[{"id":"11111111-1111-1111-1111-111111111111","creatorId":"22222222-2222-2222-2222-222222222222","channelId":"33333333-3333-3333-3333-333333333333","body":{"version":"1","content":[{"type":"text","value":"legacy"}]},"attachments":[],"editedAt":null,"createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z","reactions":null,"ownReaction":null,"parentMessageId":null}]}"#
@@ -1623,8 +1645,8 @@ final class CommonGroundKitTests: XCTestCase {
         try await loginClient.auth.logout()
     }
 
-    /// Login-only live probe for an existing account. Credentials are supplied
-    /// through the environment and are never stored in the repository.
+    /// Opt-in live integration probe for an existing account. Credentials are
+    /// supplied through the environment and are never stored in the repository.
     func testLiveExistingAccountPasswordLoginContract() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let email = environment["COMMON_GROUND_LIVE_EMAIL"],
@@ -1668,6 +1690,27 @@ final class CommonGroundKitTests: XCTestCase {
         let profiles = try await client.profiles.users(ids: [login.response.ownData.id])
         XCTAssertTrue(hits.contains(where: { $0.id == login.response.ownData.id }))
         XCTAssertEqual(profiles.first?.id, login.response.ownData.id)
+        for eventCommunity in login.response.communities.filter({
+            $0.canManageEvents && !$0.defaultEventRolePermissions.isEmpty
+        }) {
+            let event = try await client.communities.createEvent(
+                communityID: eventCommunity.id,
+                type: .external,
+                title: "iOS event contract probe",
+                description: "This disposable event verifies the deployed create contract.",
+                duration: 30,
+                imageID: nil,
+                scheduledAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(3_600)),
+                rolePermissions: eventCommunity.defaultEventRolePermissions,
+                externalURL: "https://example.org/commonground-ios-event-probe",
+                location: nil
+            )
+            XCTAssertEqual(event.communityId, eventCommunity.id)
+            try await client.communities.deleteEvent(
+                communityID: eventCommunity.id,
+                eventID: event.id
+            )
+        }
         print(
             "LIVE_AUTH_SELECTED community=\(selectedCommunity.title) " +
             "communityID=\(selectedCommunity.id) channel=\(selectedChannel.title) " +
