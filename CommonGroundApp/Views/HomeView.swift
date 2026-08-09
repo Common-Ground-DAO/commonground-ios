@@ -21,6 +21,7 @@ private enum SidebarItem: Hashable {
     case feed
     case discoverCommunities
     case appStore
+    case publicCommunity(String)
     case community(String)
 }
 
@@ -55,6 +56,8 @@ private struct HomeContent: View {
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var showAccount = false
     @State private var showCreateCommunity = false
+    @State private var publicCommunity: Community?
+    @State private var publicChannelID: String?
     @State private var notificationArticle: NotificationArticleRoute?
     @State private var notificationProfile: NotificationProfileRoute?
 
@@ -177,7 +180,7 @@ private struct HomeContent: View {
                 )
                 sidebarRow("Search", systemImage: "magnifyingglass", item: .search)
                 sidebarRow("Feed", systemImage: "rectangle.stack", item: .feed)
-                sidebarRow("Discover Communities", systemImage: "person.3.sequence", item: .discoverCommunities)
+                sidebarRow("Discover Communities", systemImage: "safari", item: .discoverCommunities)
                 sidebarRow("App Store", systemImage: "storefront", item: .appStore)
             }
 
@@ -299,9 +302,29 @@ private struct HomeContent: View {
         case .feed:
             FeedView(store: store)
         case .discoverCommunities:
-            CommunityDiscoveryView(store: store, openCommunity: openCommunity)
+            CommunityDiscoveryView(store: store) { communityID in
+                await openDiscoveredCommunity(communityID)
+            }
         case .appStore:
             RootAppStoreView(store: store)
+        case .publicCommunity(let id):
+            if let community = publicCommunity, community.id == id {
+                PublicCommunityChannelListView(
+                    community: community,
+                    selectedChannelID: publicChannelID,
+                    openHome: {
+                        publicChannelID = nil
+                        preferredCompactColumn = .detail
+                    },
+                    select: {
+                        publicChannelID = $0
+                        preferredCompactColumn = .detail
+                    },
+                    didJoin: { finishJoiningPublicCommunity(community.id) }
+                )
+            } else {
+                ProgressView("Opening community…")
+            }
         case .community(let id):
             if let community = store.communities[id] {
                 ChannelListView(
@@ -330,6 +353,23 @@ private struct HomeContent: View {
     @ViewBuilder
     private var detailColumn: some View {
         switch sidebarSelection ?? .overview {
+        case .publicCommunity(let communityID):
+            if let community = publicCommunity, community.id == communityID,
+               let channel = community.channels.first(where: { $0.channelId == publicChannelID }) {
+                ConversationView(
+                    context: .channel(channel),
+                    store: store,
+                    readOnly: !channel.publicCanWrite
+                )
+            } else if let community = publicCommunity, community.id == communityID {
+                CommunityHomeView(community: community, store: store)
+            } else {
+                ConversationPlaceholder(
+                    title: "Opening community",
+                    message: "Loading the public community experience.",
+                    systemImage: "safari"
+                )
+            }
         case .community(let communityID):
             if let channel = store.communities[communityID]?.channels.first(where: {
                 $0.channelId == model.selectedChannelID
@@ -388,7 +428,7 @@ private struct HomeContent: View {
             ConversationPlaceholder(
                 title: "Discover Communities",
                 message: "Search and filter public communities in the middle column.",
-                systemImage: "person.3.sequence"
+                systemImage: "safari"
             )
         case .appStore:
             ConversationPlaceholder(
@@ -413,6 +453,30 @@ private struct HomeContent: View {
         model.selectChannel(nil)
         sidebarSelection = .community(id)
         preferredCompactColumn = .content
+    }
+
+    @MainActor
+    private func openDiscoveredCommunity(_ id: String) async {
+        if store.communities[id] != nil {
+            openCommunity(id)
+            return
+        }
+        guard let community = await model.feedCommunityDetail(id: id) else { return }
+        publicCommunity = community
+        publicChannelID = nil
+        sidebarSelection = .publicCommunity(id)
+        preferredCompactColumn = .content
+    }
+
+    private func finishJoiningPublicCommunity(_ id: String) {
+        guard store.communities[id] != nil else { return }
+        let channelID = publicChannelID
+        publicCommunity = nil
+        publicChannelID = nil
+        model.selectCommunity(id)
+        model.selectChannel(channelID)
+        sidebarSelection = .community(id)
+        preferredCompactColumn = channelID == nil ? .content : .detail
     }
 
     private func openChannel(_ channelID: String, communityID: String) {
@@ -557,8 +621,6 @@ private struct EventsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                Text("Events")
-                    .font(.largeTitle.bold())
                 Text("Discover what is happening across this Common Ground instance.")
                     .foregroundStyle(.secondary)
 
@@ -570,12 +632,6 @@ private struct EventsView: View {
                 .pickerStyle(.segmented)
 
                 if mode == .discover {
-                    Picker("Event scope", selection: $scope) {
-                        ForEach(CommunityFeedScope.allCases, id: \.self) { option in
-                            Text(option.feedTitle).tag(option)
-                        }
-                    }
-                    .pickerStyle(.segmented)
                     SelectedTopicChips(topics: $topics)
                     discoverContent
                 } else {
@@ -590,12 +646,19 @@ private struct EventsView: View {
         .toolbar {
             if mode == .discover {
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showTopicPicker = true
+                    Menu {
+                        Picker("Scope", selection: $scope) {
+                            ForEach(CommunityFeedScope.allCases, id: \.self) { option in
+                                Text(option.feedTitle).tag(option)
+                            }
+                        }
+                        Button("Choose topics", systemImage: "number") {
+                            showTopicPicker = true
+                        }
                     } label: {
                         Label(
-                            topics.isEmpty ? "Topics" : "Topics (\(topics.count))",
-                            systemImage: topics.isEmpty
+                            "Filters",
+                            systemImage: topics.isEmpty && scope == .explore
                                 ? "line.3.horizontal.decrease.circle"
                                 : "line.3.horizontal.decrease.circle.fill"
                         )
@@ -770,13 +833,10 @@ private struct FeedView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Community Feed")
-                        .font(.largeTitle.bold())
-                    Text("Posts from communities across this Common Ground instance.")
-                        .foregroundStyle(.secondary)
-                }
+            LazyVStack(alignment: .leading, spacing: 8) {
+                Text("Posts from communities across this Common Ground instance.")
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
 
                 Picker("Feed scope", selection: $scope) {
                     ForEach(CommunityFeedScope.allCases, id: \.self) { option in
@@ -784,8 +844,10 @@ private struct FeedView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .padding(.horizontal, 20)
 
                 SelectedTopicChips(topics: $topics)
+                    .padding(.horizontal, 20)
 
                 if isInitiallyLoading {
                     ProgressView("Loading Feed…")
@@ -803,10 +865,11 @@ private struct FeedView: View {
                     articleContent
                 }
             }
-            .frame(maxWidth: 680, alignment: .leading)
-            .padding(20)
+            .frame(maxWidth: 720, alignment: .leading)
+            .padding(.vertical, 20)
             .frame(maxWidth: .infinity)
         }
+        .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("Feed")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -911,12 +974,11 @@ private struct FeedView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(16)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18)
-                    .stroke(Color.secondary.opacity(0.14), lineWidth: 0.5)
-            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(uiColor: .secondarySystemBackground))
+            .overlay(alignment: .bottom) { Divider() }
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("feed.article.\(item.id)")
@@ -1212,13 +1274,12 @@ private struct CommunityDiscoveryQuery: Hashable {
 private struct CommunityDiscoveryView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
-    let openCommunity: (String) -> Void
+    let openCommunity: (String) async -> Void
     @State private var query = ""
     @State private var selectedTags: Set<String> = []
-    @State private var joiningIDs: Set<String> = []
+    @State private var openingIDs: Set<String> = []
     @State private var showCreate = false
     @State private var showTagPicker = false
-    @State private var approvalCommunity: CommunitySummary?
     @State private var reportCommunity: CommunitySummary?
 
     private var discoveryQuery: CommunityDiscoveryQuery {
@@ -1241,7 +1302,7 @@ private struct CommunityDiscoveryView: View {
                 } else if model.communityResults.isEmpty {
                     ContentUnavailableView(
                         query.isEmpty && selectedTags.isEmpty ? "No public communities" : "No communities found",
-                        systemImage: "person.3.sequence",
+                        systemImage: "safari",
                         description: Text(
                             query.isEmpty && selectedTags.isEmpty
                                 ? "Create the first community on this instance."
@@ -1253,9 +1314,8 @@ private struct CommunityDiscoveryView: View {
                         CommunityDiscoveryRow(
                             community: community,
                             isJoined: store.communities[community.id] != nil,
-                            isJoining: joiningIDs.contains(community.id),
-                            open: { openCommunity(community.id) },
-                            join: { join(community) }
+                            isOpening: openingIDs.contains(community.id),
+                            open: { open(community.id) }
                         )
                         .contextMenu {
                             Button("Report community", systemImage: "exclamationmark.bubble", role: .destructive) {
@@ -1297,7 +1357,7 @@ private struct CommunityDiscoveryView: View {
         .sheet(isPresented: $showCreate) {
             CreateCommunityView { communityID in
                 showCreate = false
-                openCommunity(communityID)
+                Task { await openCommunity(communityID) }
             }
         }
         .sheet(isPresented: $showTagPicker) {
@@ -1312,30 +1372,14 @@ private struct CommunityDiscoveryView: View {
                 target: ReportTarget(type: .community, id: community.id, subject: community.title)
             )
         }
-        .alert("Join request submitted", isPresented: pendingAlert) {
-            Button("OK") { approvalCommunity = nil }
-        } message: {
-            Text("A community moderator needs to approve your request before its channels become available.")
-        }
     }
 
-    private var pendingAlert: Binding<Bool> {
-        Binding(
-            get: { approvalCommunity != nil },
-            set: { if !$0 { approvalCommunity = nil } }
-        )
-    }
-
-    private func join(_ community: CommunitySummary) {
-        joiningIDs.insert(community.id)
+    private func open(_ communityID: String) {
+        guard !openingIDs.contains(communityID) else { return }
+        openingIDs.insert(communityID)
         Task {
-            let outcome = await model.joinCommunity(id: community.id)
-            joiningIDs.remove(community.id)
-            switch outcome {
-            case .joined: openCommunity(community.id)
-            case .pending: approvalCommunity = community
-            case .failed: break
-            }
+            await openCommunity(communityID)
+            openingIDs.remove(communityID)
         }
     }
 }
@@ -1344,40 +1388,50 @@ private struct CommunityDiscoveryRow: View {
     @EnvironmentObject private var model: AppModel
     let community: CommunitySummary
     let isJoined: Bool
-    let isJoining: Bool
+    let isOpening: Bool
     let open: () -> Void
-    let join: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            CommunityMark(
-                name: community.title,
-                url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
-            )
-            VStack(alignment: .leading, spacing: 4) {
-                Text(community.title).fontWeight(.semibold)
-                if let description = community.shortDescription, !description.isEmpty {
-                    Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-                HStack(spacing: 8) {
-                    Label("\(community.memberCount)", systemImage: "person.2")
-                    if !community.tags.isEmpty {
-                        Text(community.tags.prefix(3).map { "#\($0)" }.joined(separator: " "))
+        Button(action: open) {
+            HStack(spacing: 12) {
+                CommunityMark(
+                    name: community.title,
+                    url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                )
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(community.title).fontWeight(.semibold).foregroundStyle(.primary)
+                    if let description = community.shortDescription, !description.isEmpty {
+                        Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
+                    HStack(spacing: 8) {
+                        Label("\(community.memberCount)", systemImage: "person.2")
+                        if !community.tags.isEmpty {
+                            Text(community.tags.prefix(3).map { "#\($0)" }.joined(separator: " "))
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                Spacer()
+                if isOpening {
+                    ProgressView().controlSize(.small)
+                } else {
+                    if isJoined {
+                        Text("Joined")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                }
             }
-            Spacer()
-            if isJoining {
-                ProgressView().controlSize(.small)
-            } else if isJoined {
-                Button("Open", action: open).buttonStyle(.bordered)
-            } else {
-                Button("Join", action: join).buttonStyle(.borderedProminent)
-            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(isOpening)
         .padding(.vertical, 4)
+        .accessibilityIdentifier(
+            "community.discovery.\(isJoined ? "joined" : "public").\(community.id)"
+        )
     }
 }
 
@@ -3647,7 +3701,6 @@ private struct CommunityHomeView: View {
                     )
                         .scaleEffect(1.35, anchor: .leading)
                         .padding(.bottom, 8)
-                    Text(community.title).font(.largeTitle.bold())
                     Text("\(community.memberCount) members · \(community.channels.count) channels")
                         .foregroundStyle(.secondary)
                 }
@@ -4645,6 +4698,128 @@ private struct ArticleCommentRow: View {
     }
 }
 
+private struct PublicCommunityChannelListView: View {
+    @EnvironmentObject private var model: AppModel
+    let community: Community
+    let selectedChannelID: String?
+    let openHome: () -> Void
+    let select: (String) -> Void
+    let didJoin: () -> Void
+    @State private var isJoining = false
+    @State private var joinRequestPending = false
+    @State private var reportTarget: ReportTarget?
+
+    var body: some View {
+        List {
+            if let imageID = community.logoLargeId,
+               let url = model.attachmentURLs[imageID] {
+                Section {
+                    CommunityFeatureImage(url: url, height: 150)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
+            }
+
+            Section {
+                Button {
+                    join()
+                } label: {
+                    HStack {
+                        Label("Join community", systemImage: "person.badge.plus")
+                        Spacer()
+                        if isJoining { ProgressView().controlSize(.small) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .disabled(isJoining)
+                .foregroundStyle(AppTheme.accent)
+                .fontWeight(.semibold)
+            } footer: {
+                Text("You are viewing this community with its public permissions.")
+            }
+
+            Section {
+                Button(action: openHome) {
+                    HStack {
+                        Label("Community Home", systemImage: "newspaper")
+                        Spacer()
+                        if selectedChannelID == nil {
+                            Image(systemName: "checkmark").foregroundStyle(AppTheme.accent)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+
+            Section("Public channels") {
+                ForEach(community.channels.sorted(by: { $0.order < $1.order })) { channel in
+                    Button {
+                        if channel.publicCanRead { select(channel.channelId) }
+                    } label: {
+                        HStack {
+                            Label(channel.title, systemImage: "number")
+                            Spacer()
+                            if !channel.publicCanRead {
+                                Image(systemName: "lock").foregroundStyle(.tertiary)
+                            } else if selectedChannelID == channel.channelId {
+                                Image(systemName: "checkmark").foregroundStyle(AppTheme.accent)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!channel.publicCanRead)
+                }
+            }
+        }
+        .navigationTitle(community.title)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    if let shareURL = model.communityShareURL(community) {
+                        ShareLink(
+                            item: shareURL,
+                            subject: Text(community.title),
+                            message: Text("Explore \(community.title) on Common Ground")
+                        ) {
+                            Label("Share community", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    Button("Report community", systemImage: "exclamationmark.bubble") {
+                        reportTarget = ReportTarget(
+                            type: .community,
+                            id: community.id,
+                            subject: community.title
+                        )
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
+        .alert("Join request submitted", isPresented: $joinRequestPending) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("A community moderator needs to approve your request before member-only areas become available.")
+        }
+        .sheet(item: $reportTarget) { ReportSheet(target: $0) }
+    }
+
+    private func join() {
+        guard !isJoining else { return }
+        isJoining = true
+        Task {
+            let outcome = await model.joinCommunity(id: community.id)
+            isJoining = false
+            switch outcome {
+            case .joined: didJoin()
+            case .pending: joinRequestPending = true
+            case .failed: break
+            }
+        }
+    }
+}
+
 private struct ChannelListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showLeaveConfirmation = false
@@ -5387,10 +5562,25 @@ private enum ConversationContext {
     }
 }
 
+private extension Channel {
+    var publicCanRead: Bool {
+        roleAccess.contains {
+            $0.roleTitle == "Public" && $0.permissions.contains("CHANNEL_READ")
+        }
+    }
+
+    var publicCanWrite: Bool {
+        roleAccess.contains {
+            $0.roleTitle == "Public" && $0.permissions.contains("CHANNEL_WRITE")
+        }
+    }
+}
+
 private struct ConversationView: View {
     @EnvironmentObject private var model: AppModel
     let context: ConversationContext
     @ObservedObject var store: SyncStore
+    var readOnly = false
     @State private var reportTarget: ReportTarget?
     @State private var moderationMember: ChannelMemberEntry?
     @State private var selectedPhoto: PhotosPickerItem?
@@ -5755,7 +5945,14 @@ private struct ConversationView: View {
             }
 
             Divider()
-            VStack(spacing: 8) {
+            if readOnly {
+                Label("This channel is read-only for public visitors.", systemImage: "eye")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(14)
+            } else {
+                VStack(spacing: 8) {
                 if let editing = model.editingMessage {
                     ComposerContextBanner(
                         title: "Editing message",
@@ -5832,10 +6029,11 @@ private struct ConversationView: View {
                     )
                     .accessibilityLabel(model.editingMessage == nil ? "Send message" : "Save edit")
                 }
+                }
+                .frame(maxWidth: 760)
+                .padding(12)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 760)
-            .padding(12)
-            .frame(maxWidth: .infinity)
         }
     }
 

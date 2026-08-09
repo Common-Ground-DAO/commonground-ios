@@ -25,7 +25,7 @@ The first protocol spine is implemented end-to-end:
 - public community discovery/create/join/leave and community, user, and message reporting are API-backed;
 - the social-style Feed presents paginated community posts with Explore/My communities and topic filters;
 - Events combines global upcoming-event discovery with an attending history, while Discover Communities
-  provides a dedicated searchable, tag-filtered public-community browser;
+  provides a dedicated searchable, tag-filtered browser where Public-role content is visible before joining;
 - replies, structured mentions, reactions, editing/deletion, image upload, and signed attachment rendering are native messaging features;
 - Spark balances and non-refundable community contributions are native, alongside configurable community bot policy;
 - account-scoped SQLite persistence provides offline launch, cached communities/chats/messages/users/notifications,

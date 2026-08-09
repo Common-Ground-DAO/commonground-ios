@@ -30,7 +30,8 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
   Native calls and broadcasts deliberately remain in the calls workstream.
 - The social-style global Feed presents community posts with deterministic pagination, Explore/My
   communities scope, consistent community-topic filters, and batch identity hydration. Public community
-  discovery is a dedicated searchable and tag-filtered root destination.
+  discovery is a dedicated searchable and tag-filtered root destination; non-members can browse content
+  through each community's Public role and choose to join from inside the community.
 - Community apps have a native store/install surface and an isolated, non-persistent WebKit runtime.
   The bridge validates plugin identity/origin, forwards signed backend requests, rate-limits calls,
   prompts for declared sensitive permissions, gates camera/microphone, and routes safe internal links.

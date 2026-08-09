@@ -63,7 +63,7 @@ final class CommonGroundAppUITests: XCTestCase {
             throw XCTSkip("Requires an authenticated simulator")
         }
         feed.tap()
-        XCTAssertTrue(app.staticTexts["Community Feed"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.segmentedControls.buttons["Explore"].exists)
 
         let firstArticle = app.descendants(matching: .any)
@@ -77,6 +77,7 @@ final class CommonGroundAppUITests: XCTestCase {
         XCTAssertTrue(events.waitForExistence(timeout: 5))
         events.tap()
         XCTAssertTrue(app.segmentedControls.buttons["Upcoming"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Filters"].exists)
         let firstEvent = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'events.event.'"))
             .firstMatch
@@ -89,5 +90,18 @@ final class CommonGroundAppUITests: XCTestCase {
         discover.tap()
         XCTAssertTrue(app.searchFields["Community name or tag"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Tags"].exists)
+        let firstCommunity = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'community.discovery.'"))
+            .firstMatch
+        XCTAssertTrue(firstCommunity.waitForExistence(timeout: 10))
+
+        let publicCommunity = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'community.discovery.public.'"))
+            .firstMatch
+        if publicCommunity.waitForExistence(timeout: 5) {
+            publicCommunity.tap()
+            XCTAssertTrue(app.buttons["Join community"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.buttons["Community Home"].exists)
+        }
     }
 }
