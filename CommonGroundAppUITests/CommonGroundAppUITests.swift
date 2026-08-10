@@ -66,6 +66,16 @@ final class CommonGroundAppUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Filters"].exists)
 
+        let composerPrompt = app.buttons["feed.composer.prompt"]
+        XCTAssertTrue(composerPrompt.waitForExistence(timeout: 5))
+        composerPrompt.tap()
+        XCTAssertTrue(app.navigationBars["Create Post"].waitForExistence(timeout: 5))
+        let publishPost = app.buttons["feed.composer.publish"]
+        XCTAssertTrue(publishPost.exists)
+        XCTAssertFalse(publishPost.isEnabled)
+        app.buttons["feed.composer.cancel"].tap()
+        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 5))
+
         let firstPost = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.post.'"))
             .firstMatch

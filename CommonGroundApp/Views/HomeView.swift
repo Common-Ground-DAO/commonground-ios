@@ -840,6 +840,7 @@ private struct FeedView: View {
     @State private var topics: Set<String> = []
     @State private var verification: FeedVerification = .both
     @State private var showTopicPicker = false
+    @State private var showPostComposer = false
     @State private var selectedPost: FeedPost?
     @State private var selectedProfile: NotificationProfileRoute?
     @State private var selectedCommunity: Community?
@@ -858,9 +859,23 @@ private struct FeedView: View {
         model.feedPosts.isEmpty && model.isLoadingFeedPosts
     }
 
+    private var publishingCommunities: [Community] {
+        store.communities.values
+            .filter(\.canManageArticles)
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
+                if let ownUser = store.ownUser {
+                    FeedPostComposerPrompt(
+                        name: ownUser.displayName,
+                        imageURL: ownUserImageID.flatMap { model.attachmentURLs[$0] }
+                    ) {
+                        showPostComposer = true
+                    }
+                }
                 if isInitiallyLoading {
                     ProgressView("Loading Feed…")
                         .frame(maxWidth: .infinity)
@@ -936,6 +951,15 @@ private struct FeedView: View {
                 footer: "Selecting several topics matches posts tagged with any of them."
             ) { topics = $0 }
         }
+        .sheet(isPresented: $showPostComposer) {
+            FeedPostComposer(
+                store: store,
+                communities: publishingCommunities
+            ) {
+                showPostComposer = false
+                Task { await load() }
+            }
+        }
         .navigationDestination(isPresented: postDestinationIsPresented) {
             if let post = selectedPost {
                 ArticleReaderView(
@@ -978,6 +1002,12 @@ private struct FeedView: View {
             get: { selectedPost != nil },
             set: { if !$0 { selectedPost = nil } }
         )
+    }
+
+    private var ownUserImageID: String? {
+        guard let ownUser = store.ownUser else { return nil }
+        return ownUser.accounts.first(where: { $0.type == ownUser.displayAccount })?.imageId
+            ?? ownUser.accounts.first?.imageId
     }
 
     @ViewBuilder
@@ -1063,6 +1093,205 @@ private struct FeedView: View {
             Task {
                 selectedCommunity = await model.feedCommunityDetail(id: post.actor.id)
                 isLoadingCommunity = false
+            }
+        }
+    }
+}
+
+private enum FeedPostingIdentity: Hashable {
+    case user
+    case community(String)
+}
+
+private struct FeedPostComposerPrompt: View {
+    let name: String
+    let imageURL: URL?
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 12) {
+                Avatar(name: name, url: imageURL)
+                    .frame(width: 44, height: 44)
+                Text("Start a post")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(
+                        Color(uiColor: .secondarySystemBackground),
+                        in: Capsule()
+                    )
+            }
+            .padding(14)
+            .background(Color(uiColor: .systemBackground))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("feed.composer.prompt")
+    }
+}
+
+private struct FeedPostComposer: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: SyncStore
+    let communities: [Community]
+    let published: () -> Void
+    @State private var identity: FeedPostingIdentity = .user
+    @State private var bodyText = ""
+    @State private var isPublishing = false
+    @FocusState private var bodyFocused: Bool
+
+    private var trimmedBody: String {
+        bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var selectedCommunity: Community? {
+        guard case .community(let id) = identity else { return nil }
+        return communities.first { $0.id == id }
+    }
+
+    private var ownUserImageID: String? {
+        guard let ownUser = store.ownUser else { return nil }
+        return ownUser.accounts.first(where: { $0.type == ownUser.displayAccount })?.imageId
+            ?? ownUser.accounts.first?.imageId
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Menu {
+                    Picker("Post as", selection: $identity) {
+                        Text(store.ownUser?.displayName ?? "My profile")
+                            .tag(FeedPostingIdentity.user)
+                        ForEach(communities) { community in
+                            Text(community.title)
+                                .tag(FeedPostingIdentity.community(community.id))
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 11) {
+                        postingMark
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Post as")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(postingName)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+                        Spacer()
+                        Image(systemName: communities.isEmpty ? "person" : "chevron.up.chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(communities.isEmpty)
+
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $bodyText)
+                        .focused($bodyFocused)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                    if bodyText.isEmpty {
+                        Text("What do you want to share?")
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(minHeight: 220)
+
+                Label("Markdown formatting is supported.", systemImage: "textformat")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .navigationTitle("Create Post")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isPublishing)
+                        .accessibilityIdentifier("feed.composer.cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Post") { publish() }
+                        .fontWeight(.semibold)
+                        .disabled(trimmedBody.isEmpty || isPublishing)
+                        .accessibilityIdentifier("feed.composer.publish")
+                }
+            }
+            .overlay {
+                if isPublishing {
+                    ProgressView()
+                        .padding(18)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+            }
+            .interactiveDismissDisabled(isPublishing)
+            .task { bodyFocused = true }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    @ViewBuilder
+    private var postingMark: some View {
+        if let community = selectedCommunity {
+            CommunityMark(
+                name: community.title,
+                url: community.logoSmallId.flatMap { model.attachmentURLs[$0] },
+                size: 44
+            )
+        } else {
+            Avatar(
+                name: store.ownUser?.displayName ?? "My profile",
+                url: ownUserImageID.flatMap { model.attachmentURLs[$0] }
+            )
+            .frame(width: 44, height: 44)
+        }
+    }
+
+    private var postingName: String {
+        selectedCommunity?.title ?? store.ownUser?.displayName ?? "My profile"
+    }
+
+    private func publish() {
+        guard !trimmedBody.isEmpty else { return }
+        isPublishing = true
+        Task {
+            let succeeded: Bool
+            switch identity {
+            case .user:
+                succeeded = await model.createUserArticle(
+                    title: "",
+                    preview: "",
+                    text: trimmedBody,
+                    tags: [],
+                    publish: true
+                ) != nil
+            case .community(let communityID):
+                guard let community = communities.first(where: { $0.id == communityID }) else {
+                    isPublishing = false
+                    return
+                }
+                succeeded = await model.createCommunityArticle(
+                    community: community,
+                    title: "",
+                    preview: "",
+                    text: trimmedBody,
+                    tags: [],
+                    publish: true
+                ) != nil
+            }
+            isPublishing = false
+            if succeeded {
+                published()
+                dismiss()
             }
         }
     }
@@ -4733,8 +4962,9 @@ private struct ArticleReaderView: View {
                             }
                             .clipShape(RoundedRectangle(cornerRadius: 16))
                         }
-                        Text(article.title)
-                            .font(presentation == .pushedPost ? .body.bold() : .largeTitle.bold())
+                        if presentation == .sheet {
+                            Text(article.title).font(.largeTitle.bold())
+                        }
                         if let creator = store.users[article.creatorId] {
                             HStack {
                                 Avatar(
@@ -4746,9 +4976,11 @@ private struct ArticleReaderView: View {
                                 Text(creator.displayName).fontWeight(.semibold)
                             }
                         }
-                        if let preview = article.previewText, !preview.isEmpty {
+                        if presentation == .sheet,
+                           let preview = article.previewText,
+                           !preview.isEmpty {
                             Text(preview)
-                                .font(presentation == .pushedPost ? .body : .title3)
+                                .font(.title3)
                                 .foregroundStyle(.secondary)
                         }
                         Divider()
