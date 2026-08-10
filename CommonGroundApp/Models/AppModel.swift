@@ -115,13 +115,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var myEvents: [CommunityEvent] = []
     @Published private(set) var isLoadingMyEvents = false
     @Published private(set) var canLoadMoreMyEvents = true
-    @Published private(set) var feedArticles: [CommunityArticlePreview] = []
+    @Published private(set) var feedPosts: [FeedPost] = []
     @Published private(set) var feedEvents: [CommunityEvent] = []
     @Published private(set) var feedCommunitySummaries: [String: CommunitySummary] = [:]
     @Published private(set) var feedCommunityDetails: [String: Community] = [:]
-    @Published private(set) var isLoadingFeedArticles = false
+    @Published private(set) var isLoadingFeedPosts = false
     @Published private(set) var isLoadingFeedEvents = false
-    @Published private(set) var canLoadMoreFeedArticles = true
+    @Published private(set) var canLoadMoreFeedPosts = true
     @Published private(set) var canLoadMoreFeedEvents = true
     @Published private(set) var linkPreviews: [String: URLPreview] = [:]
     @Published private(set) var gifResults: [GIFSearchResult] = []
@@ -158,15 +158,19 @@ final class AppModel: ObservableObject {
     private var myEventsLoadTask: Task<Void, Never>?
     private var myEventsLoadTaskID: UUID?
     private static let myEventsPageSize = 30
-    private var feedArticleCursor: (publishedBefore: String, beforeID: String)?
+    private var feedPostCursor: (publishedAt: String, postID: String)?
     private var feedEventCursor: (scheduledAfter: String, afterID: String)?
-    private var feedArticleRequestID: UUID?
+    private var feedPostRequestID: UUID?
     private var feedEventRequestID: UUID?
     private var feedLoadTask: Task<Void, Never>?
     private var feedLoadTaskID: UUID?
     private var feedLoadTaskKey: String?
-    private var feedScope: CommunityFeedScope = .explore
-    private var feedTopics: [String] = []
+    private var postFeedScope: PostFeedScope = .explore
+    private var postFeedActorTypes = FeedPostKind.allCases
+    private var postFeedTopics: [String] = []
+    private var postFeedVerification: FeedVerification = .both
+    private var eventFeedScope: CommunityFeedScope = .explore
+    private var eventFeedTopics: [String] = []
     private static let feedPageSize = 30
 
     var savedDeviceID: String? {
@@ -704,11 +708,22 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func loadFeed(scope: CommunityFeedScope, topics: Set<String>) async {
+    func loadPostFeed(
+        scope: PostFeedScope,
+        actorTypes: Set<FeedPostKind>,
+        topics: Set<String>,
+        verification: FeedVerification
+    ) async {
+        let normalizedActorTypes = actorTypes.sorted { $0.rawValue < $1.rawValue }
         let normalizedTopics = topics.sorted {
             $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
         }
-        let taskKey = Self.feedCacheKey(scope: scope, topics: normalizedTopics)
+        let taskKey = Self.postFeedCacheKey(
+            scope: scope,
+            actorTypes: normalizedActorTypes,
+            topics: normalizedTopics,
+            verification: verification
+        )
         if let task = feedLoadTask, feedLoadTaskKey == taskKey {
             await task.value
             return
@@ -721,7 +736,12 @@ final class AppModel: ObservableObject {
         let taskID = UUID()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.performFeedLoad(scope: scope, topics: normalizedTopics)
+            await self.performPostFeedLoad(
+                scope: scope,
+                actorTypes: normalizedActorTypes,
+                topics: normalizedTopics,
+                verification: verification
+            )
             guard self.feedLoadTaskID == taskID else { return }
             self.feedLoadTask = nil
             self.feedLoadTaskID = nil
@@ -733,45 +753,81 @@ final class AppModel: ObservableObject {
         await task.value
     }
 
-    private func performFeedLoad(scope: CommunityFeedScope, topics: [String]) async {
-        let queryChanged = feedScope != scope || feedTopics != topics
-        feedScope = scope
-        feedTopics = topics
-        feedArticleCursor = nil
-        feedEventCursor = nil
-        canLoadMoreFeedArticles = true
-        canLoadMoreFeedEvents = true
+    private func performPostFeedLoad(
+        scope: PostFeedScope,
+        actorTypes: [FeedPostKind],
+        topics: [String],
+        verification: FeedVerification
+    ) async {
+        let queryChanged = postFeedScope != scope
+            || postFeedActorTypes != actorTypes
+            || postFeedTopics != topics
+            || postFeedVerification != verification
+        postFeedScope = scope
+        postFeedActorTypes = actorTypes
+        postFeedTopics = topics
+        postFeedVerification = verification
+        feedPostCursor = nil
+        canLoadMoreFeedPosts = true
 
-        if queryChanged || (feedArticles.isEmpty && feedEvents.isEmpty) {
+        if queryChanged || feedPosts.isEmpty {
             if let offlineDatabase,
-               let cached = try? await offlineDatabase.feedSnapshot(scope: scope, topics: topics) {
-                feedArticles = cached.articles
-                feedEvents = cached.events
+               let cached = try? await offlineDatabase.postFeedSnapshot(
+                   scope: scope,
+                   actorTypes: actorTypes,
+                   topics: topics,
+                   verification: verification
+               ) {
+                feedPosts = cached.posts
             } else if queryChanged {
-                feedArticles = []
-                feedEvents = []
+                feedPosts = []
             }
         }
 
-        async let articles: Void = requestFeedArticles(
+        await requestFeedPosts(
             reset: true,
             scope: scope,
-            topics: topics
+            actorTypes: actorTypes,
+            topics: topics,
+            verification: verification
         )
-        async let events: Void = requestFeedEvents(
-            reset: true,
-            scope: scope,
-            topics: topics
-        )
-        _ = await (articles, events)
     }
 
-    func loadMoreFeedArticles() async {
-        await requestFeedArticles(reset: false, scope: feedScope, topics: feedTopics)
+    func loadMoreFeedPosts() async {
+        await requestFeedPosts(
+            reset: false,
+            scope: postFeedScope,
+            actorTypes: postFeedActorTypes,
+            topics: postFeedTopics,
+            verification: postFeedVerification
+        )
+    }
+
+    func loadEventFeed(scope: CommunityFeedScope, topics: Set<String>) async {
+        let normalizedTopics = topics.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        let queryChanged = eventFeedScope != scope || eventFeedTopics != normalizedTopics
+        eventFeedScope = scope
+        eventFeedTopics = normalizedTopics
+        feedEventCursor = nil
+        canLoadMoreFeedEvents = true
+        if queryChanged || feedEvents.isEmpty {
+            if let offlineDatabase,
+               let cached = try? await offlineDatabase.eventFeedSnapshot(
+                   scope: scope,
+                   topics: normalizedTopics
+               ) {
+                feedEvents = cached.events
+            } else if queryChanged {
+                feedEvents = []
+            }
+        }
+        await requestFeedEvents(reset: true, scope: scope, topics: normalizedTopics)
     }
 
     func loadMoreFeedEvents() async {
-        await requestFeedEvents(reset: false, scope: feedScope, topics: feedTopics)
+        await requestFeedEvents(reset: false, scope: eventFeedScope, topics: eventFeedTopics)
     }
 
     func feedCommunityDetail(id: String) async -> Community? {
@@ -789,78 +845,75 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func requestFeedArticles(
+    private func requestFeedPosts(
         reset: Bool,
-        scope: CommunityFeedScope,
-        topics: [String]
+        scope: PostFeedScope,
+        actorTypes: [FeedPostKind],
+        topics: [String],
+        verification: FeedVerification
     ) async {
         guard let client else { return }
-        guard reset || !isLoadingFeedArticles else { return }
+        guard reset || !isLoadingFeedPosts else { return }
         if !reset {
-            guard canLoadMoreFeedArticles, feedArticleCursor != nil else { return }
+            guard canLoadMoreFeedPosts, feedPostCursor != nil else { return }
         }
-        let cursor = reset ? nil : feedArticleCursor
+        let cursor = reset ? nil : feedPostCursor
         let requestID = UUID()
-        feedArticleRequestID = requestID
+        feedPostRequestID = requestID
         if reset {
-            feedArticleCursor = nil
-            canLoadMoreFeedArticles = true
+            feedPostCursor = nil
+            canLoadMoreFeedPosts = true
         }
-        isLoadingFeedArticles = true
-        contentLogger.info("Feed articles request started scope=\(scope.rawValue, privacy: .public) reset=\(reset) id=\(requestID.uuidString, privacy: .public)")
+        isLoadingFeedPosts = true
+        contentLogger.info("Feed posts request started scope=\(scope.rawValue, privacy: .public) reset=\(reset) id=\(requestID.uuidString, privacy: .public)")
         defer {
-            if feedArticleRequestID == requestID {
-                feedArticleRequestID = nil
-                isLoadingFeedArticles = false
+            if feedPostRequestID == requestID {
+                feedPostRequestID = nil
+                isLoadingFeedPosts = false
             }
         }
         do {
-            let page = try await client.articles.globalCommunityArticles(
+            let page = try await client.feed.posts(
                 scope: scope,
-                anyCommunityTopics: topics,
-                publishedBefore: cursor?.publishedBefore,
-                beforeID: cursor?.beforeID,
+                actorTypes: actorTypes,
+                topics: topics,
+                verification: verification,
+                beforePublishedAt: cursor?.publishedAt,
+                beforePostID: cursor?.postID,
                 limit: Self.feedPageSize
             )
-            contentLogger.info("Feed articles response count=\(page.count) id=\(requestID.uuidString, privacy: .public)")
-            guard feedArticleRequestID == requestID else {
-                contentLogger.notice("Feed articles response superseded id=\(requestID.uuidString, privacy: .public)")
+            contentLogger.info("Feed posts response count=\(page.count) id=\(requestID.uuidString, privacy: .public)")
+            guard feedPostRequestID == requestID else {
+                contentLogger.notice("Feed posts response superseded id=\(requestID.uuidString, privacy: .public)")
                 return
             }
-            let previousIDs = Set(feedArticles.map(\.id))
+            let previousIDs = Set(feedPosts.map(\.id))
             let uniquePage = page.filter { !previousIDs.contains($0.id) }
-            feedArticles = reset ? page : feedArticles + uniquePage
-            if let last = page.last, let published = last.communityArticle.published {
-                let nextCursor = (publishedBefore: published, beforeID: last.id)
-                let cursorAdvanced = cursor?.publishedBefore != nextCursor.publishedBefore
-                    || cursor?.beforeID != nextCursor.beforeID
-                feedArticleCursor = nextCursor
-                canLoadMoreFeedArticles = page.count == Self.feedPageSize
+            feedPosts = reset ? page : feedPosts + uniquePage
+            if let last = page.last {
+                let nextCursor = (publishedAt: last.publishedAt, postID: last.postId)
+                let cursorAdvanced = cursor?.publishedAt != nextCursor.publishedAt
+                    || cursor?.postID != nextCursor.postID
+                feedPostCursor = nextCursor
+                canLoadMoreFeedPosts = page.count == Self.feedPageSize
                     && (reset || (!uniquePage.isEmpty && cursorAdvanced))
             } else {
-                feedArticleCursor = nil
-                canLoadMoreFeedArticles = false
+                feedPostCursor = nil
+                canLoadMoreFeedPosts = false
             }
-            for item in page {
-                if let published = item.communityArticle.published {
-                    articlePublishedAt[item.id] = published
-                }
-                articleRolePermissions[item.id] = item.communityArticle.rolePermissions
-            }
-            await persistFeedSnapshot(scope: scope, topics: topics)
-            await hydrateFeedPresentation(
-                communityIDs: page.map(\.communityArticle.communityId),
-                userIDs: page.map(\.article.creatorId),
-                objectIDs: page.flatMap {
-                    [$0.article.thumbnailImageId, $0.article.headerImageId].compactMap { $0 }
-                }
+            await persistPostFeedSnapshot(
+                scope: scope,
+                actorTypes: actorTypes,
+                topics: topics,
+                verification: verification
             )
+            await loadAttachmentURLs(objectIDs: page.flatMap(\.mediaObjectIDs))
         } catch is CancellationError {
-            contentLogger.notice("Feed articles request cancelled id=\(requestID.uuidString, privacy: .public)")
+            contentLogger.notice("Feed posts request cancelled id=\(requestID.uuidString, privacy: .public)")
             return
         } catch {
-            guard feedArticleRequestID == requestID else { return }
-            contentLogger.error("Feed articles request failed id=\(requestID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            guard feedPostRequestID == requestID else { return }
+            contentLogger.error("Feed posts request failed id=\(requestID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             errorMessage = userMessage(for: error)
         }
     }
@@ -920,7 +973,7 @@ final class AppModel: ObservableObject {
                 communityEvents[event.communityId] = [event]
                     + (communityEvents[event.communityId] ?? []).filter { $0.id != event.id }
             }
-            await persistFeedSnapshot(scope: scope, topics: topics)
+            await persistEventFeedSnapshot(scope: scope, topics: topics)
             await hydrateFeedPresentation(
                 communityIDs: page.map(\.communityId),
                 userIDs: page.map(\.eventCreator) + page.flatMap(\.participantIds),
@@ -2794,36 +2847,67 @@ final class AppModel: ObservableObject {
         feedLoadTask = nil
         feedLoadTaskID = nil
         feedLoadTaskKey = nil
-        feedArticles = []
+        feedPosts = []
         feedEvents = []
         feedCommunitySummaries = [:]
         feedCommunityDetails = [:]
-        feedArticleCursor = nil
+        feedPostCursor = nil
         feedEventCursor = nil
-        feedArticleRequestID = nil
+        feedPostRequestID = nil
         feedEventRequestID = nil
-        canLoadMoreFeedArticles = true
+        canLoadMoreFeedPosts = true
         canLoadMoreFeedEvents = true
-        isLoadingFeedArticles = false
+        isLoadingFeedPosts = false
         isLoadingFeedEvents = false
-        feedScope = .explore
-        feedTopics = []
+        postFeedScope = .explore
+        postFeedActorTypes = FeedPostKind.allCases
+        postFeedTopics = []
+        postFeedVerification = .both
+        eventFeedScope = .explore
+        eventFeedTopics = []
     }
 
-    private func persistFeedSnapshot(scope: CommunityFeedScope, topics: [String]) async {
-        guard feedScope == scope, feedTopics == topics, let offlineDatabase else { return }
-        try? await offlineDatabase.saveFeedSnapshot(
-            OfflineFeedSnapshot(
+    private func persistPostFeedSnapshot(
+        scope: PostFeedScope,
+        actorTypes: [FeedPostKind],
+        topics: [String],
+        verification: FeedVerification
+    ) async {
+        guard postFeedScope == scope,
+              postFeedActorTypes == actorTypes,
+              postFeedTopics == topics,
+              postFeedVerification == verification,
+              let offlineDatabase else { return }
+        try? await offlineDatabase.savePostFeedSnapshot(
+            OfflinePostFeedSnapshot(
                 scope: scope,
+                actorTypes: actorTypes,
                 topics: topics,
-                articles: feedArticles,
-                events: feedEvents
+                verification: verification,
+                posts: feedPosts
             )
         )
     }
 
-    private static func feedCacheKey(scope: CommunityFeedScope, topics: [String]) -> String {
-        scope.rawValue + "\u{1F}" + topics.joined(separator: "\u{1E}")
+    private func persistEventFeedSnapshot(scope: CommunityFeedScope, topics: [String]) async {
+        guard eventFeedScope == scope, eventFeedTopics == topics, let offlineDatabase else { return }
+        try? await offlineDatabase.saveEventFeedSnapshot(
+            OfflineEventFeedSnapshot(scope: scope, topics: topics, events: feedEvents)
+        )
+    }
+
+    private static func postFeedCacheKey(
+        scope: PostFeedScope,
+        actorTypes: [FeedPostKind],
+        topics: [String],
+        verification: FeedVerification
+    ) -> String {
+        [
+            scope.rawValue,
+            actorTypes.map(\.rawValue).joined(separator: ","),
+            topics.joined(separator: "\u{1E}"),
+            verification.rawValue,
+        ].joined(separator: "\u{1F}")
     }
 
     private func didAuthenticate(_ session: AuthSession, offline: Bool = false) async {
@@ -2844,11 +2928,22 @@ final class AppModel: ObservableObject {
                         < (Self.parseISODate(rhs.scheduleDate) ?? .distantFuture)
                 }
             }
-            if let cachedFeed = try? await database.feedSnapshot(scope: .explore, topics: []) {
-                feedArticles = cachedFeed.articles
-                feedEvents = cachedFeed.events
-                feedScope = .explore
-                feedTopics = []
+            if let cachedFeed = try? await database.postFeedSnapshot(
+                scope: .explore,
+                actorTypes: FeedPostKind.allCases,
+                topics: [],
+                verification: .both
+            ) {
+                feedPosts = cachedFeed.posts
+                postFeedScope = .explore
+                postFeedActorTypes = FeedPostKind.allCases
+                postFeedTopics = []
+                postFeedVerification = .both
+            }
+            if let cachedEvents = try? await database.eventFeedSnapshot(scope: .explore, topics: []) {
+                feedEvents = cachedEvents.events
+                eventFeedScope = .explore
+                eventFeedTopics = []
             }
         } catch {
             // Persistence failure must not block an otherwise healthy session.

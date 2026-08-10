@@ -11,6 +11,7 @@ public final class CommonGroundClient: @unchecked Sendable {
     public let notifications: NotificationAPI
     public let profiles: ProfileAPI
     public let articles: ArticleAPI
+    public let feed: FeedAPI
     public let reports: ReportAPI
     public let files: FileAPI
     public let plugins: PluginAPI
@@ -30,6 +31,7 @@ public final class CommonGroundClient: @unchecked Sendable {
         self.notifications = NotificationAPI(transport: transport)
         self.profiles = ProfileAPI(transport: transport)
         self.articles = ArticleAPI(transport: transport)
+        self.feed = FeedAPI(transport: transport)
         self.reports = ReportAPI(transport: transport)
         self.files = FileAPI(transport: transport)
         self.plugins = PluginAPI(transport: transport)

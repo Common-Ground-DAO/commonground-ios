@@ -1098,26 +1098,26 @@ final class CommonGroundKitTests: XCTestCase {
             CommunityEvent.self,
             from: Data(#"{"id":"event-1","type":"external","communityId":"community-1","eventCreator":"user-1","url":"swift-night","title":"Swift Night","description":{"version":"2","content":[{"type":"text","value":"Talks"}]},"externalUrl":null,"location":"Berlin","scheduleDate":"2026-08-19T18:00:00.000Z","duration":90,"createdAt":"2026-08-08T18:00:00.000Z","deletedAt":null,"updatedAt":"2026-08-08T18:00:00.000Z","callId":null,"imageId":null,"rolePermissions":[],"participantIds":["user-1"],"participantCount":"1","isSelfAttending":true}"#.utf8)
         )
-        let article = try JSONDecoder().decode(
-            CommunityArticlePreview.self,
-            from: Data(#"{"communityArticle":{"communityId":"community-1","articleId":"article-1","url":"hello","published":"2026-08-08T18:00:00.000Z","updatedAt":"2026-08-08T18:00:00.000Z","rolePermissions":[],"sentAsNewsletter":null,"markAsNewsletter":false},"article":{"articleId":"article-1","title":"Hello","previewText":"Preview","thumbnailImageId":null,"headerImageId":null,"creatorId":"user-1","tags":["Swift"],"commentCount":"0","latestCommentTimestamp":null}}"#.utf8)
+        let post = try JSONDecoder().decode(
+            FeedPost.self,
+            from: Data(#"{"postId":"article-1","kind":"user","actor":{"id":"user-1","name":"Alice","imageId":null,"url":null},"creator":null,"publishedAt":"2026-08-08T18:00:00.000Z","editedAt":null,"bodyPreview":{"version":"2","content":[{"type":"text","value":"Hello"}]},"isTruncated":false,"media":[],"commentCount":0,"permalink":null,"viewer":{"canEdit":true,"canDelete":true,"canComment":true}}"#.utf8)
         )
 
         let database = try OfflineDatabase(fileURL: fileURL, scope: "test-account")
         try await database.replaceMyEvents([event])
-        try await database.saveFeedSnapshot(
-            OfflineFeedSnapshot(
+        try await database.savePostFeedSnapshot(
+            OfflinePostFeedSnapshot(
                 scope: .explore,
+                actorTypes: FeedPostKind.allCases,
                 topics: ["Swift"],
-                articles: [article],
-                events: [event]
+                verification: .both,
+                posts: [post]
             )
         )
-        try await database.saveFeedSnapshot(
-            OfflineFeedSnapshot(
+        try await database.saveEventFeedSnapshot(
+            OfflineEventFeedSnapshot(
                 scope: .myCommunities,
                 topics: [],
-                articles: [],
                 events: [event]
             )
         )
@@ -1125,13 +1125,21 @@ final class CommonGroundKitTests: XCTestCase {
         let reopened = try OfflineDatabase(fileURL: fileURL, scope: "test-account")
         let reopenedMyEvents = try await reopened.myEvents()
         XCTAssertEqual(reopenedMyEvents, [event])
-        let explore = try await reopened.feedSnapshot(scope: .explore, topics: ["Swift"])
-        XCTAssertEqual(explore?.articles, [article])
-        XCTAssertEqual(explore?.events, [event])
-        let following = try await reopened.feedSnapshot(scope: .myCommunities, topics: [])
-        XCTAssertEqual(following?.articles, [])
+        let explore = try await reopened.postFeedSnapshot(
+            scope: .explore,
+            actorTypes: FeedPostKind.allCases,
+            topics: ["Swift"],
+            verification: .both
+        )
+        XCTAssertEqual(explore?.posts, [post])
+        let following = try await reopened.eventFeedSnapshot(scope: .myCommunities, topics: [])
         XCTAssertEqual(following?.events, [event])
-        let missingSnapshot = try await reopened.feedSnapshot(scope: .explore, topics: [])
+        let missingSnapshot = try await reopened.postFeedSnapshot(
+            scope: .explore,
+            actorTypes: FeedPostKind.allCases,
+            topics: [],
+            verification: .both
+        )
         XCTAssertNil(missingSnapshot)
     }
 
@@ -1746,6 +1754,51 @@ final class CommonGroundKitTests: XCTestCase {
                 "/api/v2/Community/getCommunitiesById",
             ]
         )
+    }
+
+    func testUnifiedPostFeedEncodesFiltersCursorAndDecodesMixedActors() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/Feed/getPostList")
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(Self.bodyData(request))) as? [String: Any]
+            )
+            XCTAssertEqual(object["scope"] as? String, "following")
+            XCTAssertEqual(object["actorTypes"] as? [String], ["community", "user"])
+            XCTAssertEqual(object["topics"] as? [String], ["Swift", "iOS"])
+            XCTAssertEqual(object["verification"] as? String, "verified")
+            XCTAssertEqual(object["limit"] as? Int, 30)
+            let before = try XCTUnwrap(object["before"] as? [String: Any])
+            XCTAssertEqual(before["publishedAt"] as? String, "2026-08-10T18:00:00.000Z")
+            XCTAssertEqual(before["postId"] as? String, "11111111-1111-1111-1111-111111111111")
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":[{"postId":"22222222-2222-2222-2222-222222222222","kind":"community","actor":{"id":"33333333-3333-3333-3333-333333333333","name":"Swift Berlin","imageId":"small","url":"swift-berlin"},"creator":{"userId":"44444444-4444-4444-4444-444444444444","displayName":"Alice","imageId":"avatar"},"publishedAt":"2026-08-09T18:00:00.000Z","editedAt":null,"bodyPreview":{"version":"2","content":[{"type":"text","value":"Hello ","bold":true},{"type":"text","value":"world"}]},"isTruncated":true,"media":[{"type":"image","objectId":"image","largeObjectId":"large","caption":"A picture","size":"large","width":1200,"height":800,"posterImageId":null,"durationMs":null}],"commentCount":4,"permalink":null,"viewer":{"canEdit":false,"canDelete":false,"canComment":true}}]}"#
+            )
+        }
+
+        let api = FeedAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+        let posts = try await api.posts(
+            scope: .following,
+            actorTypes: [.community, .user],
+            topics: ["Swift", "iOS"],
+            verification: .verified,
+            beforePublishedAt: "2026-08-10T18:00:00.000Z",
+            beforePostID: "11111111-1111-1111-1111-111111111111",
+            limit: 40
+        )
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertEqual(posts[0].kind, .community)
+        XCTAssertEqual(posts[0].actor.name, "Swift Berlin")
+        XCTAssertEqual(posts[0].creator?.displayName, "Alice")
+        XCTAssertEqual(posts[0].media.first?.largeObjectId, "large")
+        XCTAssertEqual(posts[0].markdownSource, "**Hello **world")
+        XCTAssertTrue(posts[0].isTruncated)
     }
 
     func testPluginSignedBridgeContract() async throws {

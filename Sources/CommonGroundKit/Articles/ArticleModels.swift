@@ -51,33 +51,7 @@ public struct ArticleDetail: Decodable, Equatable, Sendable {
     public let content: JSONValue
     public let channelId: String
 
-    public var markdownSource: String {
-        guard case .object(let root) = content else { return "" }
-        if root["version"]?.stringValue == "1" { return root["text"]?.stringValue ?? "" }
-        guard case .array(let nodes) = root["content"] else { return "" }
-        return nodes.compactMap { node -> String? in
-            guard case .object(let value) = node else { return nil }
-            switch value["type"]?.stringValue {
-            case "newline": return "\n"
-            case "text": return value["value"]?.stringValue
-            case "link":
-                guard let label = value["value"]?.stringValue else { return nil }
-                let destination = label.hasPrefix("http") ? label : "https://\(label)"
-                return "[\(label)](<\(destination)>)"
-            case "richTextLink":
-                guard let label = value["value"]?.stringValue,
-                      let destination = value["url"]?.stringValue else { return nil }
-                return "[\(label)](<\(destination)>)"
-            case "header":
-                guard case .array(let parts) = value["value"] else { return nil }
-                return "## " + parts.compactMap { $0.objectValue?["value"]?.stringValue }.joined()
-            case "articleImage":
-                guard let caption = value["caption"]?.stringValue, !caption.isEmpty else { return nil }
-                return "*\(caption)*"
-            default: return nil
-            }
-        }.joined()
-    }
+    public var markdownSource: String { content.articleMarkdownSource }
 
     public var plainText: String { markdownSource }
 
@@ -105,6 +79,40 @@ public struct ArticleDetail: Decodable, Equatable, Sendable {
         latestCommentTimestamp = try container.decodeIfPresent(String.self, forKey: .latestCommentTimestamp)
         content = try container.decode(JSONValue.self, forKey: .content)
         channelId = try container.decode(String.self, forKey: .channelId)
+    }
+}
+
+public extension JSONValue {
+    var articleMarkdownSource: String {
+        guard case .object(let root) = self else { return "" }
+        if root["version"]?.stringValue == "1" { return root["text"]?.stringValue ?? "" }
+        guard case .array(let nodes) = root["content"] else { return "" }
+        return nodes.compactMap { node -> String? in
+            guard case .object(let value) = node else { return nil }
+            switch value["type"]?.stringValue {
+            case "newline": return "\n"
+            case "text", "tag", "ticker":
+                guard var text = value["value"]?.stringValue else { return nil }
+                if value["bold"]?.boolValue == true { text = "**\(text)**" }
+                if value["italic"]?.boolValue == true { text = "*\(text)*" }
+                return text
+            case "link":
+                guard let label = value["value"]?.stringValue else { return nil }
+                let destination = label.hasPrefix("http") ? label : "https://\(label)"
+                return "[\(label)](<\(destination)>)"
+            case "richTextLink":
+                guard let label = value["value"]?.stringValue,
+                      let destination = value["url"]?.stringValue else { return nil }
+                return "[\(label)](<\(destination)>)"
+            case "header":
+                guard case .array(let parts) = value["value"] else { return nil }
+                return "## " + parts.compactMap { $0.objectValue?["value"]?.stringValue }.joined()
+            case "articleImage":
+                guard let caption = value["caption"]?.stringValue, !caption.isEmpty else { return nil }
+                return "*\(caption)*"
+            default: return nil
+            }
+        }.joined()
     }
 }
 

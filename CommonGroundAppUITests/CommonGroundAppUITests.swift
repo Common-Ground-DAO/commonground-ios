@@ -51,7 +51,7 @@ final class CommonGroundAppUITests: XCTestCase {
 
     /// Smoke test for a simulator that already has an authenticated
     /// development-instance session. Fresh CI simulators skip after launch.
-    func testAuthenticatedFeedLoadsArticlesAndEvents() throws {
+    func testAuthenticatedFeedLoadsPostsAndEvents() throws {
         let app = XCUIApplication()
         app.launch()
 
@@ -66,10 +66,10 @@ final class CommonGroundAppUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Filters"].exists)
 
-        let firstArticle = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.article.'"))
+        let firstPost = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.post.'"))
             .firstMatch
-        XCTAssertTrue(firstArticle.waitForExistence(timeout: 10))
+        XCTAssertTrue(firstPost.waitForExistence(timeout: 10))
 
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()
@@ -81,7 +81,11 @@ final class CommonGroundAppUITests: XCTestCase {
         let firstEvent = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'events.event.'"))
             .firstMatch
-        XCTAssertTrue(firstEvent.waitForExistence(timeout: 10))
+        let noUpcomingEvents = app.staticTexts["No upcoming events"]
+        XCTAssertTrue(
+            firstEvent.waitForExistence(timeout: 10) || noUpcomingEvents.exists,
+            "Events should finish in either a populated or valid empty state"
+        )
 
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()

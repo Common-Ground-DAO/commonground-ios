@@ -775,7 +775,7 @@ private struct EventsView: View {
     private func refresh() async {
         switch mode {
         case .discover:
-            await model.loadFeed(scope: scope, topics: topics)
+            await model.loadEventFeed(scope: scope, topics: topics)
         case .attending:
             await model.loadMyEvents()
         }
@@ -798,8 +798,10 @@ private struct EventsView: View {
 }
 
 private struct FeedQuery: Hashable {
-    let scope: CommunityFeedScope
+    let scope: PostFeedScope
+    let actorTypes: [FeedPostKind]
     let topics: [String]
+    let verification: FeedVerification
 }
 
 private extension CommunityFeedScope {
@@ -811,24 +813,49 @@ private extension CommunityFeedScope {
     }
 }
 
+private extension PostFeedScope {
+    var feedTitle: String {
+        switch self {
+        case .explore: "Explore"
+        case .following: "Following"
+        }
+    }
+}
+
+private extension FeedVerification {
+    var title: String {
+        switch self {
+        case .both: "All communities"
+        case .verified: "Verified communities"
+        case .unverified: "Unverified communities"
+        }
+    }
+}
+
 private struct FeedView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
-    @State private var scope: CommunityFeedScope = .explore
+    @State private var scope: PostFeedScope = .explore
+    @State private var actorTypes = Set(FeedPostKind.allCases)
     @State private var topics: Set<String> = []
+    @State private var verification: FeedVerification = .both
     @State private var showTopicPicker = false
-    @State private var selectedArticle: CommunityArticlePreview?
+    @State private var selectedPost: FeedPost?
+    @State private var selectedProfile: NotificationProfileRoute?
+    @State private var selectedCommunity: Community?
+    @State private var isLoadingCommunity = false
 
     private var query: FeedQuery {
         FeedQuery(
             scope: scope,
-            topics: topics.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            actorTypes: actorTypes.sorted { $0.rawValue < $1.rawValue },
+            topics: topics.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
+            verification: verification
         )
     }
 
     private var isInitiallyLoading: Bool {
-        model.feedArticles.isEmpty
-            && model.isLoadingFeedArticles
+        model.feedPosts.isEmpty && model.isLoadingFeedPosts
     }
 
     var body: some View {
@@ -838,7 +865,7 @@ private struct FeedView: View {
                     ProgressView("Loading Feed…")
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 70)
-                } else if model.feedArticles.isEmpty {
+                } else if model.feedPosts.isEmpty {
                     ContentUnavailableView(
                         "Nothing in this Feed yet",
                         systemImage: "rectangle.stack",
@@ -847,7 +874,7 @@ private struct FeedView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 50)
                 } else {
-                    articleContent
+                    postContent
                 }
             }
             .frame(maxWidth: 720, alignment: .leading)
@@ -860,8 +887,25 @@ private struct FeedView: View {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Picker("Scope", selection: $scope) {
-                        ForEach(CommunityFeedScope.allCases, id: \.self) { option in
+                        ForEach(PostFeedScope.allCases, id: \.self) { option in
                             Text(option.feedTitle).tag(option)
+                        }
+                    }
+
+                    Menu("Post authors") {
+                        Toggle(
+                            "People",
+                            isOn: actorTypeBinding(.user)
+                        )
+                        Toggle(
+                            "Communities",
+                            isOn: actorTypeBinding(.community)
+                        )
+                    }
+
+                    Picker("Community verification", selection: $verification) {
+                        ForEach(FeedVerification.allCases, id: \.self) { option in
+                            Text(option.title).tag(option)
                         }
                     }
 
@@ -876,149 +920,179 @@ private struct FeedView: View {
                 } label: {
                     Label(
                         "Filters",
-                        systemImage: topics.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
+                        systemImage: filtersAreDefault
+                            ? "line.3.horizontal.decrease.circle"
+                            : "line.3.horizontal.decrease.circle.fill"
                     )
                 }
             }
         }
-        .refreshable { await model.loadFeed(scope: scope, topics: topics) }
-        .task(id: query) { await model.loadFeed(scope: scope, topics: topics) }
+        .refreshable { await load() }
+        .task(id: query) { await load() }
         .sheet(isPresented: $showTopicPicker) {
             FeedTopicPicker(
                 availableTopics: model.feedTopicOptions,
-                initialSelection: topics
+                initialSelection: topics,
+                footer: "Selecting several topics matches posts tagged with any of them."
             ) { topics = $0 }
         }
-        .sheet(item: $selectedArticle) { item in
+        .sheet(item: $selectedPost) { post in
             ArticleReaderView(
-                articleID: item.id,
-                source: .community(item.communityArticle.communityId),
+                articleID: post.id,
+                source: post.kind == .community ? .community(post.actor.id) : .user(post.actor.id),
                 store: store,
                 focusedCommentID: nil
             )
+        }
+        .sheet(item: $selectedProfile) { route in
+            UserProfileView(userID: route.id, store: store) { _ in }
+        }
+        .sheet(item: $selectedCommunity) { community in
+            NavigationStack {
+                CommunityHomeView(community: community, store: store)
+            }
+        }
+        .overlay {
+            if isLoadingCommunity {
+                ProgressView()
+                    .padding(18)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            }
         }
     }
 
     private var emptyDescription: String {
         if !topics.isEmpty {
-            return "Try removing a topic or switching between Explore and My communities."
+            return "Try removing a topic or changing the Feed filters."
         }
-        return scope == .myCommunities
-            ? "Join communities or switch to Explore to find more posts."
-            : "Published community posts will appear here."
+        return scope == .following
+            ? "Follow people, join communities, or switch to Explore to find more posts."
+            : "Published posts from people and communities will appear here."
     }
 
     @ViewBuilder
-    private var articleContent: some View {
-        if model.feedArticles.isEmpty {
+    private var postContent: some View {
+        if model.feedPosts.isEmpty {
             ContentUnavailableView(
-                "No matching articles",
-                systemImage: "newspaper",
+                "No matching posts",
+                systemImage: "rectangle.stack",
                 description: Text("Try another scope or topic filter.")
             )
             .frame(maxWidth: .infinity)
             .padding(.vertical, 50)
         } else {
-            ForEach(model.feedArticles) { item in
-                feedArticle(item)
+            ForEach(model.feedPosts) { post in
+                FeedPostCard(
+                    post: post,
+                    actorImageURL: post.actor.imageId.flatMap { model.attachmentURLs[$0] },
+                    mediaURL: mediaURL,
+                    openPost: { selectedPost = post },
+                    openActor: { openActor(post) }
+                )
             }
-            feedArticleFooter
+            feedPostFooter
         }
     }
 
+    private var filtersAreDefault: Bool {
+        topics.isEmpty
+            && actorTypes == Set(FeedPostKind.allCases)
+            && verification == .both
+    }
+
     @ViewBuilder
-    private func feedArticle(_ item: CommunityArticlePreview) -> some View {
-        let community = model.feedCommunitySummaries[item.communityArticle.communityId]
-        let author = store.users[item.article.creatorId]
-        let imageID = item.article.thumbnailImageId ?? item.article.headerImageId
-        let imageURL = imageID.flatMap { model.attachmentURLs[$0] }
-        let published = item.communityArticle.published.flatMap(parseEventDate)
-        let shareURL = model.communityArticleShareURL(
-            item.communityArticle,
-            community: community
-        )
+    private var feedPostFooter: some View {
+        if model.canLoadMoreFeedPosts {
+            FeedLoadMoreFooter(
+                isLoading: model.isLoadingFeedPosts,
+                title: "Load more posts"
+            ) {
+                await model.loadMoreFeedPosts()
+            }
+            .id(model.feedPosts.count)
+        }
+    }
 
-        VStack(spacing: 0) {
-            Button {
-                selectedArticle = item
-            } label: {
-                VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack(alignment: .top, spacing: 11) {
-                            CommunityMark(
-                                name: community?.title ?? "Community",
-                                url: community?.logoSmallId.flatMap { model.attachmentURLs[$0] },
-                                size: 48
-                            )
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(community?.title ?? "Community")
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-
-                                if let author {
-                                    Text("By \(author.displayName)")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-
-                                if let published {
-                                    HStack(spacing: 5) {
-                                        Text(published.formatted(.relative(presentation: .named)))
-                                        Text("·")
-                                        Image(systemName: "globe")
-                                    }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                }
-                            }
-
-                            Spacer(minLength: 0)
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(item.article.title)
-                                .font(.headline)
-                                .foregroundStyle(.primary)
-
-                            if let preview = item.article.previewText, !preview.isEmpty {
-                                Text(preview)
-                                    .font(.body)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(6)
-                            }
-                        }
-                        .multilineTextAlignment(.leading)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-
-                    if let imageURL {
-                        FeedPostImage(url: imageURL)
-                    }
+    private func actorTypeBinding(_ kind: FeedPostKind) -> Binding<Bool> {
+        Binding(
+            get: { actorTypes.contains(kind) },
+            set: { selected in
+                if selected {
+                    actorTypes.insert(kind)
+                } else if actorTypes.count > 1 {
+                    actorTypes.remove(kind)
                 }
             }
-            .buttonStyle(.plain)
+        )
+    }
 
-            Divider()
-                .padding(.horizontal, 16)
+    private func load() async {
+        await model.loadPostFeed(
+            scope: scope,
+            actorTypes: actorTypes,
+            topics: topics,
+            verification: verification
+        )
+    }
 
-            HStack(spacing: 24) {
-                Button {
-                    selectedArticle = item
-                } label: {
-                    Label("\(item.article.commentCount)", systemImage: "bubble.left")
+    private func mediaURL(_ media: FeedPostMedia) -> URL? {
+        if let large = media.largeObjectId, let url = model.attachmentURLs[large] { return url }
+        if media.type == .video,
+           let poster = media.posterImageId,
+           let url = model.attachmentURLs[poster] { return url }
+        return model.attachmentURLs[media.objectId]
+    }
+
+    private func openActor(_ post: FeedPost) {
+        switch post.kind {
+        case .user:
+            selectedProfile = NotificationProfileRoute(id: post.actor.id)
+        case .community:
+            guard !isLoadingCommunity else { return }
+            isLoadingCommunity = true
+            Task {
+                selectedCommunity = await model.feedCommunityDetail(id: post.actor.id)
+                isLoadingCommunity = false
+            }
+        }
+    }
+}
+
+private struct FeedPostCard: View {
+    let post: FeedPost
+    let actorImageURL: URL?
+    let mediaURL: (FeedPostMedia) -> URL?
+    let openPost: () -> Void
+    let openActor: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                header
+                if !post.markdownSource.isEmpty {
+                    MarkdownArticleText(source: post.markdownSource)
                 }
+                if post.isTruncated {
+                    Button("… more", action: openPost)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
 
+            if !post.media.isEmpty {
+                FeedPostMediaGrid(media: post.media, url: mediaURL, open: openPost)
+            }
+
+            Divider().padding(.horizontal, 16)
+            HStack(spacing: 24) {
+                Button(action: openPost) {
+                    Label("\(post.commentCount)", systemImage: "bubble.left")
+                }
                 Spacer()
-
-                if let shareURL {
-                    ShareLink(
-                        item: shareURL,
-                        subject: Text(item.article.title)
-                    ) {
+                if let value = post.permalink, let url = URL(string: value) {
+                    ShareLink(item: url) {
                         Label("Share", systemImage: "paperplane")
                     }
                 }
@@ -1030,22 +1104,123 @@ private struct FeedView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .systemBackground))
-        .accessibilityIdentifier("feed.article.\(item.id)")
+        .accessibilityIdentifier("feed.post.\(post.id)")
     }
 
-    @ViewBuilder
-    private var feedArticleFooter: some View {
-        if model.canLoadMoreFeedArticles {
-            FeedLoadMoreFooter(
-                isLoading: model.isLoadingFeedArticles,
-                title: "Load more articles"
-            ) {
-                await model.loadMoreFeedArticles()
+    private var header: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Button(action: openActor) {
+                actorImage
             }
-            .id(model.feedArticles.count)
+            .buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 2) {
+                Button(action: openActor) {
+                    Text(post.actor.name)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                if let creator = post.creator {
+                    Text("Posted by \(creator.displayName)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 5) {
+                    if let date = parseEventDate(post.publishedAt) {
+                        Text(date.formatted(.relative(presentation: .named)))
+                    }
+                    if post.editedAt != nil { Text("· Edited") }
+                    Text("·")
+                    Image(systemName: "globe")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Menu("Post options", systemImage: "ellipsis") {
+                Button("Open post", systemImage: "arrow.up.right.square", action: openPost)
+                if let value = post.permalink, let url = URL(string: value) {
+                    ShareLink(item: url) { Label("Share post", systemImage: "square.and.arrow.up") }
+                }
+            }
+            .labelStyle(.iconOnly)
         }
     }
 
+    @ViewBuilder
+    private var actorImage: some View {
+        if post.kind == .community {
+            CommunityMark(name: post.actor.name, url: actorImageURL, size: 48)
+        } else {
+            Avatar(name: post.actor.name, url: actorImageURL)
+                .frame(width: 48, height: 48)
+        }
+    }
+}
+
+private struct FeedPostMediaGrid: View {
+    let media: [FeedPostMedia]
+    let url: (FeedPostMedia) -> URL?
+    let open: () -> Void
+
+    private var visibleMedia: [FeedPostMedia] { Array(media.prefix(4)) }
+
+    var body: some View {
+        Button(action: open) {
+            Group {
+                if visibleMedia.count == 1, let first = visibleMedia.first {
+                    mediaCell(first)
+                        .aspectRatio(preferredAspectRatio(first), contentMode: .fit)
+                } else {
+                    LazyVGrid(
+                        columns: [GridItem(.flexible(), spacing: 2), GridItem(.flexible(), spacing: 2)],
+                        spacing: 2
+                    ) {
+                        ForEach(Array(visibleMedia.enumerated()), id: \.element.id) { index, item in
+                            mediaCell(item)
+                                .aspectRatio(1, contentMode: .fill)
+                                .overlay {
+                                    if index == 3, media.count > 4 {
+                                        Color.black.opacity(0.46)
+                                        Text("+\(media.count - 3)")
+                                            .font(.title.bold())
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func mediaCell(_ item: FeedPostMedia) -> some View {
+        if let imageURL = url(item) {
+            FeedPostImage(url: imageURL)
+                .overlay(alignment: .bottomLeading) {
+                    if item.type == .video {
+                        Label("Video", systemImage: "play.fill")
+                            .font(.caption.bold())
+                            .padding(8)
+                            .foregroundStyle(.white)
+                            .background(.black.opacity(0.65), in: Capsule())
+                            .padding(10)
+                    }
+                }
+        } else {
+            Color.secondary.opacity(0.08)
+                .overlay { ProgressView() }
+        }
+    }
+
+    private func preferredAspectRatio(_ item: FeedPostMedia) -> CGFloat {
+        guard let width = item.width, let height = item.height, height > 0 else { return 4 / 3 }
+        return min(max(CGFloat(width) / CGFloat(height), 0.65), 1.9)
+    }
 }
 
 private struct SelectedTopicChips: View {
@@ -1148,14 +1323,40 @@ private struct FeedTopicPicker: View {
     private var topics: [String] {
         let all = Array(Set(availableTopics).union(selectedTopics))
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = normalizedSearch
         guard !query.isEmpty else { return all }
         return all.filter { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var normalizedSearch: String {
+        search
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+    }
+
+    private var canAddSearchAsTopic: Bool {
+        let query = normalizedSearch
+        return !query.isEmpty
+            && query.count <= 30
+            && selectedTopics.count < 50
+            && query.range(of: "^[A-Za-z0-9_\\- /]+$", options: .regularExpression) != nil
+            && !selectedTopics.contains { $0.caseInsensitiveCompare(query) == .orderedSame }
+            && !availableTopics.contains { $0.caseInsensitiveCompare(query) == .orderedSame }
     }
 
     var body: some View {
         NavigationStack {
             List {
+                if canAddSearchAsTopic {
+                    Section {
+                        Button {
+                            selectedTopics.insert(normalizedSearch)
+                            search = ""
+                        } label: {
+                            Label("Add #\(normalizedSearch)", systemImage: "plus.circle")
+                        }
+                    }
+                }
                 Section {
                     ForEach(topics, id: \.self) { topic in
                         Button {

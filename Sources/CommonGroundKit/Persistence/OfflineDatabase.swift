@@ -13,21 +13,40 @@ public struct OfflineSnapshot: Sendable {
     public let unreadNotificationCount: Int
 }
 
-public struct OfflineFeedSnapshot: Codable, Equatable, Sendable {
+public struct OfflinePostFeedSnapshot: Codable, Equatable, Sendable {
+    public let scope: PostFeedScope
+    public let actorTypes: [FeedPostKind]
+    public let topics: [String]
+    public let verification: FeedVerification
+    public let posts: [FeedPost]
+
+    public init(
+        scope: PostFeedScope,
+        actorTypes: [FeedPostKind],
+        topics: [String],
+        verification: FeedVerification,
+        posts: [FeedPost]
+    ) {
+        self.scope = scope
+        self.actorTypes = actorTypes
+        self.topics = topics
+        self.verification = verification
+        self.posts = posts
+    }
+}
+
+public struct OfflineEventFeedSnapshot: Codable, Equatable, Sendable {
     public let scope: CommunityFeedScope
     public let topics: [String]
-    public let articles: [CommunityArticlePreview]
     public let events: [CommunityEvent]
 
     public init(
         scope: CommunityFeedScope,
         topics: [String],
-        articles: [CommunityArticlePreview],
         events: [CommunityEvent]
     ) {
         self.scope = scope
         self.topics = topics
-        self.articles = articles
         self.events = events
     }
 }
@@ -237,21 +256,52 @@ public actor OfflineDatabase {
         }
     }
 
-    public func feedSnapshot(
-        scope: CommunityFeedScope,
-        topics: [String]
-    ) throws -> OfflineFeedSnapshot? {
+    public func postFeedSnapshot(
+        scope: PostFeedScope,
+        actorTypes: [FeedPostKind],
+        topics: [String],
+        verification: FeedVerification
+    ) throws -> OfflinePostFeedSnapshot? {
         try load(
-            kind: "communityFeed",
-            id: Self.feedCacheID(scope: scope, topics: topics),
-            as: OfflineFeedSnapshot.self
+            kind: "postFeed",
+            id: Self.postFeedCacheID(
+                scope: scope,
+                actorTypes: actorTypes,
+                topics: topics,
+                verification: verification
+            ),
+            as: OfflinePostFeedSnapshot.self
         )
     }
 
-    public func saveFeedSnapshot(_ snapshot: OfflineFeedSnapshot) throws {
+    public func savePostFeedSnapshot(_ snapshot: OfflinePostFeedSnapshot) throws {
         try upsert(
-            kind: "communityFeed",
-            id: Self.feedCacheID(scope: snapshot.scope, topics: snapshot.topics),
+            kind: "postFeed",
+            id: Self.postFeedCacheID(
+                scope: snapshot.scope,
+                actorTypes: snapshot.actorTypes,
+                topics: snapshot.topics,
+                verification: snapshot.verification
+            ),
+            value: snapshot
+        )
+    }
+
+    public func eventFeedSnapshot(
+        scope: CommunityFeedScope,
+        topics: [String]
+    ) throws -> OfflineEventFeedSnapshot? {
+        try load(
+            kind: "eventFeed",
+            id: Self.eventFeedCacheID(scope: scope, topics: topics),
+            as: OfflineEventFeedSnapshot.self
+        )
+    }
+
+    public func saveEventFeedSnapshot(_ snapshot: OfflineEventFeedSnapshot) throws {
+        try upsert(
+            kind: "eventFeed",
+            id: Self.eventFeedCacheID(scope: snapshot.scope, topics: snapshot.topics),
             value: snapshot
         )
     }
@@ -353,8 +403,22 @@ public actor OfflineDatabase {
         return try decoder.decode(Value.self, from: Data(bytes: bytes, count: count))
     }
 
-    private static func feedCacheID(scope: CommunityFeedScope, topics: [String]) -> String {
+    private static func eventFeedCacheID(scope: CommunityFeedScope, topics: [String]) -> String {
         scope.rawValue + "\u{1F}" + topics.sorted().joined(separator: "\u{1E}")
+    }
+
+    private static func postFeedCacheID(
+        scope: PostFeedScope,
+        actorTypes: [FeedPostKind],
+        topics: [String],
+        verification: FeedVerification
+    ) -> String {
+        [
+            scope.rawValue,
+            actorTypes.map(\.rawValue).sorted().joined(separator: ","),
+            topics.sorted().joined(separator: "\u{1E}"),
+            verification.rawValue,
+        ].joined(separator: "\u{1F}")
     }
 
     private func remove(kind: String, id: String) throws {

@@ -28,8 +28,10 @@ Transport, instance discovery, Secure Enclave identity, native ALTCHA, registrat
 - Community events are native: per-community discovery, a global upcoming-events view, an attending
   history, external/reminder event creation, role audiences, image uploads, and authorized edit/delete flows.
   Native calls and broadcasts deliberately remain in the calls workstream.
-- The social-style global Feed presents community posts with deterministic pagination, Explore/My
-  communities scope, consistent community-topic filters, and batch identity hydration. Public community
+- The social-style global Feed consumes the unified `Feed/getPostList` timeline, mixing user and
+  community posts in deterministic newest-first order. It supports Explore/Following scope, actor,
+  article-topic, and community-verification filters; renders structured body previews and complete media;
+  and persists each query for immediate offline relaunch. Public community
   discovery is a dedicated searchable and tag-filtered root destination; non-members can browse content
   through each community's Public role and choose to join from inside the community.
 - Community apps have a native store/install surface and an isolated, non-persistent WebKit runtime.
