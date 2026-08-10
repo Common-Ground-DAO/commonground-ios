@@ -80,6 +80,11 @@ final class CommonGroundAppUITests: XCTestCase {
             .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.post.'"))
             .firstMatch
         XCTAssertTrue(firstPost.waitForExistence(timeout: 10))
+        let firstActor = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.actor.'"))
+            .firstMatch
+        XCTAssertTrue(firstActor.waitForExistence(timeout: 5))
+        let firstActorIdentifier = firstActor.identifier
 
         let firstComments = app.buttons
             .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.comments.'"))
@@ -88,6 +93,13 @@ final class CommonGroundAppUITests: XCTestCase {
         firstComments.tap()
         XCTAssertTrue(app.navigationBars["Post"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["Done"].exists, "Feed posts should push instead of opening a sheet")
+        XCTAssertTrue(
+            app.descendants(matching: .any)
+                .matching(identifier: firstActorIdentifier)
+                .firstMatch
+                .waitForExistence(timeout: 5),
+            "Post details should preserve the Feed actor header"
+        )
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()
         XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 5))

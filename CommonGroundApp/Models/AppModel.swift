@@ -784,6 +784,10 @@ final class AppModel: ObservableObject {
             }
         }
 
+        if !feedPosts.isEmpty {
+            await hydrateFeedPostPresentation(feedPosts)
+        }
+
         await requestFeedPosts(
             reset: true,
             scope: scope,
@@ -843,6 +847,22 @@ final class AppModel: ObservableObject {
             errorMessage = userMessage(for: error)
             return nil
         }
+    }
+
+    func feedActorImageURL(for post: FeedPost) -> URL? {
+        if let actorImageID = post.actor.imageId,
+           let url = attachmentURLs[actorImageID] {
+            return url
+        }
+        let fallbackImageID: String?
+        switch post.kind {
+        case .user:
+            fallbackImageID = store.users[post.actor.id]?.imageID
+        case .community:
+            fallbackImageID = store.communities[post.actor.id]?.logoSmallId
+                ?? feedCommunityDetails[post.actor.id]?.logoSmallId
+        }
+        return fallbackImageID.flatMap { attachmentURLs[$0] }
     }
 
     private func requestFeedPosts(
@@ -907,7 +927,7 @@ final class AppModel: ObservableObject {
                 topics: topics,
                 verification: verification
             )
-            await loadAttachmentURLs(objectIDs: page.flatMap(\.mediaObjectIDs))
+            await hydrateFeedPostPresentation(page)
         } catch is CancellationError {
             contentLogger.notice("Feed posts request cancelled id=\(requestID.uuidString, privacy: .public)")
             return
@@ -2721,6 +2741,28 @@ final class AppModel: ObservableObject {
                 [$0.logoSmallId, $0.logoLargeId, $0.headerImageId].compactMap { $0 }
             }
         )
+    }
+
+    private func hydrateFeedPostPresentation(_ posts: [FeedPost]) async {
+        await loadAttachmentURLs(objectIDs: posts.flatMap(\.mediaObjectIDs))
+
+        guard let client else { return }
+        let missingCommunityIDs = Array(Set(posts.compactMap { post -> String? in
+            guard post.kind == .community,
+                  post.actor.imageId == nil,
+                  store.communities[post.actor.id] == nil,
+                  feedCommunityDetails[post.actor.id] == nil else { return nil }
+            return post.actor.id
+        }))
+        guard !missingCommunityIDs.isEmpty else { return }
+
+        var communities: [Community] = []
+        for id in missingCommunityIDs {
+            guard let community = try? await client.communities.detail(id: id) else { continue }
+            feedCommunityDetails[id] = community
+            communities.append(community)
+        }
+        await loadCommunityMedia(communities)
     }
 
     private func refreshCommunityPresentation(communityIDs: [String]) async {

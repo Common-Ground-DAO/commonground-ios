@@ -967,7 +967,8 @@ private struct FeedView: View {
                     source: post.kind == .community ? .community(post.actor.id) : .user(post.actor.id),
                     store: store,
                     focusedCommentID: nil,
-                    presentation: .pushedPost
+                    presentation: .pushedPost,
+                    feedPost: post
                 )
             }
         }
@@ -1024,7 +1025,7 @@ private struct FeedView: View {
             ForEach(model.feedPosts) { post in
                 FeedPostCard(
                     post: post,
-                    actorImageURL: post.actor.imageId.flatMap { model.attachmentURLs[$0] },
+                    actorImageURL: model.feedActorImageURL(for: post),
                     mediaURL: mediaURL,
                     openPost: { selectedPost = post },
                     openActor: { openActor(post) }
@@ -1307,7 +1308,12 @@ private struct FeedPostCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
-                header
+                FeedPostHeader(
+                    post: post,
+                    actorImageURL: actorImageURL,
+                    openPost: openPost,
+                    openActor: openActor
+                )
                 if !post.markdownSource.isEmpty {
                     MarkdownArticleText(source: post.markdownSource, headingStyle: .social)
                 }
@@ -1354,8 +1360,15 @@ private struct FeedPostCard: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("feed.post.\(post.id)")
     }
+}
 
-    private var header: some View {
+private struct FeedPostHeader: View {
+    let post: FeedPost
+    let actorImageURL: URL?
+    var openPost: (() -> Void)? = nil
+    let openActor: () -> Void
+
+    var body: some View {
         HStack(alignment: .top, spacing: 11) {
             Button(action: openActor) {
                 actorImage
@@ -1387,14 +1400,19 @@ private struct FeedPostCard: View {
                 .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            Menu("Post options", systemImage: "ellipsis") {
-                Button("Open post", systemImage: "arrow.up.right.square", action: openPost)
-                if let value = post.permalink, let url = URL(string: value) {
-                    ShareLink(item: url) { Label("Share post", systemImage: "square.and.arrow.up") }
+            if openPost != nil || post.permalink != nil {
+                Menu("Post options", systemImage: "ellipsis") {
+                    if let openPost {
+                        Button("Open post", systemImage: "arrow.up.right.square", action: openPost)
+                    }
+                    if let value = post.permalink, let url = URL(string: value) {
+                        ShareLink(item: url) { Label("Share post", systemImage: "square.and.arrow.up") }
+                    }
                 }
+                .labelStyle(.iconOnly)
             }
-            .labelStyle(.iconOnly)
         }
+        .accessibilityIdentifier("feed.actor.\(post.kind.rawValue).\(post.actor.id)")
     }
 
     @ViewBuilder
@@ -4912,11 +4930,15 @@ private struct ArticleReaderView: View {
     @ObservedObject var store: SyncStore
     let focusedCommentID: String?
     var presentation: ArticleReaderPresentation = .sheet
+    var feedPost: FeedPost? = nil
     @State private var commentText = ""
     @State private var isSendingComment = false
     @State private var showEditor = false
     @State private var confirmDelete = false
     @State private var confirmNewsletter = false
+    @State private var selectedFeedProfile: NotificationProfileRoute?
+    @State private var selectedFeedCommunity: Community?
+    @State private var isLoadingFeedActor = false
     @FocusState private var commentComposerFocused: Bool
 
     private var article: ArticleDetail? { model.articleDetails[articleID] }
@@ -4953,6 +4975,13 @@ private struct ArticleReaderView: View {
                 ScrollView {
                     if let article {
                     VStack(alignment: .leading, spacing: 18) {
+                        if presentation == .pushedPost, let feedPost {
+                            FeedPostHeader(
+                                post: feedPost,
+                                actorImageURL: model.feedActorImageURL(for: feedPost),
+                                openActor: openFeedActor
+                            )
+                        }
                         if let imageID = article.headerImageId,
                            let url = model.attachmentURLs[imageID] {
                             AsyncImage(url: url) { image in
@@ -4965,7 +4994,7 @@ private struct ArticleReaderView: View {
                         if presentation == .sheet {
                             Text(article.title).font(.largeTitle.bold())
                         }
-                        if let creator = store.users[article.creatorId] {
+                        if presentation == .sheet, let creator = store.users[article.creatorId] {
                             HStack {
                                 Avatar(
                                     name: creator.displayName,
@@ -5132,6 +5161,21 @@ private struct ArticleReaderView: View {
                     }
                 }
             }
+            .sheet(item: $selectedFeedProfile) { route in
+                UserProfileView(userID: route.id, store: store) { _ in }
+            }
+            .sheet(item: $selectedFeedCommunity) { community in
+                NavigationStack {
+                    CommunityHomeView(community: community, store: store)
+                }
+            }
+            .overlay {
+                if isLoadingFeedActor {
+                    ProgressView()
+                        .padding(18)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+            }
             .confirmationDialog("Delete this article?", isPresented: $confirmDelete) {
                 Button("Delete article", role: .destructive) {
                     Task {
@@ -5173,6 +5217,21 @@ private struct ArticleReaderView: View {
                 model.stopTyping(access: model.articleAccess(owner: source, article: article))
                 Task { await model.leaveArticleComments(owner: source, article: article) }
             }
+    }
+
+    private func openFeedActor() {
+        guard let feedPost else { return }
+        switch feedPost.kind {
+        case .user:
+            selectedFeedProfile = NotificationProfileRoute(id: feedPost.actor.id)
+        case .community:
+            guard !isLoadingFeedActor else { return }
+            isLoadingFeedActor = true
+            Task {
+                selectedFeedCommunity = await model.feedCommunityDetail(id: feedPost.actor.id)
+                isLoadingFeedActor = false
+            }
+        }
     }
 
     private func sendComment(_ article: ArticleDetail) {
@@ -7713,15 +7772,33 @@ private struct CommunityMark: View {
     let name: String
     var url: URL? = nil
     var size: CGFloat = 30
+    @State private var retryID = 0
+    private let maximumAutomaticRetries = 3
 
     var body: some View {
         Group {
             if let url {
-                AsyncImage(url: url) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
-                    fallback
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                    case .empty:
+                        fallback
+                    case .failure:
+                        fallback
+                            .task(id: retryID) {
+                                guard retryID < maximumAutomaticRetries else { return }
+                                try? await Task.sleep(
+                                    for: .milliseconds(Int64(200 * (retryID + 1)))
+                                )
+                                guard !Task.isCancelled else { return }
+                                retryID += 1
+                            }
+                    @unknown default:
+                        fallback
+                    }
                 }
+                .id("\(url.absoluteString):\(retryID)")
             } else {
                 fallback
             }
@@ -7729,6 +7806,7 @@ private struct CommunityMark: View {
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: size * 0.26))
             .accessibilityHidden(true)
+            .onChange(of: url) { retryID = 0 }
     }
 
     private var fallback: some View {
