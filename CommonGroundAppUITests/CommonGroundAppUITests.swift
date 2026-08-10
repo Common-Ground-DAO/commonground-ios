@@ -71,6 +71,17 @@ final class CommonGroundAppUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(firstPost.waitForExistence(timeout: 10))
 
+        let firstComments = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.comments.'"))
+            .firstMatch
+        XCTAssertTrue(firstComments.waitForExistence(timeout: 5))
+        firstComments.tap()
+        XCTAssertTrue(app.navigationBars["Post"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Done"].exists, "Feed posts should push instead of opening a sheet")
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 5))
+
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()
         let events = app.staticTexts["Events"]

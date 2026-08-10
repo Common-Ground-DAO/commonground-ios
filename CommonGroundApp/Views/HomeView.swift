@@ -936,13 +936,16 @@ private struct FeedView: View {
                 footer: "Selecting several topics matches posts tagged with any of them."
             ) { topics = $0 }
         }
-        .sheet(item: $selectedPost) { post in
-            ArticleReaderView(
-                articleID: post.id,
-                source: post.kind == .community ? .community(post.actor.id) : .user(post.actor.id),
-                store: store,
-                focusedCommentID: nil
-            )
+        .navigationDestination(isPresented: postDestinationIsPresented) {
+            if let post = selectedPost {
+                ArticleReaderView(
+                    articleID: post.id,
+                    source: post.kind == .community ? .community(post.actor.id) : .user(post.actor.id),
+                    store: store,
+                    focusedCommentID: nil,
+                    presentation: .pushedPost
+                )
+            }
         }
         .sheet(item: $selectedProfile) { route in
             UserProfileView(userID: route.id, store: store) { _ in }
@@ -968,6 +971,13 @@ private struct FeedView: View {
         return scope == .following
             ? "Follow people, join communities, or switch to Explore to find more posts."
             : "Published posts from people and communities will appear here."
+    }
+
+    private var postDestinationIsPresented: Binding<Bool> {
+        Binding(
+            get: { selectedPost != nil },
+            set: { if !$0 { selectedPost = nil } }
+        )
     }
 
     @ViewBuilder
@@ -1070,7 +1080,7 @@ private struct FeedPostCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 header
                 if !post.markdownSource.isEmpty {
-                    MarkdownArticleText(source: post.markdownSource)
+                    MarkdownArticleText(source: post.markdownSource, headingStyle: .social)
                 }
                 if post.isTruncated {
                     Button("… more", action: openPost)
@@ -1087,9 +1097,15 @@ private struct FeedPostCard: View {
 
             Divider().padding(.horizontal, 16)
             HStack(spacing: 24) {
+                Label("0", systemImage: "heart")
+                    .accessibilityLabel("0 likes")
                 Button(action: openPost) {
                     Label("\(post.commentCount)", systemImage: "bubble.left")
                 }
+                .accessibilityLabel("\(post.commentCount) comments")
+                .accessibilityIdentifier("feed.comments.\(post.id)")
+                Label("0", systemImage: "arrow.2.squarepath")
+                    .accessibilityLabel("0 reposts")
                 Spacer()
                 if let value = post.permalink, let url = URL(string: value) {
                     ShareLink(item: url) {
@@ -1104,6 +1120,7 @@ private struct FeedPostCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .systemBackground))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("feed.post.\(post.id)")
     }
 
@@ -4651,6 +4668,11 @@ private struct ArticleCard: View {
     }
 }
 
+private enum ArticleReaderPresentation {
+    case sheet
+    case pushedPost
+}
+
 private struct ArticleReaderView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -4658,6 +4680,7 @@ private struct ArticleReaderView: View {
     let source: ArticleOwner
     @ObservedObject var store: SyncStore
     let focusedCommentID: String?
+    var presentation: ArticleReaderPresentation = .sheet
     @State private var commentText = ""
     @State private var isSendingComment = false
     @State private var showEditor = false
@@ -4685,8 +4708,17 @@ private struct ArticleReaderView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollViewReader { proxy in
+        Group {
+            if presentation == .sheet {
+                NavigationStack { articleContent }
+            } else {
+                articleContent
+            }
+        }
+    }
+
+    private var articleContent: some View {
+        ScrollViewReader { proxy in
                 ScrollView {
                     if let article {
                     VStack(alignment: .leading, spacing: 18) {
@@ -4806,7 +4838,7 @@ private struct ArticleReaderView: View {
                     }
                 }
             }
-            .navigationTitle("Article")
+            .navigationTitle(presentation == .pushedPost ? "Post" : "Article")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if canEdit {
@@ -4824,8 +4856,10 @@ private struct ArticleReaderView: View {
                         }
                     }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                if presentation == .sheet {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
                 }
             }
             .task(id: articleID) {
@@ -4899,7 +4933,6 @@ private struct ArticleReaderView: View {
                 model.stopTyping(access: model.articleAccess(owner: source, article: article))
                 Task { await model.leaveArticleComments(owner: source, article: article) }
             }
-        }
     }
 
     private func sendComment(_ article: ArticleDetail) {
@@ -7578,8 +7611,14 @@ private struct CommunityFeatureImage: View {
     }
 }
 
+private enum MarkdownHeadingStyle {
+    case article
+    case social
+}
+
 private struct MarkdownArticleText: View {
     let source: String
+    var headingStyle: MarkdownHeadingStyle = .article
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -7589,8 +7628,8 @@ private struct MarkdownArticleText: View {
                     inlineText(block.text)
                 case .heading(let level):
                     inlineText(block.text)
-                        .font(headerFont(level))
-                        .padding(.top, level <= 2 ? 8 : 3)
+                        .font(headingStyle == .social ? .body.bold() : headerFont(level))
+                        .padding(.top, headingStyle == .social ? 3 : (level <= 2 ? 8 : 3))
                 case .unordered:
                     HStack(alignment: .firstTextBaseline, spacing: 9) {
                         Text("•").fontWeight(.bold)
