@@ -1097,8 +1097,6 @@ private struct FeedPostCard: View {
 
             Divider().padding(.horizontal, 16)
             HStack(spacing: 24) {
-                Label("0", systemImage: "heart")
-                    .accessibilityLabel("0 likes")
                 Button(action: openPost) {
                     Label("\(post.commentCount)", systemImage: "bubble.left")
                 }
@@ -1106,6 +1104,10 @@ private struct FeedPostCard: View {
                 .accessibilityIdentifier("feed.comments.\(post.id)")
                 Label("0", systemImage: "arrow.2.squarepath")
                     .accessibilityLabel("0 reposts")
+                Label("0", systemImage: "heart")
+                    .accessibilityLabel("0 likes")
+                Label("0", systemImage: "chart.bar")
+                    .accessibilityLabel("0 views")
                 Spacer()
                 if let value = post.permalink, let url = URL(string: value) {
                     ShareLink(item: url) {
@@ -4731,7 +4733,8 @@ private struct ArticleReaderView: View {
                             }
                             .clipShape(RoundedRectangle(cornerRadius: 16))
                         }
-                        Text(article.title).font(.largeTitle.bold())
+                        Text(article.title)
+                            .font(presentation == .pushedPost ? .body.bold() : .largeTitle.bold())
                         if let creator = store.users[article.creatorId] {
                             HStack {
                                 Avatar(
@@ -4744,10 +4747,15 @@ private struct ArticleReaderView: View {
                             }
                         }
                         if let preview = article.previewText, !preview.isEmpty {
-                            Text(preview).font(.title3).foregroundStyle(.secondary)
+                            Text(preview)
+                                .font(presentation == .pushedPost ? .body : .title3)
+                                .foregroundStyle(.secondary)
                         }
                         Divider()
-                        MarkdownArticleText(source: article.markdownSource)
+                        MarkdownArticleText(
+                            source: article.markdownSource,
+                            headingStyle: presentation == .pushedPost ? .social : .article
+                        )
                         if !article.tags.isEmpty {
                             Text(article.tags.map { "#\($0)" }.joined(separator: "  "))
                                 .font(.footnote)
