@@ -120,6 +120,25 @@ final class CommonGroundAppUITests: XCTestCase {
             "Events should finish in either a populated or valid empty state"
         )
 
+        app.segmentedControls.buttons["Attending"].tap()
+        let firstAttendingEvent = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'events.event.'"))
+            .firstMatch
+        let noAttendingEvents = app.staticTexts["No events yet"]
+        XCTAssertTrue(
+            firstAttendingEvent.waitForExistence(timeout: 10) || noAttendingEvents.exists,
+            "Attending should finish in either a populated or valid empty state"
+        )
+        let attendingEventCount = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'events.event.'"))
+            .count
+        if attendingEventCount < 30 {
+            XCTAssertFalse(
+                app.buttons["Load more events"].exists,
+                "A partial Attending page must not expose a dead pagination button"
+            )
+        }
+
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()
         let discover = app.staticTexts["Discover Communities"]

@@ -114,7 +114,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var communityEvents: [String: [CommunityEvent]] = [:]
     @Published private(set) var myEvents: [CommunityEvent] = []
     @Published private(set) var isLoadingMyEvents = false
-    @Published private(set) var canLoadMoreMyEvents = true
+    @Published private(set) var canLoadMoreMyEvents = false
     @Published private(set) var feedPosts: [FeedPost] = []
     @Published private(set) var feedEvents: [CommunityEvent] = []
     @Published private(set) var feedCommunitySummaries: [String: CommunitySummary] = [:]
@@ -655,6 +655,10 @@ final class AppModel: ObservableObject {
         let cursor = reset ? nil : myEventsCursor
         let requestID = UUID()
         myEventsRequestID = requestID
+        if reset {
+            myEventsCursor = nil
+            canLoadMoreMyEvents = false
+        }
         isLoadingMyEvents = true
         contentLogger.info("My Events request started reset=\(reset) id=\(requestID.uuidString, privacy: .public)")
         defer {
@@ -2909,7 +2913,7 @@ final class AppModel: ObservableObject {
         myEvents = []
         myEventsCursor = nil
         myEventsRequestID = nil
-        canLoadMoreMyEvents = true
+        canLoadMoreMyEvents = false
         isLoadingMyEvents = false
     }
 
