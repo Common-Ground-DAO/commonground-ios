@@ -165,6 +165,9 @@ final class AppModel: ObservableObject {
     private var feedLoadTask: Task<Void, Never>?
     private var feedLoadTaskID: UUID?
     private var feedLoadTaskKey: String?
+    private var eventFeedLoadTask: Task<Void, Never>?
+    private var eventFeedLoadTaskID: UUID?
+    private var eventFeedLoadTaskKey: String?
     private var postFeedScope: PostFeedScope = .explore
     private var postFeedActorTypes = FeedPostKind.allCases
     private var postFeedTopics: [String] = []
@@ -811,23 +814,49 @@ final class AppModel: ObservableObject {
         let normalizedTopics = topics.sorted {
             $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
         }
-        let queryChanged = eventFeedScope != scope || eventFeedTopics != normalizedTopics
+        let taskKey = Self.eventFeedCacheKey(scope: scope, topics: normalizedTopics)
+        if let task = eventFeedLoadTask, eventFeedLoadTaskKey == taskKey {
+            await task.value
+            return
+        }
+        if eventFeedLoadTaskKey != taskKey {
+            eventFeedLoadTask?.cancel()
+            eventFeedLoadTask = nil
+            eventFeedLoadTaskID = nil
+        }
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performEventFeedLoad(scope: scope, topics: normalizedTopics)
+            guard self.eventFeedLoadTaskID == taskID else { return }
+            self.eventFeedLoadTask = nil
+            self.eventFeedLoadTaskID = nil
+            self.eventFeedLoadTaskKey = nil
+        }
+        eventFeedLoadTaskID = taskID
+        eventFeedLoadTaskKey = taskKey
+        eventFeedLoadTask = task
+        await task.value
+    }
+
+    private func performEventFeedLoad(scope: CommunityFeedScope, topics: [String]) async {
+        let queryChanged = eventFeedScope != scope || eventFeedTopics != topics
         eventFeedScope = scope
-        eventFeedTopics = normalizedTopics
+        eventFeedTopics = topics
         feedEventCursor = nil
         canLoadMoreFeedEvents = true
         if queryChanged || feedEvents.isEmpty {
             if let offlineDatabase,
                let cached = try? await offlineDatabase.eventFeedSnapshot(
                    scope: scope,
-                   topics: normalizedTopics
+                   topics: topics
                ) {
                 feedEvents = cached.events
             } else if queryChanged {
                 feedEvents = []
             }
         }
-        await requestFeedEvents(reset: true, scope: scope, topics: normalizedTopics)
+        await requestFeedEvents(reset: true, scope: scope, topics: topics)
     }
 
     func loadMoreFeedEvents() async {
@@ -2889,6 +2918,10 @@ final class AppModel: ObservableObject {
         feedLoadTask = nil
         feedLoadTaskID = nil
         feedLoadTaskKey = nil
+        eventFeedLoadTask?.cancel()
+        eventFeedLoadTask = nil
+        eventFeedLoadTaskID = nil
+        eventFeedLoadTaskKey = nil
         feedPosts = []
         feedEvents = []
         feedCommunitySummaries = [:]
@@ -2950,6 +2983,13 @@ final class AppModel: ObservableObject {
             topics.joined(separator: "\u{1E}"),
             verification.rawValue,
         ].joined(separator: "\u{1F}")
+    }
+
+    private static func eventFeedCacheKey(
+        scope: CommunityFeedScope,
+        topics: [String]
+    ) -> String {
+        scope.rawValue + "\u{1F}" + topics.joined(separator: "\u{1E}")
     }
 
     private func didAuthenticate(_ session: AuthSession, offline: Bool = false) async {
