@@ -66,6 +66,7 @@ final class CommonGroundAppUITests: XCTestCase {
 
         let composerPrompt = app.buttons["feed.composer.prompt"]
         XCTAssertTrue(composerPrompt.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["feed.navigation.back"].exists)
         XCTAssertTrue(app.buttons["Filters"].exists)
         composerPrompt.tap()
         XCTAssertTrue(app.navigationBars["Create Post"].waitForExistence(timeout: 5))
@@ -103,7 +104,7 @@ final class CommonGroundAppUITests: XCTestCase {
         back.tap()
         XCTAssertTrue(composerPrompt.waitForExistence(timeout: 5))
 
-        app.swipeRight()
+        app.buttons["feed.navigation.back"].tap()
         let events = app.staticTexts["Events"]
         XCTAssertTrue(events.waitForExistence(timeout: 5))
         events.tap()

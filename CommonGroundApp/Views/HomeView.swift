@@ -667,7 +667,10 @@ private struct HomeContent: View {
                 openChat: openChat
             )
         case .feed:
-            FeedView(store: store)
+            FeedView(
+                store: store,
+                showNavigation: { preferredCompactColumn = .sidebar }
+            )
         case .discoverCommunities:
             CommunityDiscoveryView(store: store) { communityID in
                 await openDiscoveredCommunity(communityID)
@@ -1142,6 +1145,7 @@ private extension FeedVerification {
 private struct FeedView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
+    let showNavigation: () -> Void
     @State private var scope: PostFeedScope = .explore
     @State private var actorTypes = Set(FeedPostKind.allCases)
     @State private var topics: Set<String> = []
@@ -1173,40 +1177,55 @@ private struct FeedView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                if let ownUser = store.ownUser {
-                    HStack(spacing: 0) {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button("Back", systemImage: "chevron.left", action: showNavigation)
+                    .labelStyle(.iconOnly)
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .background(.thinMaterial, in: Circle())
+                    .accessibilityIdentifier("feed.navigation.back")
+                Text("Feed")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                feedFilterMenu
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.bar)
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if let ownUser = store.ownUser {
                         FeedPostComposerPrompt(
                             name: ownUser.displayName,
                             imageURL: ownUserImageID.flatMap { model.attachmentURLs[$0] }
                         ) {
                             showPostComposer = true
                         }
-                        feedFilterMenu
-                            .padding(.trailing, 14)
                     }
-                    .background(Color(uiColor: .systemBackground))
-                }
-                if isInitiallyLoading {
-                    ProgressView("Loading Feed…")
+                    if isInitiallyLoading {
+                        ProgressView("Loading Feed…")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 70)
+                    } else if model.feedPosts.isEmpty {
+                        ContentUnavailableView(
+                            "Nothing in this Feed yet",
+                            systemImage: "rectangle.stack",
+                            description: Text(emptyDescription)
+                        )
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 70)
-                } else if model.feedPosts.isEmpty {
-                    ContentUnavailableView(
-                        "Nothing in this Feed yet",
-                        systemImage: "rectangle.stack",
-                        description: Text(emptyDescription)
-                    )
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 50)
-                } else {
-                    postContent
+                        .padding(.vertical, 50)
+                    } else {
+                        postContent
+                    }
                 }
+                .frame(maxWidth: 720, alignment: .leading)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 720, alignment: .leading)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity)
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .toolbar(.hidden, for: .navigationBar)
