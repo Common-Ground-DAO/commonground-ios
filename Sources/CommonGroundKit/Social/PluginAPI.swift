@@ -4,10 +4,15 @@ public struct PluginAPI: Sendable {
     private let transport: HTTPTransport
     public init(transport: HTTPTransport) { self.transport = transport }
 
-    public func appStore(query: String? = nil, limit: Int = 50, offset: Int = 0) async throws -> [AppStorePlugin] {
+    public func appStore(
+        query: String? = nil,
+        tags: [String]? = nil,
+        limit: Int = 50,
+        offset: Int = 0
+    ) async throws -> [AppStorePlugin] {
         let response: AppStorePluginResponse = try await transport.call(
             "Plugins/getAppstorePlugins",
-            body: AppStorePluginRequest(query: query, tags: nil, limit: limit, offset: offset)
+            body: AppStorePluginRequest(query: query, tags: tags, limit: limit, offset: offset)
         )
         return response.plugins
     }

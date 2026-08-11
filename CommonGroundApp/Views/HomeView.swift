@@ -5928,113 +5928,145 @@ private struct NotificationRow: View {
     }
 }
 
-private enum ExploreHubSection: String, CaseIterable, Identifiable {
-    case search
-    case communities
-    case apps
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .search: "Everything"
-        case .communities: "Communities"
-        case .apps: "Apps"
-        }
-    }
-}
-
 private struct ExploreHubView: View {
-    let communities: [Community]
-    @ObservedObject var store: SyncStore
-    let openChannel: (String, String) -> Void
-    let openChat: (String) -> Void
-    let openCommunity: (String) async -> Void
-    @State private var section: ExploreHubSection = .search
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Picker("Search scope", selection: $section) {
-                ForEach(ExploreHubSection.allCases) { section in
-                    Text(section.title).tag(section)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-
-            Divider()
-
-            switch section {
-            case .search:
-                SearchView(
-                    communities: communities,
-                    store: store,
-                    openChannel: openChannel,
-                    openChat: openChat
-                )
-            case .communities:
-                CommunityDiscoveryView(store: store, openCommunity: openCommunity)
-            case .apps:
-                RootAppStoreView(store: store)
-            }
-        }
-        .navigationTitle("Search")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-private struct SearchView: View {
     @EnvironmentObject private var model: AppModel
     let communities: [Community]
     @ObservedObject var store: SyncStore
     let openChannel: (String, String) -> Void
     let openChat: (String) -> Void
+    let openCommunity: (String) async -> Void
     @State private var query = ""
+    @State private var selectedTags: Set<String> = []
     @State private var selectedUser: UserProfile?
+    @State private var selectedPlugin: AppStorePlugin?
+    @State private var openingCommunityIDs: Set<String> = []
+    @State private var showTagPicker = false
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isLanding: Bool { trimmedQuery.isEmpty && selectedTags.isEmpty }
+
+    private var request: ExploreHubRequest {
+        ExploreHubRequest(query: trimmedQuery, tags: selectedTags.sorted())
+    }
 
     private var channelResults: [(Community, Channel)] {
-        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        guard !trimmedQuery.isEmpty else { return [] }
         return communities.flatMap { community in
             community.channels
                 .filter {
-                    $0.title.localizedCaseInsensitiveContains(query)
-                        || community.title.localizedCaseInsensitiveContains(query)
+                    $0.title.localizedCaseInsensitiveContains(trimmedQuery)
+                        || community.title.localizedCaseInsensitiveContains(trimmedQuery)
                 }
                 .map { (community, $0) }
         }
     }
 
-    private var userResults: [UserProfile] {
+    private var searchProfiles: [UserProfile] {
         model.userSearchResultIDs.compactMap { store.users[$0] }
+    }
+
+    private var suggestionRows: [(SuggestedUser, UserProfile)] {
+        model.suggestedUsers.compactMap { suggestion in
+            store.users[suggestion.userId].map { (suggestion, $0) }
+        }
+    }
+
+    private var isInitialLoading: Bool {
+        model.isLoadingSuggestedUsers
+            || model.isLoadingCommunities
+            || model.isLoadingAppStore
+            || model.isSearchingUsers
+    }
+
+    private var hasResults: Bool {
+        if isLanding {
+            return !suggestionRows.isEmpty
+                || !model.communityResults.isEmpty
+                || !model.appStorePlugins.isEmpty
+        }
+        return !searchProfiles.isEmpty
+            || !model.communityResults.isEmpty
+            || !model.appStorePlugins.isEmpty
+            || !channelResults.isEmpty
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            CompactSearchField(text: $query, prompt: "People, communities, and channels")
+            HStack(spacing: 10) {
+                CompactSearchField(text: $query, prompt: "Search Common Ground")
+                Button {
+                    showTagPicker = true
+                } label: {
+                    Image(
+                        systemName: selectedTags.isEmpty
+                            ? "line.3.horizontal.decrease"
+                            : "line.3.horizontal.decrease.circle.fill"
+                    )
+                    .frame(width: 42, height: 42)
+                    .background(Color(uiColor: .secondarySystemBackground), in: Circle())
+                }
+                .accessibilityLabel(selectedTags.isEmpty ? "Topics" : "Topics, \(selectedTags.count) selected")
+            }
+            .font(.title3.weight(.semibold))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            SelectedTopicChips(topics: $selectedTags)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.bottom, selectedTags.isEmpty ? 0 : 8)
 
             Group {
-                if query.isEmpty {
+                if !hasResults && isInitialLoading {
+                    ProgressView(isLanding ? "Finding things for you…" : "Searching…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if !hasResults && isLanding {
                     ContentUnavailableView(
-                        "Search this instance",
-                        systemImage: "magnifyingglass",
-                        description: Text("Start with a community or channel name.")
+                        "Nothing to discover yet",
+                        systemImage: "sparkles",
+                        description: Text("Pull to refresh as this Common Ground grows.")
                     )
-                } else if channelResults.isEmpty && userResults.isEmpty && !model.isSearchingUsers {
-                    ContentUnavailableView.search(text: query)
+                } else if !hasResults {
+                    ContentUnavailableView.search(text: trimmedQuery)
                 } else {
                     List {
-                        if !userResults.isEmpty {
+                        if isLanding, !suggestionRows.isEmpty {
+                            Section("People to discover") {
+                                ForEach(suggestionRows, id: \.0.userId) { suggestion, user in
+                                    SuggestedPersonRow(
+                                        user: user,
+                                        reason: suggestionSubtitle(suggestion),
+                                        avatarURL: user.imageID.flatMap { model.attachmentURLs[$0] },
+                                        open: { selectedUser = user },
+                                        follow: {
+                                            Task { await model.setFollowing(userID: user.id, following: true) }
+                                        }
+                                    )
+                                }
+                                if model.canLoadMoreSuggestedUsers {
+                                    Button("More people", systemImage: "arrow.down.circle") {
+                                        Task { await model.loadSuggestedUsers(reset: false) }
+                                    }
+                                    .disabled(model.isLoadingSuggestedUsers)
+                                }
+                            }
+                        }
+                        if !isLanding, !searchProfiles.isEmpty {
                             Section("People") {
-                                ForEach(userResults) { user in
+                                ForEach(searchProfiles) { user in
                                     Button { selectedUser = user } label: {
                                         HStack(spacing: 12) {
-                                            Avatar(name: user.displayName, isBot: user.isBot, small: true)
+                                            Avatar(
+                                                name: user.displayName,
+                                                url: user.imageID.flatMap { model.attachmentURLs[$0] },
+                                                isBot: user.isBot,
+                                                small: true
+                                            )
                                             VStack(alignment: .leading, spacing: 3) {
                                                 Text(user.displayName).fontWeight(.semibold)
-                                                Text(user.onlineStatus.capitalized)
+                                                Text("\(user.followerCount) followers")
                                                     .font(.caption)
                                                     .foregroundStyle(.secondary)
                                             }
@@ -6044,7 +6076,47 @@ private struct SearchView: View {
                                 }
                             }
                         }
-                        if !channelResults.isEmpty {
+                        if !model.communityResults.isEmpty {
+                            Section(isLanding ? "Popular communities" : "Communities") {
+                                ForEach(model.communityResults) { community in
+                                    CommunityDiscoveryRow(
+                                        community: community,
+                                        isJoined: store.communities[community.id] != nil,
+                                        isOpening: openingCommunityIDs.contains(community.id),
+                                        open: { open(community.id) }
+                                    )
+                                }
+                            }
+                        }
+                        if !model.appStorePlugins.isEmpty {
+                            Section(isLanding ? "New apps" : "Apps") {
+                                ForEach(model.appStorePlugins) { plugin in
+                                    Button { selectedPlugin = plugin } label: {
+                                        HStack(alignment: .top, spacing: 12) {
+                                            AppStoreMark(
+                                                name: plugin.name,
+                                                url: plugin.imageId.flatMap { model.attachmentURLs[$0] }
+                                            )
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(plugin.name).fontWeight(.semibold)
+                                                Text(plugin.description)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(2)
+                                                Label("Used by \(plugin.communityCount) communities", systemImage: "person.3")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.tertiary)
+                                            }
+                                            Spacer(minLength: 0)
+                                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        if !isLanding, !channelResults.isEmpty {
                             Section("Channels") {
                                 ForEach(channelResults, id: \.1.channelId) { community, channel in
                                     Button { openChannel(channel.channelId, community.id) } label: {
@@ -6060,18 +6132,32 @@ private struct SearchView: View {
                             }
                         }
                     }
-                    .overlay { if model.isSearchingUsers { ProgressView() } }
+                    .listStyle(.plain)
+                    .refreshable { await loadContent() }
+                    .overlay(alignment: .top) {
+                        if isInitialLoading {
+                            ProgressView().controlSize(.small).padding(.top, 4)
+                        }
+                    }
                 }
             }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .task(id: query) {
+        .task(id: request) {
             do {
-                try await Task.sleep(for: .milliseconds(300))
-                await model.searchUsers(query: query)
+                try await Task.sleep(for: .milliseconds(isLanding ? 0 : 300))
+                guard !Task.isCancelled else { return }
+                await loadContent()
             } catch {
                 // A newer keystroke cancelled this search.
             }
+        }
+        .sheet(isPresented: $showTagPicker) {
+            FeedTopicPicker(
+                availableTopics: model.feedTopicOptions,
+                initialSelection: selectedTags,
+                footer: "Refine people, communities, and apps by topic."
+            ) { selectedTags = $0 }
         }
         .sheet(item: $selectedUser) { user in
             UserProfileView(userID: user.id, store: store) { chatID in
@@ -6079,6 +6165,98 @@ private struct SearchView: View {
                 openChat(chatID)
             }
         }
+        .sheet(item: $selectedPlugin) { plugin in
+            NavigationStack {
+                RootAppStoreDetail(plugin: plugin, store: store)
+            }
+        }
+    }
+
+    private func loadContent() async {
+        if isLanding {
+            async let people: Void = model.loadSuggestedUsers()
+            async let publicCommunities: Void = model.discoverCommunities(limit: 10)
+            async let apps: Void = model.loadAppStorePlugins(limit: 10)
+            _ = await (people, publicCommunities, apps)
+        } else {
+            async let people: Void = model.searchUsers(query: trimmedQuery, tags: selectedTags)
+            async let publicCommunities: Void = model.discoverCommunities(
+                query: trimmedQuery,
+                tags: selectedTags,
+                limit: 30
+            )
+            async let apps: Void = model.loadAppStorePlugins(
+                query: trimmedQuery,
+                tags: selectedTags,
+                limit: 30
+            )
+            _ = await (people, publicCommunities, apps)
+        }
+    }
+
+    private func open(_ communityID: String) {
+        guard !openingCommunityIDs.contains(communityID) else { return }
+        openingCommunityIDs.insert(communityID)
+        Task {
+            await openCommunity(communityID)
+            openingCommunityIDs.remove(communityID)
+        }
+    }
+
+    private func suggestionSubtitle(_ suggestion: SuggestedUser) -> String {
+        switch suggestion.reason.type {
+        case .sharedCommunity:
+            if let communityID = suggestion.reason.communityId,
+               let title = store.communities[communityID]?.title {
+                return "Also in \(title)"
+            }
+            if let count = suggestion.reason.mutualCount, count > 1 {
+                return "\(count) shared communities"
+            }
+            return "Member of a community you're in"
+        case .followedByFollowing:
+            if let count = suggestion.reason.mutualCount, count > 1 {
+                return "Followed by \(count) people you follow"
+            }
+            return "Followed by someone you follow"
+        case .popular:
+            return "Popular on Common Ground"
+        }
+    }
+}
+
+private struct ExploreHubRequest: Hashable {
+    let query: String
+    let tags: [String]
+}
+
+private struct SuggestedPersonRow: View {
+    let user: UserProfile
+    let reason: String
+    let avatarURL: URL?
+    let open: () -> Void
+    let follow: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: open) {
+                HStack(spacing: 12) {
+                    Avatar(name: user.displayName, url: avatarURL, isBot: user.isBot, small: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(user.displayName).fontWeight(.semibold).foregroundStyle(.primary)
+                        Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 8)
+            Button("Follow", action: follow)
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .tint(AppTheme.accent)
+        }
+        .padding(.vertical, 3)
     }
 }
 

@@ -150,6 +150,29 @@ public struct UserSearchHit: Decodable, Equatable, Identifiable, Sendable {
     }
 }
 
+public enum SuggestedUserReasonType: String, Codable, Equatable, Sendable {
+    case sharedCommunity
+    case followedByFollowing
+    case popular
+}
+
+public struct SuggestedUserReason: Codable, Equatable, Sendable {
+    public let type: SuggestedUserReasonType
+    public let communityId: String?
+    public let mutualCount: Int?
+}
+
+public struct SuggestedUser: Codable, Equatable, Identifiable, Sendable {
+    public let userId: String
+    public let reason: SuggestedUserReason
+    public var id: String { userId }
+}
+
+public struct SuggestedUsersPage: Codable, Equatable, Sendable {
+    public let users: [SuggestedUser]
+    public let nextCursor: String?
+}
+
 public struct UserProfileDetails: Decodable, Equatable, Sendable {
     public let detailledProfiles: [ProfileItem]
     public let wallets: [JSONValue]

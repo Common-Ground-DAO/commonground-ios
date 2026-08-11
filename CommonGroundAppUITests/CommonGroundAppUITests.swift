@@ -150,9 +150,8 @@ final class CommonGroundAppUITests: XCTestCase {
         let search = app.buttons["navigation.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
-        app.segmentedControls.buttons["Communities"].tap()
-        XCTAssertTrue(app.textFields["Community name or tag"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["Tags"].exists)
+        XCTAssertTrue(app.textFields["Search Common Ground"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Topics"].exists)
         let firstCommunity = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'community.discovery.'"))
             .firstMatch

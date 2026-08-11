@@ -91,6 +91,9 @@ final class AppModel: ObservableObject {
     @Published var isLoadingNotifications = false
     @Published var isSearchingUsers = false
     @Published private(set) var userSearchResultIDs: [String] = []
+    @Published private(set) var suggestedUsers: [SuggestedUser] = []
+    @Published private(set) var isLoadingSuggestedUsers = false
+    @Published private(set) var canLoadMoreSuggestedUsers = false
     @Published var isLoadingCommunities = false
     @Published private(set) var isRefreshingHome = false
     @Published private(set) var communityResults: [CommunitySummary] = []
@@ -153,6 +156,9 @@ final class AppModel: ObservableObject {
     private var didAttemptLaunchRestore = false
     private var appIsActive = true
     private var communityDiscoveryRequestID: UUID?
+    private var userSearchRequestID: UUID?
+    private var suggestedUsersRequestID: UUID?
+    private var suggestedUsersCursor: String?
     private var myEventsCursor: (scheduledBefore: String, beforeID: String)?
     private var myEventsRequestID: UUID?
     private var myEventsLoadTask: Task<Void, Never>?
@@ -504,24 +510,83 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func searchUsers(query: String) async {
+    func searchUsers(query: String, tags: Set<String> = []) async {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, let client else {
+        guard (!value.isEmpty || !tags.isEmpty), let client else {
+            userSearchRequestID = nil
             userSearchResultIDs = []
+            isSearchingUsers = false
             return
         }
+        let requestID = UUID()
+        userSearchRequestID = requestID
         isSearchingUsers = true
-        defer { isSearchingUsers = false }
+        defer {
+            if userSearchRequestID == requestID {
+                userSearchRequestID = nil
+                isSearchingUsers = false
+            }
+        }
         do {
-            let hits = try await client.profiles.searchUsers(query: value)
+            let hits = try await client.profiles.searchUsers(
+                query: value,
+                tags: tags.isEmpty ? nil : tags.sorted()
+            )
             let ids = hits.map(\.id)
-            if !ids.isEmpty { store.seed(users: try await client.profiles.users(ids: ids)) }
+            if !ids.isEmpty {
+                let users = try await client.profiles.users(ids: ids)
+                store.seed(users: users)
+                await loadAttachmentURLs(objectIDs: users.compactMap(\.imageID))
+            }
+            guard userSearchRequestID == requestID else { return }
             userSearchResultIDs = ids
         } catch is CancellationError {
             return
         } catch {
-            userSearchResultIDs = []
-            errorMessage = userMessage(for: error)
+            if userSearchRequestID == requestID {
+                userSearchResultIDs = []
+                errorMessage = userMessage(for: error)
+            }
+        }
+    }
+
+    func loadSuggestedUsers(reset: Bool = true) async {
+        guard let client else { return }
+        if reset {
+            suggestedUsersCursor = nil
+            canLoadMoreSuggestedUsers = false
+        } else if suggestedUsersCursor == nil {
+            return
+        }
+        let requestID = UUID()
+        suggestedUsersRequestID = requestID
+        isLoadingSuggestedUsers = true
+        defer {
+            if suggestedUsersRequestID == requestID {
+                suggestedUsersRequestID = nil
+                isLoadingSuggestedUsers = false
+            }
+        }
+        do {
+            let page = try await client.profiles.suggestedUsers(
+                limit: 10,
+                cursor: reset ? nil : suggestedUsersCursor
+            )
+            guard suggestedUsersRequestID == requestID else { return }
+            if reset {
+                suggestedUsers = page.users
+            } else {
+                let existing = Set(suggestedUsers.map(\.userId))
+                suggestedUsers.append(contentsOf: page.users.filter { !existing.contains($0.userId) })
+            }
+            suggestedUsersCursor = page.nextCursor
+            canLoadMoreSuggestedUsers = page.nextCursor != nil
+            await refreshUsers(ids: page.users.map(\.userId))
+            await persistDiscoverySnapshot()
+        } catch is CancellationError {
+            return
+        } catch {
+            if suggestedUsers.isEmpty { errorMessage = userMessage(for: error) }
         }
     }
 
@@ -534,6 +599,10 @@ final class AppModel: ObservableObject {
                 try await client.profiles.unfollow(userID: userID)
             }
             store.setFollowing(userID: userID, isFollowed: following)
+            if following {
+                suggestedUsers.removeAll { $0.userId == userID }
+                await persistDiscoverySnapshot()
+            }
         } catch {
             errorMessage = userMessage(for: error)
         }
@@ -1550,7 +1619,11 @@ final class AppModel: ObservableObject {
         await refreshUsers(ids: chats.flatMap(\.userIds))
     }
 
-    func discoverCommunities(query: String = "", tags: Set<String> = []) async {
+    func discoverCommunities(
+        query: String = "",
+        tags: Set<String> = [],
+        limit: Int = 50
+    ) async {
         guard let client else { return }
         let requestID = UUID()
         communityDiscoveryRequestID = requestID
@@ -1566,7 +1639,8 @@ final class AppModel: ObservableObject {
             let results = try await client.communities.list(
                 search: value.isEmpty ? nil : value,
                 tags: tags.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
-                sort: value.isEmpty ? .popular : .new
+                sort: value.isEmpty ? .popular : .new,
+                limit: limit
             )
             guard communityDiscoveryRequestID == requestID else { return }
             communityResults = results
@@ -1575,6 +1649,9 @@ final class AppModel: ObservableObject {
                     [$0.logoSmallId, $0.logoLargeId, $0.headerImageId].compactMap { $0 }
                 }
             )
+            if value.isEmpty && tags.isEmpty {
+                await persistDiscoverySnapshot()
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -2230,7 +2307,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func loadAppStorePlugins(query: String = "") async {
+    func loadAppStorePlugins(
+        query: String = "",
+        tags: Set<String> = [],
+        limit: Int = 50
+    ) async {
         guard let client else { return }
         let requestID = UUID()
         appStoreRequestID = requestID
@@ -2240,11 +2321,16 @@ final class AppModel: ObservableObject {
         }
         do {
             let plugins = try await client.plugins.appStore(
-                query: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : query
+                query: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : query,
+                tags: tags.isEmpty ? nil : tags.sorted(),
+                limit: limit
             )
             guard appStoreRequestID == requestID else { return }
             appStorePlugins = plugins
             await loadAttachmentURLs(objectIDs: plugins.compactMap(\.imageId))
+            if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && tags.isEmpty {
+                await persistDiscoverySnapshot()
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -2862,6 +2948,7 @@ final class AppModel: ObservableObject {
         selectedChatID = nil
         resetMyEventsPagination()
         resetFeedPagination()
+        resetDiscovery()
         attachmentURLs = [:]
         attachmentURLExpirations = [:]
         await store.clearPersistentData()
@@ -2898,6 +2985,7 @@ final class AppModel: ObservableObject {
         selectedChatID = nil
         resetMyEventsPagination()
         resetFeedPagination()
+        resetDiscovery()
         attachmentURLs = [:]
         attachmentURLExpirations = [:]
         store.reset()
@@ -2915,6 +3003,21 @@ final class AppModel: ObservableObject {
         myEventsRequestID = nil
         canLoadMoreMyEvents = false
         isLoadingMyEvents = false
+    }
+
+    private func resetDiscovery() {
+        suggestedUsersRequestID = nil
+        userSearchRequestID = nil
+        suggestedUsersCursor = nil
+        suggestedUsers = []
+        userSearchResultIDs = []
+        communityResults = []
+        appStorePlugins = []
+        canLoadMoreSuggestedUsers = false
+        isLoadingSuggestedUsers = false
+        isSearchingUsers = false
+        isLoadingCommunities = false
+        isLoadingAppStore = false
     }
 
     private func resetFeedPagination() {
@@ -2975,6 +3078,17 @@ final class AppModel: ObservableObject {
         )
     }
 
+    private func persistDiscoverySnapshot() async {
+        guard let offlineDatabase else { return }
+        try? await offlineDatabase.saveDiscoverySnapshot(
+            OfflineDiscoverySnapshot(
+                suggestedUsers: suggestedUsers,
+                communities: communityResults,
+                apps: appStorePlugins
+            )
+        )
+    }
+
     private static func postFeedCacheKey(
         scope: PostFeedScope,
         actorTypes: [FeedPostKind],
@@ -3031,6 +3145,11 @@ final class AppModel: ObservableObject {
                 eventFeedScope = .explore
                 eventFeedTopics = []
             }
+            if let cachedDiscovery = try? await database.discoverySnapshot() {
+                suggestedUsers = cachedDiscovery.suggestedUsers
+                communityResults = cachedDiscovery.communities
+                appStorePlugins = cachedDiscovery.apps
+            }
         } catch {
             // Persistence failure must not block an otherwise healthy session.
             offlineDatabase = nil
@@ -3066,10 +3185,12 @@ final class AppModel: ObservableObject {
         guard !offline else { return }
 
         await startRealtime(session)
-        // Warm the read-only public directory after authentication so the Feed
-        // opens immediately and restored sessions continuously smoke-test the
-        // deployed community-list contract.
-        await discoverCommunities()
+        // Warm the unified discovery landing after authentication so people,
+        // communities, and apps are already available when Search opens.
+        async let people: Void = loadSuggestedUsers()
+        async let communities: Void = discoverCommunities(limit: 10)
+        async let apps: Void = loadAppStorePlugins(limit: 10)
+        _ = await (people, communities, apps)
     }
 
     private func startRealtime(_ session: AuthSession) async {

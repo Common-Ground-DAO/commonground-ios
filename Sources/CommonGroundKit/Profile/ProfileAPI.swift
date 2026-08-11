@@ -35,6 +35,16 @@ public struct ProfileAPI: Sendable {
         )
     }
 
+    public func suggestedUsers(
+        limit: Int = 10,
+        cursor: String? = nil
+    ) async throws -> SuggestedUsersPage {
+        try await transport.call(
+            "User/getSuggestedUsers",
+            body: SuggestedUsersRequest(limit: limit, cursor: cursor)
+        )
+    }
+
     public func follow(userID: String) async throws {
         let _: EmptyResponse = try await transport.call(
             "User/followUser",
@@ -112,4 +122,8 @@ private struct SearchUsersRequest: Encodable, Sendable {
     let limit: Int
     let offset: Int
     let tags: [String]?
+}
+private struct SuggestedUsersRequest: Encodable, Sendable {
+    let limit: Int
+    let cursor: String?
 }

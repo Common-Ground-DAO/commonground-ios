@@ -51,6 +51,22 @@ public struct OfflineEventFeedSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+public struct OfflineDiscoverySnapshot: Codable, Equatable, Sendable {
+    public let suggestedUsers: [SuggestedUser]
+    public let communities: [CommunitySummary]
+    public let apps: [AppStorePlugin]
+
+    public init(
+        suggestedUsers: [SuggestedUser],
+        communities: [CommunitySummary],
+        apps: [AppStorePlugin]
+    ) {
+        self.suggestedUsers = suggestedUsers
+        self.communities = communities
+        self.apps = apps
+    }
+}
+
 public enum OfflineDatabaseError: Error, LocalizedError {
     case open(String)
     case statement(String)
@@ -304,6 +320,14 @@ public actor OfflineDatabase {
             id: Self.eventFeedCacheID(scope: snapshot.scope, topics: snapshot.topics),
             value: snapshot
         )
+    }
+
+    public func discoverySnapshot() throws -> OfflineDiscoverySnapshot? {
+        try load(kind: "discovery", id: "landing", as: OfflineDiscoverySnapshot.self)
+    }
+
+    public func saveDiscoverySnapshot(_ snapshot: OfflineDiscoverySnapshot) throws {
+        try upsert(kind: "discovery", id: "landing", value: snapshot)
     }
 
     public func save(notification: AppNotification, unreadCount: Int) throws {

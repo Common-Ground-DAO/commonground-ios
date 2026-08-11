@@ -340,6 +340,32 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(users[0].tags, ["swift"])
     }
 
+    func testSuggestedUsersUsesOpaqueCursorContract() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/User/getSuggestedUsers")
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(object["limit"] as? Int, 10)
+            XCTAssertEqual(object["cursor"] as? String, "next-page")
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":{"users":[{"userId":"11111111-1111-1111-1111-111111111111","reason":{"type":"sharedCommunity","communityId":"22222222-2222-2222-2222-222222222222","mutualCount":2}}],"nextCursor":"opaque-cursor"}}"#
+            )
+        }
+        let api = ProfileAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+
+        let page = try await api.suggestedUsers(limit: 10, cursor: "next-page")
+        XCTAssertEqual(page.users.first?.reason.type, .sharedCommunity)
+        XCTAssertEqual(page.users.first?.reason.mutualCount, 2)
+        XCTAssertEqual(page.nextCursor, "opaque-cursor")
+    }
+
     func testCommunityDiscoveryCreateAndUpdateContracts() async throws {
         MockURLProtocol.handler = { request in
             switch request.url?.path {
@@ -1141,6 +1167,38 @@ final class CommonGroundKitTests: XCTestCase {
             verification: .both
         )
         XCTAssertNil(missingSnapshot)
+    }
+
+    func testOfflineDatabasePersistsDiscoveryLanding() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "cg-discovery-cache-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let fileURL = directory.appending(path: "cache.sqlite3")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let suggestion = try JSONDecoder().decode(
+            SuggestedUser.self,
+            from: Data(#"{"userId":"user-1","reason":{"type":"popular"}}"#.utf8)
+        )
+        let community = try JSONDecoder().decode(
+            CommunitySummary.self,
+            from: Data(#"{"id":"community-1","url":"swift","title":"Swift","logoSmallId":null,"logoLargeId":null,"headerImageId":null,"shortDescription":"Native apps","memberCount":12,"tags":["swift"],"createdAt":"2026-08-11T00:00:00Z","updatedAt":"2026-08-11T00:00:00Z"}"#.utf8)
+        )
+        let app = try JSONDecoder().decode(
+            AppStorePlugin.self,
+            from: Data(#"{"pluginId":"plugin-1","ownerCommunityId":"community-1","url":"calendar","description":"Events","permissions":{"mandatory":[],"optional":[]},"imageId":null,"name":"Calendar","communityCount":4,"appstoreEnabled":true,"tags":["events"]}"#.utf8)
+        )
+
+        let database = try OfflineDatabase(fileURL: fileURL, scope: "test-account")
+        let snapshot = OfflineDiscoverySnapshot(
+            suggestedUsers: [suggestion],
+            communities: [community],
+            apps: [app]
+        )
+        try await database.saveDiscoverySnapshot(snapshot)
+
+        let reopened = try OfflineDatabase(fileURL: fileURL, scope: "test-account")
+        let restored = try await reopened.discoverySnapshot()
+        XCTAssertEqual(restored, snapshot)
     }
 
     func testImageUploadUsesMultipartAndAcceptsBareSuccess() async throws {
