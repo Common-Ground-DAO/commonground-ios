@@ -6142,7 +6142,8 @@ private struct ExploreHubView: View {
                 }
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Search")
+        .navigationBarTitleDisplayMode(.inline)
         .task(id: request) {
             do {
                 try await Task.sleep(for: .milliseconds(isLanding ? 0 : 300))

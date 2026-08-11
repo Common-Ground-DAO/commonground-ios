@@ -152,6 +152,7 @@ final class CommonGroundAppUITests: XCTestCase {
         search.tap()
         XCTAssertTrue(app.textFields["Search Common Ground"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Topics"].exists)
+        XCTAssertTrue(back.exists, "Search should retain the compact-column back affordance")
         let firstCommunity = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'community.discovery.'"))
             .firstMatch
