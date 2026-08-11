@@ -66,7 +66,7 @@ final class CommonGroundAppUITests: XCTestCase {
 
         let composerPrompt = app.buttons["feed.composer.prompt"]
         XCTAssertTrue(composerPrompt.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["feed.navigation.back"].exists)
+        XCTAssertTrue(back.exists)
         XCTAssertTrue(app.buttons["Filters"].exists)
         composerPrompt.tap()
         XCTAssertTrue(app.navigationBars["Create Post"].waitForExistence(timeout: 5))
@@ -104,8 +104,15 @@ final class CommonGroundAppUITests: XCTestCase {
         back.tap()
         XCTAssertTrue(composerPrompt.waitForExistence(timeout: 5))
 
-        app.buttons["feed.navigation.back"].tap()
-        let events = app.staticTexts["Events"]
+        back.tap()
+        let notifications = app.buttons["navigation.notifications"]
+        XCTAssertTrue(notifications.waitForExistence(timeout: 5))
+        notifications.tap()
+        XCTAssertTrue(app.navigationBars.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(back.exists)
+        back.tap()
+
+        let events = app.buttons["navigation.events"]
         XCTAssertTrue(events.waitForExistence(timeout: 5))
         events.tap()
         XCTAssertTrue(app.segmentedControls.buttons["Upcoming"].waitForExistence(timeout: 10))
@@ -140,10 +147,11 @@ final class CommonGroundAppUITests: XCTestCase {
 
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()
-        let discover = app.staticTexts["Discover Communities"]
-        XCTAssertTrue(discover.waitForExistence(timeout: 5))
-        discover.tap()
-        XCTAssertTrue(app.searchFields["Community name or tag"].waitForExistence(timeout: 10))
+        let search = app.buttons["navigation.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        app.segmentedControls.buttons["Communities"].tap()
+        XCTAssertTrue(app.textFields["Community name or tag"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Tags"].exists)
         let firstCommunity = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'community.discovery.'"))

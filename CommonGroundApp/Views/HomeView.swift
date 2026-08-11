@@ -13,20 +13,16 @@ struct HomeView: View {
 }
 
 private enum SidebarItem: Hashable {
-    case overview
     case events
     case directMessages
     case notifications
     case search
     case feed
-    case discoverCommunities
-    case appStore
     case publicCommunity(String)
     case community(String)
 }
 
 private enum NavigationSpace: Hashable {
-    case home
     case messages
     case publicCommunity(String)
     case community(String)
@@ -58,8 +54,8 @@ private struct EventRoute: Identifiable {
 private struct HomeContent: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
-    @State private var selectedSpace: NavigationSpace = .home
-    @State private var sidebarSelection: SidebarItem? = .overview
+    @State private var selectedSpace: NavigationSpace = .messages
+    @State private var sidebarSelection: SidebarItem? = .feed
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var showAccount = false
@@ -176,9 +172,8 @@ private struct HomeContent: View {
                 selectedSpace = .publicCommunity(id)
             case .directMessages:
                 selectedSpace = .messages
-            case .overview, .events, .notifications, .search, .feed,
-                 .discoverCommunities, .appStore:
-                selectedSpace = .home
+            case .events, .notifications, .search, .feed:
+                break
             case nil:
                 break
             }
@@ -223,26 +218,11 @@ private struct HomeContent: View {
     private var spaceRail: some View {
         VStack(spacing: 10) {
             railDestination(
-                title: "Home",
-                systemImage: "sparkles",
-                selected: selectedSpace == .home && sidebarSelection != .feed
-            ) {
-                rememberCurrentCommunityDestination()
-                selectedSpace = .home
-                if !isHomeDestination(sidebarSelection) || sidebarSelection == .feed {
-                    sidebarSelection = .overview
-                }
-                preferredCompactColumn = .sidebar
-            }
-            .accessibilityIdentifier("navigation.home")
-
-            railDestination(
                 title: "Feed",
                 systemImage: "newspaper.fill",
-                selected: selectedSpace == .home && sidebarSelection == .feed
+                selected: sidebarSelection == .feed
             ) {
                 rememberCurrentCommunityDestination()
-                selectedSpace = .home
                 sidebarSelection = .feed
                 preferredCompactColumn = .detail
             }
@@ -252,13 +232,36 @@ private struct HomeContent: View {
                 title: "Messages",
                 systemImage: "bubble.left.fill",
                 badge: unreadChatCount,
-                selected: selectedSpace == .messages
+                selected: sidebarSelection == .directMessages
             ) {
                 rememberCurrentCommunityDestination()
                 selectedSpace = .messages
                 sidebarSelection = .directMessages
+                preferredCompactColumn = .sidebar
             }
             .accessibilityIdentifier("navigation.messages")
+
+            railDestination(
+                title: "Search",
+                systemImage: "magnifyingglass",
+                selected: sidebarSelection == .search
+            ) {
+                rememberCurrentCommunityDestination()
+                sidebarSelection = .search
+                preferredCompactColumn = .detail
+            }
+            .accessibilityIdentifier("navigation.search")
+
+            railDestination(
+                title: "Events",
+                systemImage: "calendar",
+                selected: sidebarSelection == .events
+            ) {
+                rememberCurrentCommunityDestination()
+                sidebarSelection = .events
+                preferredCompactColumn = .detail
+            }
+            .accessibilityIdentifier("navigation.events")
 
             Divider()
                 .padding(.horizontal, 12)
@@ -295,8 +298,6 @@ private struct HomeContent: View {
     @ViewBuilder
     private var navigationPanel: some View {
         switch selectedSpace {
-        case .home:
-            homeNavigationPanel
         case .messages:
             ChatListView(
                 chats: chats,
@@ -336,7 +337,7 @@ private struct HomeContent: View {
                     leave: {
                         Task {
                             if await model.leaveCommunity(id: community.id) {
-                                selectedSpace = .home
+                                selectedSpace = .messages
                                 sidebarSelection = .feed
                                 preferredCompactColumn = .sidebar
                             }
@@ -347,23 +348,6 @@ private struct HomeContent: View {
                 ContentUnavailableView("Community unavailable", systemImage: "person.3")
             }
         }
-    }
-
-    private var homeNavigationPanel: some View {
-        List {
-            Section {
-                homeDestination("Overview", systemImage: "square.grid.2x2", item: .overview)
-                homeDestination("Events", systemImage: "calendar", item: .events)
-                homeDestination("Search", systemImage: "magnifyingglass", item: .search)
-            }
-
-            Section("Explore") {
-                homeDestination("Discover Communities", systemImage: "safari", item: .discoverCommunities)
-                homeDestination("App Store", systemImage: "storefront", item: .appStore)
-            }
-        }
-        .toolbar(.hidden, for: .navigationBar)
-        .refreshable { await model.refreshHome() }
     }
 
     private var accountDock: some View {
@@ -416,7 +400,6 @@ private struct HomeContent: View {
 
             Button {
                 rememberCurrentCommunityDestination()
-                selectedSpace = .home
                 sidebarSelection = .notifications
                 preferredCompactColumn = .detail
             } label: {
@@ -471,41 +454,11 @@ private struct HomeContent: View {
             ?? "offline"
     }
 
-    private func homeDestination(
-        _ title: String,
-        systemImage: String,
-        item: SidebarItem,
-        badge: Int = 0
-    ) -> some View {
-        Button {
-            sidebarSelection = item
-            preferredCompactColumn = .detail
-        } label: {
-            HStack(spacing: 12) {
-                Label(title, systemImage: systemImage)
-                Spacer()
-                if badge > 0 {
-                    unreadBadge(badge)
-                }
-                if sidebarSelection == item {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(AppTheme.accent)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .listRowBackground(
-            sidebarSelection == item ? AppTheme.accent.opacity(0.1) : Color.clear
-        )
-        .accessibilityIdentifier("navigation.destination.\(homeDestinationID(item))")
-    }
-
     private func communityRailDestination(
         _ community: Community,
         isPublicPreview: Bool = false
     ) -> some View {
-        let selected = switch selectedSpace {
+        let selected = switch sidebarSelection {
         case .community(let id), .publicCommunity(let id): id == community.id
         default: false
         }
@@ -591,60 +544,9 @@ private struct HomeContent: View {
         .frame(width: 58, height: 52)
     }
 
-    private func unreadBadge(_ count: Int) -> some View {
-        Text(count, format: .number)
-            .font(.caption2.bold())
-            .foregroundStyle(.white)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(AppTheme.accent, in: Capsule())
-            .accessibilityLabel("\(count) unread")
-    }
-
-    private func isHomeDestination(_ item: SidebarItem?) -> Bool {
-        switch item {
-        case .overview, .events, .notifications, .search, .feed,
-             .discoverCommunities, .appStore:
-            true
-        default:
-            false
-        }
-    }
-
-    private func homeDestinationID(_ item: SidebarItem) -> String {
-        switch item {
-        case .overview: "overview"
-        case .events: "events"
-        case .notifications: "notifications"
-        case .search: "search"
-        case .feed: "feed"
-        case .discoverCommunities: "discoverCommunities"
-        case .appStore: "appStore"
-        case .directMessages: "messages"
-        case .publicCommunity(let id), .community(let id): "community.\(id)"
-        }
-    }
-
     @ViewBuilder
     private var destinationColumn: some View {
         switch sidebarSelection ?? .feed {
-        case .overview:
-            OverviewView(
-                communities: communities,
-                chatCount: chats.count,
-                unreadCount: store.unreadNotificationCount,
-                openCommunity: openCommunity,
-                openMessages: {
-                    selectedSpace = .messages
-                    sidebarSelection = .directMessages
-                    preferredCompactColumn = .sidebar
-                },
-                browseCommunities: {
-                    selectedSpace = .home
-                    sidebarSelection = .discoverCommunities
-                },
-                createCommunity: { showCreateCommunity = true }
-            )
         case .events:
             EventsView(store: store)
         case .directMessages:
@@ -658,25 +560,20 @@ private struct HomeContent: View {
                 )
             }
         case .notifications:
-            NotificationsView(store: store, open: openNotification)
+            NotificationsView(
+                store: store,
+                open: openNotification
+            )
         case .search:
-            SearchView(
+            ExploreHubView(
                 communities: communities,
                 store: store,
                 openChannel: openChannel,
-                openChat: openChat
+                openChat: openChat,
+                openCommunity: openDiscoveredCommunity
             )
         case .feed:
-            FeedView(
-                store: store,
-                showNavigation: { preferredCompactColumn = .sidebar }
-            )
-        case .discoverCommunities:
-            CommunityDiscoveryView(store: store) { communityID in
-                await openDiscoveredCommunity(communityID)
-            }
-        case .appStore:
-            RootAppStoreView(store: store)
+            FeedView(store: store)
         case .publicCommunity(let communityID):
             if let community = publicCommunity, community.id == communityID,
                let channel = community.channels.first(where: { $0.channelId == publicChannelID }) {
@@ -927,12 +824,8 @@ private struct EventsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .center, spacing: 12) {
-                    Text("Discover what is happening across this Common Ground instance.")
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    if mode == .discover { eventFilterMenu }
-                }
+                Text("Discover what is happening across this Common Ground instance.")
+                    .foregroundStyle(.secondary)
 
                 Picker("Events", selection: $mode) {
                     ForEach(EventsContentMode.allCases) { option in
@@ -952,7 +845,13 @@ private struct EventsView: View {
             .padding(20)
             .frame(maxWidth: .infinity)
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Events")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if mode == .discover {
+                ToolbarItem(placement: .primaryAction) { eventFilterMenu }
+            }
+        }
         .refreshable { await refresh() }
         .task(id: query) { await refresh() }
         .sheet(item: $route) { route in
@@ -1145,7 +1044,6 @@ private extension FeedVerification {
 private struct FeedView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
-    let showNavigation: () -> Void
     @State private var scope: PostFeedScope = .explore
     @State private var actorTypes = Set(FeedPostKind.allCases)
     @State private var topics: Set<String> = []
@@ -1177,58 +1075,42 @@ private struct FeedView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Button("Back", systemImage: "chevron.left", action: showNavigation)
-                    .labelStyle(.iconOnly)
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .background(.thinMaterial, in: Circle())
-                    .accessibilityIdentifier("feed.navigation.back")
-                Text("Feed")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                feedFilterMenu
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.bar)
-
-            Divider()
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    if let ownUser = store.ownUser {
-                        FeedPostComposerPrompt(
-                            name: ownUser.displayName,
-                            imageURL: ownUserImageID.flatMap { model.attachmentURLs[$0] }
-                        ) {
-                            showPostComposer = true
-                        }
-                    }
-                    if isInitiallyLoading {
-                        ProgressView("Loading Feed…")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 70)
-                    } else if model.feedPosts.isEmpty {
-                        ContentUnavailableView(
-                            "Nothing in this Feed yet",
-                            systemImage: "rectangle.stack",
-                            description: Text(emptyDescription)
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 50)
-                    } else {
-                        postContent
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                if let ownUser = store.ownUser {
+                    FeedPostComposerPrompt(
+                        name: ownUser.displayName,
+                        imageURL: ownUserImageID.flatMap { model.attachmentURLs[$0] }
+                    ) {
+                        showPostComposer = true
                     }
                 }
-                .frame(maxWidth: 720, alignment: .leading)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
+                if isInitiallyLoading {
+                    ProgressView("Loading Feed…")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 70)
+                } else if model.feedPosts.isEmpty {
+                    ContentUnavailableView(
+                        "Nothing in this Feed yet",
+                        systemImage: "rectangle.stack",
+                        description: Text(emptyDescription)
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 50)
+                } else {
+                    postContent
+                }
             }
+            .frame(maxWidth: 720, alignment: .leading)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
         }
         .background(Color(uiColor: .systemGroupedBackground))
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Feed")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { feedFilterMenu }
+        }
         .refreshable { await load() }
         .task(id: query) { await load() }
         .sheet(isPresented: $showTopicPicker) {
@@ -2022,115 +1904,6 @@ private struct FeedTopicPicker: View {
                 }
             }
         }
-    }
-}
-
-private struct OverviewView: View {
-    @EnvironmentObject private var model: AppModel
-    let communities: [Community]
-    let chatCount: Int
-    let unreadCount: Int
-    let openCommunity: (String) -> Void
-    let openMessages: () -> Void
-    let browseCommunities: () -> Void
-    let createCommunity: () -> Void
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Your Common Ground")
-                        .font(.title2.bold())
-                    Text("Pick up where you left off without being dropped into an arbitrary room.")
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: 12) {
-                    MetricCard(value: communities.count, label: "Communities", systemImage: "person.3")
-                    MetricCard(value: chatCount, label: "Messages", systemImage: "bubble.left.and.bubble.right")
-                    MetricCard(value: unreadCount, label: "Unread", systemImage: "bell")
-                }
-
-                if communities.isEmpty {
-                    ContentUnavailableView(
-                        "No communities yet",
-                        systemImage: "person.3",
-                        description: Text("Communities you join on this instance will appear here.")
-                    )
-                } else {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("COMMUNITIES")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                        ForEach(communities) { community in
-                            Button { openCommunity(community.id) } label: {
-                                HStack(spacing: 12) {
-                                    CommunityMark(
-                                        name: community.title,
-                                        url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
-                                    )
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(community.title).fontWeight(.semibold)
-                                        Text("\(community.channels.count) channels · \(community.memberCount) members")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .padding(12)
-                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-
-                Button(action: openMessages) {
-                    Label("Open direct messages", systemImage: "bubble.left.and.bubble.right")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-
-                Button(action: browseCommunities) {
-                    Label("Browse communities", systemImage: "person.3")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button(action: createCommunity) {
-                    Label("Create a community", systemImage: "plus.circle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(20)
-        }
-        .toolbar(.hidden, for: .navigationBar)
-        .refreshable { await model.refreshHome() }
-        .task { await model.loadNotifications() }
-    }
-}
-
-private struct MetricCard: View {
-    let value: Int
-    let label: String
-    let systemImage: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: systemImage)
-                .foregroundStyle(AppTheme.accent)
-            Text(value, format: .number)
-                .font(.title3.bold())
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -6070,43 +5843,38 @@ private struct NotificationsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        Group {
+            if model.isLoadingNotifications && notifications.isEmpty {
+                ProgressView("Loading notifications…")
+            } else if notifications.isEmpty {
+                ContentUnavailableView(
+                    "You’re all caught up",
+                    systemImage: "bell",
+                    description: Text("New activity on this instance will appear here.")
+                )
+            } else {
+                List(notifications) { notification in
+                    Button {
+                        open(notification)
+                    } label: {
+                        NotificationRow(notification: notification)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .refreshable { await model.loadNotifications() }
+            }
+        }
+        .navigationTitle("Notifications")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
             if store.unreadNotificationCount > 0 {
-                HStack {
-                    Spacer()
+                ToolbarItem(placement: .primaryAction) {
                     Button("Mark all read", systemImage: "checkmark.circle") {
                         Task { await model.markAllNotificationsRead() }
                     }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-            }
-
-            Group {
-                if model.isLoadingNotifications && notifications.isEmpty {
-                    ProgressView("Loading notifications…")
-                } else if notifications.isEmpty {
-                    ContentUnavailableView(
-                        "You’re all caught up",
-                        systemImage: "bell",
-                        description: Text("New activity on this instance will appear here.")
-                    )
-                } else {
-                    List(notifications) { notification in
-                        Button {
-                            open(notification)
-                        } label: {
-                            NotificationRow(notification: notification)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .refreshable { await model.loadNotifications() }
                 }
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
         .task { await model.loadNotifications() }
     }
 }
@@ -6157,6 +5925,62 @@ private struct NotificationRow: View {
     private var timestamp: String {
         guard let date = ISO8601DateFormatter().date(from: notification.createdAt) else { return "" }
         return date.formatted(.relative(presentation: .named))
+    }
+}
+
+private enum ExploreHubSection: String, CaseIterable, Identifiable {
+    case search
+    case communities
+    case apps
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .search: "Everything"
+        case .communities: "Communities"
+        case .apps: "Apps"
+        }
+    }
+}
+
+private struct ExploreHubView: View {
+    let communities: [Community]
+    @ObservedObject var store: SyncStore
+    let openChannel: (String, String) -> Void
+    let openChat: (String) -> Void
+    let openCommunity: (String) async -> Void
+    @State private var section: ExploreHubSection = .search
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Search scope", selection: $section) {
+                ForEach(ExploreHubSection.allCases) { section in
+                    Text(section.title).tag(section)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            switch section {
+            case .search:
+                SearchView(
+                    communities: communities,
+                    store: store,
+                    openChannel: openChannel,
+                    openChat: openChat
+                )
+            case .communities:
+                CommunityDiscoveryView(store: store, openCommunity: openCommunity)
+            case .apps:
+                RootAppStoreView(store: store)
+            }
+        }
+        .navigationTitle("Search")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
