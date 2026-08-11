@@ -448,12 +448,16 @@ private struct HomeContent: View {
         .padding(.leading, 8)
         .padding(.trailing, 6)
         .frame(height: 52)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
+        .background(alignment: .trailing) {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
+                .fill(.regularMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
+                }
+                .padding(.leading, 38)
+                .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
         }
-        .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
     }
 
     private var ownProfile: UserProfile? {
@@ -920,8 +924,12 @@ private struct EventsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                Text("Discover what is happening across this Common Ground instance.")
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: 12) {
+                    Text("Discover what is happening across this Common Ground instance.")
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if mode == .discover { eventFilterMenu }
+                }
 
                 Picker("Events", selection: $mode) {
                     ForEach(EventsContentMode.allCases) { option in
@@ -941,30 +949,7 @@ private struct EventsView: View {
             .padding(20)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle("Events")
-        .toolbar {
-            if mode == .discover {
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Picker("Scope", selection: $scope) {
-                            ForEach(CommunityFeedScope.allCases, id: \.self) { option in
-                                Text(option.feedTitle).tag(option)
-                            }
-                        }
-                        Button("Choose topics", systemImage: "number") {
-                            showTopicPicker = true
-                        }
-                    } label: {
-                        Label(
-                            "Filters",
-                            systemImage: topics.isEmpty && scope == .explore
-                                ? "line.3.horizontal.decrease.circle"
-                                : "line.3.horizontal.decrease.circle.fill"
-                        )
-                    }
-                }
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .refreshable { await refresh() }
         .task(id: query) { await refresh() }
         .sheet(item: $route) { route in
@@ -976,6 +961,29 @@ private struct EventsView: View {
                 initialSelection: topics
             ) { topics = $0 }
         }
+    }
+
+    private var eventFilterMenu: some View {
+        Menu {
+            Picker("Scope", selection: $scope) {
+                ForEach(CommunityFeedScope.allCases, id: \.self) { option in
+                    Text(option.feedTitle).tag(option)
+                }
+            }
+            Button("Choose topics", systemImage: "number") {
+                showTopicPicker = true
+            }
+        } label: {
+            Image(
+                systemName: topics.isEmpty && scope == .explore
+                    ? "line.3.horizontal.decrease"
+                    : "line.3.horizontal.decrease.circle.fill"
+            )
+            .font(.title3.weight(.semibold))
+            .frame(width: 42, height: 42)
+            .background(.thinMaterial, in: Circle())
+        }
+        .accessibilityLabel("Filters")
     }
 
     @ViewBuilder
@@ -1168,12 +1176,17 @@ private struct FeedView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
                 if let ownUser = store.ownUser {
-                    FeedPostComposerPrompt(
-                        name: ownUser.displayName,
-                        imageURL: ownUserImageID.flatMap { model.attachmentURLs[$0] }
-                    ) {
-                        showPostComposer = true
+                    HStack(spacing: 0) {
+                        FeedPostComposerPrompt(
+                            name: ownUser.displayName,
+                            imageURL: ownUserImageID.flatMap { model.attachmentURLs[$0] }
+                        ) {
+                            showPostComposer = true
+                        }
+                        feedFilterMenu
+                            .padding(.trailing, 14)
                     }
+                    .background(Color(uiColor: .systemBackground))
                 }
                 if isInitiallyLoading {
                     ProgressView("Loading Feed…")
@@ -1196,51 +1209,7 @@ private struct FeedView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color(uiColor: .systemGroupedBackground))
-        .navigationTitle("Feed")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Picker("Scope", selection: $scope) {
-                        ForEach(PostFeedScope.allCases, id: \.self) { option in
-                            Text(option.feedTitle).tag(option)
-                        }
-                    }
-
-                    Menu("Post authors") {
-                        Toggle(
-                            "People",
-                            isOn: actorTypeBinding(.user)
-                        )
-                        Toggle(
-                            "Communities",
-                            isOn: actorTypeBinding(.community)
-                        )
-                    }
-
-                    Picker("Community verification", selection: $verification) {
-                        ForEach(FeedVerification.allCases, id: \.self) { option in
-                            Text(option.title).tag(option)
-                        }
-                    }
-
-                    Button {
-                        showTopicPicker = true
-                    } label: {
-                        Label(
-                            topics.isEmpty ? "Choose topics" : "Topics (\(topics.count))",
-                            systemImage: "number"
-                        )
-                    }
-                } label: {
-                    Label(
-                        "Filters",
-                        systemImage: filtersAreDefault
-                            ? "line.3.horizontal.decrease.circle"
-                            : "line.3.horizontal.decrease.circle.fill"
-                    )
-                }
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .refreshable { await load() }
         .task(id: query) { await load() }
         .sheet(isPresented: $showTopicPicker) {
@@ -1286,6 +1255,46 @@ private struct FeedView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
+    }
+
+    private var feedFilterMenu: some View {
+        Menu {
+            Picker("Scope", selection: $scope) {
+                ForEach(PostFeedScope.allCases, id: \.self) { option in
+                    Text(option.feedTitle).tag(option)
+                }
+            }
+
+            Menu("Post authors") {
+                Toggle("People", isOn: actorTypeBinding(.user))
+                Toggle("Communities", isOn: actorTypeBinding(.community))
+            }
+
+            Picker("Community verification", selection: $verification) {
+                ForEach(FeedVerification.allCases, id: \.self) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+
+            Button {
+                showTopicPicker = true
+            } label: {
+                Label(
+                    topics.isEmpty ? "Choose topics" : "Topics (\(topics.count))",
+                    systemImage: "number"
+                )
+            }
+        } label: {
+            Image(
+                systemName: filtersAreDefault
+                    ? "line.3.horizontal.decrease"
+                    : "line.3.horizontal.decrease.circle.fill"
+            )
+            .font(.title3.weight(.semibold))
+            .frame(width: 42, height: 42)
+            .background(Color(uiColor: .secondarySystemBackground), in: Circle())
+        }
+        .accessibilityLabel("Filters")
     }
 
     private var emptyDescription: String {
@@ -1813,6 +1822,31 @@ private struct SelectedTopicChips: View {
     }
 }
 
+private struct CompactSearchField: View {
+    @Binding var text: String
+    let prompt: String
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if !text.isEmpty {
+                Button("Clear search", systemImage: "xmark.circle.fill") {
+                    text = ""
+                }
+                .labelStyle(.iconOnly)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 13)
+        .frame(height: 42)
+        .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+    }
+}
+
 private struct FeedCommunityLabel: View {
     @EnvironmentObject private var model: AppModel
     let community: CommunitySummary?
@@ -2054,7 +2088,7 @@ private struct OverviewView: View {
             }
             .padding(20)
         }
-        .navigationTitle("Overview")
+        .toolbar(.hidden, for: .navigationBar)
         .refreshable { await model.refreshHome() }
         .task { await model.loadNotifications() }
     }
@@ -2106,6 +2140,34 @@ private struct CommunityDiscoveryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                CompactSearchField(text: $query, prompt: "Community name or tag")
+                Button {
+                    showTagPicker = true
+                } label: {
+                    Image(
+                        systemName: selectedTags.isEmpty
+                            ? "line.3.horizontal.decrease"
+                            : "line.3.horizontal.decrease.circle.fill"
+                    )
+                    .frame(width: 42, height: 42)
+                    .background(Color(uiColor: .secondarySystemBackground), in: Circle())
+                }
+                .accessibilityLabel(selectedTags.isEmpty ? "Tags" : "Tags, \(selectedTags.count) selected")
+                Button {
+                    showCreate = true
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 42, height: 42)
+                        .background(AppTheme.accent, in: Circle())
+                        .foregroundStyle(.white)
+                }
+                .accessibilityLabel("Create community")
+            }
+            .font(.title3.weight(.semibold))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
             SelectedTopicChips(topics: $selectedTags)
                 .padding(.horizontal, 16)
                 .padding(.top, selectedTags.isEmpty ? 0 : 8)
@@ -2144,23 +2206,7 @@ private struct CommunityDiscoveryView: View {
                 }
             }
         }
-        .navigationTitle("Discover Communities")
-        .searchable(text: $query, prompt: "Community name or tag")
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    showTagPicker = true
-                } label: {
-                    Label(
-                        selectedTags.isEmpty ? "Tags" : "Tags (\(selectedTags.count))",
-                        systemImage: selectedTags.isEmpty
-                            ? "line.3.horizontal.decrease.circle"
-                            : "line.3.horizontal.decrease.circle.fill"
-                    )
-                }
-                Button("Create community", systemImage: "plus") { showCreate = true }
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .task(id: discoveryQuery) {
             do {
                 try await Task.sleep(for: .milliseconds(query.isEmpty ? 0 : 350))
@@ -2697,56 +2743,62 @@ private struct RootAppStoreView: View {
     @State private var selectedPlugin: AppStorePlugin?
 
     var body: some View {
-        Group {
-            if model.isLoadingAppStore && model.appStorePlugins.isEmpty {
-                ProgressView("Loading apps…")
-            } else if model.appStorePlugins.isEmpty {
-                ContentUnavailableView(
-                    search.isEmpty ? "No apps available" : "No apps found",
-                    systemImage: "storefront",
-                    description: Text(
-                        search.isEmpty
-                            ? "Apps published by this instance will appear here."
-                            : "Try a different search."
+        VStack(spacing: 0) {
+            CompactSearchField(text: $search, prompt: "Search apps")
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+
+            Group {
+                if model.isLoadingAppStore && model.appStorePlugins.isEmpty {
+                    ProgressView("Loading apps…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if model.appStorePlugins.isEmpty {
+                    ContentUnavailableView(
+                        search.isEmpty ? "No apps available" : "No apps found",
+                        systemImage: "storefront",
+                        description: Text(
+                            search.isEmpty
+                                ? "Apps published by this instance will appear here."
+                                : "Try a different search."
+                        )
                     )
-                )
-            } else {
-                List(model.appStorePlugins) { plugin in
-                    Button { selectedPlugin = plugin } label: {
-                        HStack(alignment: .top, spacing: 12) {
-                            AppStoreMark(
-                                name: plugin.name,
-                                url: plugin.imageId.flatMap { model.attachmentURLs[$0] }
-                            )
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(plugin.name).font(.headline)
-                                Text(plugin.description)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(3)
-                                HStack(spacing: 10) {
-                                    Label("\(plugin.communityCount)", systemImage: "person.3")
-                                    if let firstTag = plugin.tags?.first {
-                                        Text("#\(firstTag)")
+                } else {
+                    List(model.appStorePlugins) { plugin in
+                        Button { selectedPlugin = plugin } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                AppStoreMark(
+                                    name: plugin.name,
+                                    url: plugin.imageId.flatMap { model.attachmentURLs[$0] }
+                                )
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(plugin.name).font(.headline)
+                                    Text(plugin.description)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(3)
+                                    HStack(spacing: 10) {
+                                        Label("\(plugin.communityCount)", systemImage: "person.3")
+                                        if let firstTag = plugin.tags?.first {
+                                            Text("#\(firstTag)")
+                                        }
                                     }
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
                                 }
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.tertiary)
                             }
-                            Spacer(minLength: 0)
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.tertiary)
+                            .padding(.vertical, 5)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.vertical, 5)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    .refreshable { await model.loadAppStorePlugins(query: search) }
                 }
-                .refreshable { await model.loadAppStorePlugins(query: search) }
             }
         }
-        .navigationTitle("App Store")
-        .searchable(text: $search, prompt: "Search apps")
+        .toolbar(.hidden, for: .navigationBar)
         .task(id: search) {
             try? await Task.sleep(for: .milliseconds(search.isEmpty ? 0 : 250))
             guard !Task.isCancelled else { return }
@@ -4509,15 +4561,19 @@ private struct CommunityHomeView: View {
                    let url = model.attachmentURLs[imageID] {
                     CommunityFeatureImage(url: url, height: 250)
                 }
-                VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 14) {
                     CommunityMark(
                         name: community.title,
-                        url: community.logoSmallId.flatMap { model.attachmentURLs[$0] }
+                        url: community.logoSmallId.flatMap { model.attachmentURLs[$0] },
+                        size: 52
                     )
-                        .scaleEffect(1.35, anchor: .leading)
-                        .padding(.bottom, 8)
-                    Text("\(community.memberCount) members · \(community.channels.count) channels")
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(community.title)
+                            .font(.headline)
+                        Text("\(community.memberCount) members · \(community.channels.count) channels")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 HStack(spacing: 14) {
@@ -4625,7 +4681,7 @@ private struct CommunityHomeView: View {
             .padding(24)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle(community.title)
+        .toolbar(.hidden, for: .navigationBar)
         .refreshable {
             async let home: Void = model.refreshCommunityHome(communityID: community.id)
             async let events: Void = model.loadCommunityEvents(communityID: community.id)
@@ -5406,6 +5462,7 @@ private struct ArticleReaderView: View {
                     }
                 }
             }
+            .toolbar(.visible, for: .navigationBar)
             .navigationTitle(presentation == .pushedPost ? "Post" : "Article")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -5653,30 +5710,33 @@ private struct PublicCommunityChannelListView: View {
                 }
             }
         }
-        .navigationTitle(community.title)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    if let shareURL = model.communityShareURL(community) {
-                        ShareLink(
-                            item: shareURL,
-                            subject: Text(community.title),
-                            message: Text("Explore \(community.title) on Common Ground")
-                        ) {
-                            Label("Share community", systemImage: "square.and.arrow.up")
-                        }
+        .toolbar(.hidden, for: .navigationBar)
+        .overlay(alignment: .topTrailing) {
+            Menu {
+                if let shareURL = model.communityShareURL(community) {
+                    ShareLink(
+                        item: shareURL,
+                        subject: Text(community.title),
+                        message: Text("Explore \(community.title) on Common Ground")
+                    ) {
+                        Label("Share community", systemImage: "square.and.arrow.up")
                     }
-                    Button("Report community", systemImage: "exclamationmark.bubble") {
-                        reportTarget = ReportTarget(
-                            type: .community,
-                            id: community.id,
-                            subject: community.title
-                        )
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
                 }
+                Button("Report community", systemImage: "exclamationmark.bubble") {
+                    reportTarget = ReportTarget(
+                        type: .community,
+                        id: community.id,
+                        subject: community.title
+                    )
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 42, height: 42)
+                    .background(.regularMaterial, in: Circle())
             }
+            .accessibilityLabel("Community options")
+            .padding(12)
         }
         .alert("Join request submitted", isPresented: $joinRequestPending) {
             Button("OK", role: .cancel) {}
@@ -5777,47 +5837,50 @@ private struct ChannelListView: View {
                 }
             }
         }
-        .navigationTitle(community.title)
+        .toolbar(.hidden, for: .navigationBar)
         .refreshable { await model.refreshHome() }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    if let shareURL = model.communityShareURL(community) {
-                        ShareLink(
-                            item: shareURL,
-                            subject: Text(community.title),
-                            message: Text("Join \(community.title) on Common Ground")
-                        ) {
-                            Label("Share community", systemImage: "square.and.arrow.up")
-                        }
-                    }
-                    Button("Notification settings", systemImage: "bell.badge") {
-                        showNotificationSettings = true
-                    }
-                    if community.isAdmin {
-                        Button("Community settings", systemImage: "gearshape") {
-                            showCommunitySettings = true
-                        }
-                    }
-                    Divider()
-                    Button("Report community", systemImage: "exclamationmark.bubble") {
-                        reportTarget = ReportTarget(
-                            type: .community,
-                            id: community.id,
-                            subject: community.title
-                        )
-                    }
-                    Button(
-                        "Leave community",
-                        systemImage: "rectangle.portrait.and.arrow.right",
-                        role: .destructive
+        .overlay(alignment: .topTrailing) {
+            Menu {
+                if let shareURL = model.communityShareURL(community) {
+                    ShareLink(
+                        item: shareURL,
+                        subject: Text(community.title),
+                        message: Text("Join \(community.title) on Common Ground")
                     ) {
-                        showLeaveConfirmation = true
+                        Label("Share community", systemImage: "square.and.arrow.up")
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
                 }
+                Button("Notification settings", systemImage: "bell.badge") {
+                    showNotificationSettings = true
+                }
+                if community.isAdmin {
+                    Button("Community settings", systemImage: "gearshape") {
+                        showCommunitySettings = true
+                    }
+                }
+                Divider()
+                Button("Report community", systemImage: "exclamationmark.bubble") {
+                    reportTarget = ReportTarget(
+                        type: .community,
+                        id: community.id,
+                        subject: community.title
+                    )
+                }
+                Button(
+                    "Leave community",
+                    systemImage: "rectangle.portrait.and.arrow.right",
+                    role: .destructive
+                ) {
+                    showLeaveConfirmation = true
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 42, height: 42)
+                    .background(.regularMaterial, in: Circle())
             }
+            .accessibilityLabel("Community options")
+            .padding(12)
         }
         .sheet(item: $selectedPlugin) { plugin in
             PluginRuntimeView(community: community, plugin: plugin)
@@ -5971,7 +6034,7 @@ private struct ChatListView: View {
                 }
             }
         }
-        .navigationTitle("Messages")
+        .toolbar(.hidden, for: .navigationBar)
         .task(id: chats.flatMap(\.userIds).sorted().joined(separator: ",")) {
             await model.loadChatMembers(chats: chats)
         }
@@ -5988,37 +6051,43 @@ private struct NotificationsView: View {
     }
 
     var body: some View {
-        Group {
-            if model.isLoadingNotifications && notifications.isEmpty {
-                ProgressView("Loading notifications…")
-            } else if notifications.isEmpty {
-                ContentUnavailableView(
-                    "You’re all caught up",
-                    systemImage: "bell",
-                    description: Text("New activity on this instance will appear here.")
-                )
-            } else {
-                List(notifications) { notification in
-                    Button {
-                        open(notification)
-                    } label: {
-                        NotificationRow(notification: notification)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .refreshable { await model.loadNotifications() }
-            }
-        }
-        .navigationTitle("Notifications")
-        .toolbar {
+        VStack(spacing: 0) {
             if store.unreadNotificationCount > 0 {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Read all") {
+                HStack {
+                    Spacer()
+                    Button("Mark all read", systemImage: "checkmark.circle") {
                         Task { await model.markAllNotificationsRead() }
                     }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+
+            Group {
+                if model.isLoadingNotifications && notifications.isEmpty {
+                    ProgressView("Loading notifications…")
+                } else if notifications.isEmpty {
+                    ContentUnavailableView(
+                        "You’re all caught up",
+                        systemImage: "bell",
+                        description: Text("New activity on this instance will appear here.")
+                    )
+                } else {
+                    List(notifications) { notification in
+                        Button {
+                            open(notification)
+                        } label: {
+                            NotificationRow(notification: notification)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .refreshable { await model.loadNotifications() }
                 }
             }
         }
+        .toolbar(.hidden, for: .navigationBar)
         .task { await model.loadNotifications() }
     }
 }
@@ -6098,56 +6167,61 @@ private struct SearchView: View {
     }
 
     var body: some View {
-        Group {
-            if query.isEmpty {
-                ContentUnavailableView(
-                    "Search this instance",
-                    systemImage: "magnifyingglass",
-                    description: Text("Start with a community or channel name.")
-                )
-            } else if channelResults.isEmpty && userResults.isEmpty && !model.isSearchingUsers {
-                ContentUnavailableView.search(text: query)
-            } else {
-                List {
-                    if !userResults.isEmpty {
-                        Section("People") {
-                            ForEach(userResults) { user in
-                                Button { selectedUser = user } label: {
-                                    HStack(spacing: 12) {
-                                        Avatar(name: user.displayName, isBot: user.isBot, small: true)
+        VStack(spacing: 0) {
+            CompactSearchField(text: $query, prompt: "People, communities, and channels")
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+
+            Group {
+                if query.isEmpty {
+                    ContentUnavailableView(
+                        "Search this instance",
+                        systemImage: "magnifyingglass",
+                        description: Text("Start with a community or channel name.")
+                    )
+                } else if channelResults.isEmpty && userResults.isEmpty && !model.isSearchingUsers {
+                    ContentUnavailableView.search(text: query)
+                } else {
+                    List {
+                        if !userResults.isEmpty {
+                            Section("People") {
+                                ForEach(userResults) { user in
+                                    Button { selectedUser = user } label: {
+                                        HStack(spacing: 12) {
+                                            Avatar(name: user.displayName, isBot: user.isBot, small: true)
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(user.displayName).fontWeight(.semibold)
+                                                Text(user.onlineStatus.capitalized)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        if !channelResults.isEmpty {
+                            Section("Channels") {
+                                ForEach(channelResults, id: \.1.channelId) { community, channel in
+                                    Button { openChannel(channel.channelId, community.id) } label: {
                                         VStack(alignment: .leading, spacing: 3) {
-                                            Text(user.displayName).fontWeight(.semibold)
-                                            Text(user.onlineStatus.capitalized)
+                                            Label(channel.title, systemImage: "number")
+                                            Text(community.title)
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                         }
                                     }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
-                    if !channelResults.isEmpty {
-                        Section("Channels") {
-                            ForEach(channelResults, id: \.1.channelId) { community, channel in
-                                Button { openChannel(channel.channelId, community.id) } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Label(channel.title, systemImage: "number")
-                                        Text(community.title)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
+                    .overlay { if model.isSearchingUsers { ProgressView() } }
                 }
-                .overlay { if model.isSearchingUsers { ProgressView() } }
             }
         }
-        .navigationTitle("Search")
-        .searchable(text: $query, prompt: "People, communities, and channels")
+        .toolbar(.hidden, for: .navigationBar)
         .task(id: query) {
             do {
                 try await Task.sleep(for: .milliseconds(300))

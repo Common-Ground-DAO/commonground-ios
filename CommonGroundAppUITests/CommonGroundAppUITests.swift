@@ -56,25 +56,24 @@ final class CommonGroundAppUITests: XCTestCase {
         app.launch()
 
         let back = app.buttons["BackButton"]
-        if back.waitForExistence(timeout: 30) { back.tap() }
+        if back.waitForExistence(timeout: 10) { app.swipeRight() }
 
         let feed = app.buttons["navigation.feed"]
         guard feed.waitForExistence(timeout: 5) else {
             throw XCTSkip("Requires an authenticated simulator")
         }
         feed.tap()
-        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["Filters"].exists)
 
         let composerPrompt = app.buttons["feed.composer.prompt"]
-        XCTAssertTrue(composerPrompt.waitForExistence(timeout: 5))
+        XCTAssertTrue(composerPrompt.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Filters"].exists)
         composerPrompt.tap()
         XCTAssertTrue(app.navigationBars["Create Post"].waitForExistence(timeout: 5))
         let publishPost = app.buttons["feed.composer.publish"]
         XCTAssertTrue(publishPost.exists)
         XCTAssertFalse(publishPost.isEnabled)
         app.buttons["feed.composer.cancel"].tap()
-        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 5))
+        XCTAssertTrue(composerPrompt.waitForExistence(timeout: 5))
 
         let firstPost = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'feed.post.'"))
@@ -102,10 +101,9 @@ final class CommonGroundAppUITests: XCTestCase {
         )
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()
-        XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 5))
+        XCTAssertTrue(composerPrompt.waitForExistence(timeout: 5))
 
-        XCTAssertTrue(back.waitForExistence(timeout: 5))
-        back.tap()
+        app.swipeRight()
         let events = app.staticTexts["Events"]
         XCTAssertTrue(events.waitForExistence(timeout: 5))
         events.tap()
