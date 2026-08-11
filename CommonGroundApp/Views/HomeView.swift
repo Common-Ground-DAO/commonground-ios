@@ -59,7 +59,7 @@ private struct HomeContent: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var store: SyncStore
     @State private var selectedSpace: NavigationSpace = .home
-    @State private var sidebarSelection: SidebarItem? = .feed
+    @State private var sidebarSelection: SidebarItem? = .overview
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var showAccount = false
@@ -194,11 +194,16 @@ private struct HomeContent: View {
             ZStack(alignment: .leading) {
                 navigationPanel
                     .navigationBarTitleDisplayMode(.inline)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    accountDock
-                }
-                .frame(width: max(0, proxy.size.width - 76), height: proxy.size.height)
-                .offset(x: 76)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        Color.clear.frame(height: 72)
+                    }
+                    .overlay(alignment: .bottom) {
+                        accountDock
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 8)
+                    }
+                    .frame(width: max(0, proxy.size.width - 76), height: proxy.size.height)
+                    .offset(x: 76)
 
                 spaceRail
                     .frame(height: proxy.size.height)
@@ -217,16 +222,16 @@ private struct HomeContent: View {
     private var spaceRail: some View {
         VStack(spacing: 10) {
             railDestination(
-                title: "Common Ground",
-                systemImage: "sparkles",
-                badge: store.unreadNotificationCount,
-                selected: selectedSpace == .home
+                title: "Feed",
+                systemImage: "newspaper.fill",
+                selected: selectedSpace == .home && sidebarSelection == .feed
             ) {
                 rememberCurrentCommunityDestination()
                 selectedSpace = .home
-                if !isHomeDestination(sidebarSelection) { sidebarSelection = .feed }
+                sidebarSelection = .feed
+                preferredCompactColumn = .detail
             }
-            .accessibilityIdentifier("navigation.home")
+            .accessibilityIdentifier("navigation.feed")
 
             railDestination(
                 title: "Messages",
@@ -239,6 +244,20 @@ private struct HomeContent: View {
                 sidebarSelection = .directMessages
             }
             .accessibilityIdentifier("navigation.messages")
+
+            railDestination(
+                title: "Home",
+                systemImage: "house.fill",
+                selected: selectedSpace == .home && sidebarSelection != .feed
+            ) {
+                rememberCurrentCommunityDestination()
+                selectedSpace = .home
+                if !isHomeDestination(sidebarSelection) || sidebarSelection == .feed {
+                    sidebarSelection = .overview
+                }
+                preferredCompactColumn = .sidebar
+            }
+            .accessibilityIdentifier("navigation.home")
 
             Divider()
                 .padding(.horizontal, 12)
@@ -254,21 +273,17 @@ private struct HomeContent: View {
                     ForEach(communities) { community in
                         communityRailDestination(community)
                     }
+                    railDestination(
+                        title: "Create a community",
+                        systemImage: "plus",
+                        selected: false,
+                        action: { showCreateCommunity = true }
+                    )
+                    .accessibilityIdentifier("navigation.createCommunity")
                 }
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
-
-            Divider()
-                .padding(.horizontal, 12)
-
-            railDestination(
-                title: "Create a community",
-                systemImage: "plus",
-                selected: false,
-                action: { showCreateCommunity = true }
-            )
-            .accessibilityIdentifier("navigation.createCommunity")
         }
         .padding(.vertical, 10)
         .frame(width: 76)
@@ -335,15 +350,8 @@ private struct HomeContent: View {
     private var homeNavigationPanel: some View {
         List {
             Section {
-                homeDestination("Feed", systemImage: "rectangle.stack", item: .feed)
                 homeDestination("Overview", systemImage: "square.grid.2x2", item: .overview)
                 homeDestination("Events", systemImage: "calendar", item: .events)
-                homeDestination(
-                    "Notifications",
-                    systemImage: "bell",
-                    item: .notifications,
-                    badge: store.unreadNotificationCount
-                )
                 homeDestination("Search", systemImage: "magnifyingglass", item: .search)
             }
 
@@ -351,21 +359,13 @@ private struct HomeContent: View {
                 homeDestination("Discover Communities", systemImage: "safari", item: .discoverCommunities)
                 homeDestination("App Store", systemImage: "storefront", item: .appStore)
             }
-
-            Section {
-                Button { showCreateCommunity = true } label: {
-                    Label("Create a community", systemImage: "plus.circle.fill")
-                        .foregroundStyle(AppTheme.accent)
-                        .fontWeight(.semibold)
-                }
-            }
         }
         .navigationTitle(AppConfiguration.productName)
         .refreshable { await model.refreshHome() }
     }
 
     private var accountDock: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
             Button {
                 if let id = store.ownUser?.id {
                     notificationProfile = NotificationProfileRoute(id: id)
@@ -373,18 +373,19 @@ private struct HomeContent: View {
                     showAccount = true
                 }
             } label: {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     ZStack(alignment: .bottomTrailing) {
                         Avatar(
                             name: ownProfile?.displayName ?? store.ownUser?.displayName ?? "CG",
-                            url: ownProfile?.imageID.flatMap { model.attachmentURLs[$0] },
-                            small: true
+                            url: ownProfile?.imageID.flatMap { model.attachmentURLs[$0] }
                         )
+                        .scaleEffect(1.32)
                         Circle()
                             .fill(ownStatus == "online" ? Color.green : Color.secondary)
-                            .frame(width: 11, height: 11)
-                            .overlay(Circle().stroke(Color(uiColor: .secondarySystemBackground), lineWidth: 2))
+                            .frame(width: 13, height: 13)
+                            .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2))
                     }
+                    .frame(width: 54, height: 54)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(ownProfile?.displayName ?? store.ownUser?.displayName ?? "Member")
                             .font(.subheadline.weight(.semibold))
@@ -410,12 +411,47 @@ private struct HomeContent: View {
             .foregroundStyle(.secondary)
             .frame(width: 44, height: 44)
             .accessibilityIdentifier("navigation.account.settings")
+
+            Button {
+                rememberCurrentCommunityDestination()
+                selectedSpace = .home
+                sidebarSelection = .notifications
+                preferredCompactColumn = .detail
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "bell.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                    if store.unreadNotificationCount > 0 {
+                        Text(store.unreadNotificationCount > 99 ? "99+" : "\(store.unreadNotificationCount)")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, store.unreadNotificationCount > 9 ? 5 : 4)
+                            .frame(minHeight: 18)
+                            .background(Color.red, in: Capsule())
+                            .offset(x: 3, y: -2)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Notifications")
+            .accessibilityValue(
+                store.unreadNotificationCount > 0
+                    ? "\(store.unreadNotificationCount) unread"
+                    : "No unread notifications"
+            )
+            .accessibilityIdentifier("navigation.notifications")
         }
-        .padding(.leading, 12)
+        .padding(.leading, 8)
         .padding(.trailing, 6)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
+        .frame(height: 52)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
     }
 
     private var ownProfile: UserProfile? {

@@ -58,13 +58,10 @@ final class CommonGroundAppUITests: XCTestCase {
         let back = app.buttons["BackButton"]
         if back.waitForExistence(timeout: 30) { back.tap() }
 
-        let home = app.buttons["navigation.home"]
-        guard home.waitForExistence(timeout: 5) else {
+        let feed = app.buttons["navigation.feed"]
+        guard feed.waitForExistence(timeout: 5) else {
             throw XCTSkip("Requires an authenticated simulator")
         }
-        home.tap()
-        let feed = app.buttons["navigation.destination.feed"]
-        XCTAssertTrue(feed.waitForExistence(timeout: 5))
         feed.tap()
         XCTAssertTrue(app.navigationBars["Feed"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Filters"].exists)
