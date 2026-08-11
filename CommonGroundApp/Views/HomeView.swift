@@ -197,11 +197,6 @@ private struct HomeContent: View {
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         Color.clear.frame(height: 72)
                     }
-                    .overlay(alignment: .bottom) {
-                        accountDock
-                            .padding(.horizontal, 10)
-                            .padding(.bottom, 8)
-                    }
                     .frame(width: max(0, proxy.size.width - 76), height: proxy.size.height)
                     .offset(x: 76)
 
@@ -213,6 +208,12 @@ private struct HomeContent: View {
                     .fill(Color(uiColor: .separator))
                     .frame(width: 0.5, height: proxy.size.height)
                     .offset(x: 76)
+
+                accountDock
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
+                    .zIndex(2)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
         }
@@ -221,6 +222,20 @@ private struct HomeContent: View {
 
     private var spaceRail: some View {
         VStack(spacing: 10) {
+            railDestination(
+                title: "Home",
+                systemImage: "sparkles",
+                selected: selectedSpace == .home && sidebarSelection != .feed
+            ) {
+                rememberCurrentCommunityDestination()
+                selectedSpace = .home
+                if !isHomeDestination(sidebarSelection) || sidebarSelection == .feed {
+                    sidebarSelection = .overview
+                }
+                preferredCompactColumn = .sidebar
+            }
+            .accessibilityIdentifier("navigation.home")
+
             railDestination(
                 title: "Feed",
                 systemImage: "newspaper.fill",
@@ -244,20 +259,6 @@ private struct HomeContent: View {
                 sidebarSelection = .directMessages
             }
             .accessibilityIdentifier("navigation.messages")
-
-            railDestination(
-                title: "Home",
-                systemImage: "house.fill",
-                selected: selectedSpace == .home && sidebarSelection != .feed
-            ) {
-                rememberCurrentCommunityDestination()
-                selectedSpace = .home
-                if !isHomeDestination(sidebarSelection) || sidebarSelection == .feed {
-                    sidebarSelection = .overview
-                }
-                preferredCompactColumn = .sidebar
-            }
-            .accessibilityIdentifier("navigation.home")
 
             Divider()
                 .padding(.horizontal, 12)
@@ -285,7 +286,8 @@ private struct HomeContent: View {
             }
             .scrollIndicators(.hidden)
         }
-        .padding(.vertical, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 80)
         .frame(width: 76)
         .background(Color(uiColor: .secondarySystemBackground))
     }
@@ -360,7 +362,7 @@ private struct HomeContent: View {
                 homeDestination("App Store", systemImage: "storefront", item: .appStore)
             }
         }
-        .navigationTitle(AppConfiguration.productName)
+        .toolbar(.hidden, for: .navigationBar)
         .refreshable { await model.refreshHome() }
     }
 
