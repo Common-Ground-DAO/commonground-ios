@@ -105,6 +105,7 @@ final class CommonGroundAppUITests: XCTestCase {
         XCTAssertTrue(composerPrompt.waitForExistence(timeout: 5))
 
         back.tap()
+        XCTAssertFalse(feed.isSelected, "Feed must not stay selected after returning to navigation")
         let notifications = app.buttons["navigation.notifications"]
         XCTAssertTrue(notifications.waitForExistence(timeout: 5))
         notifications.tap()
@@ -170,6 +171,25 @@ final class CommonGroundAppUITests: XCTestCase {
                 back.waitForExistence(timeout: 5),
                 "Community home should retain the compact-column back affordance"
             )
+            back.tap()
+            XCTAssertFalse(
+                app.buttons["Community Home"].isSelected,
+                "Community Home must not stay selected after returning to the channel picker"
+            )
         }
+
+        let ownProfile = app.buttons["navigation.account.profile"]
+        XCTAssertTrue(ownProfile.waitForExistence(timeout: 5))
+        ownProfile.tap()
+        let firstMembership = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'profile.community.'"))
+            .firstMatch
+        XCTAssertTrue(firstMembership.waitForExistence(timeout: 10))
+        firstMembership.tap()
+        XCTAssertTrue(
+            app.buttons["Community Home"].waitForExistence(timeout: 10),
+            "Selecting a profile community should open its community navigation"
+        )
+        XCTAssertFalse(app.navigationBars["Profile"].exists)
     }
 }

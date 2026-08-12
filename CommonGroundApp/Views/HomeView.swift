@@ -51,8 +51,25 @@ private struct EventRoute: Identifiable {
     var id: String { event.id }
 }
 
+private struct OpenCommunityAction {
+    let action: (String) -> Void
+    func callAsFunction(_ communityID: String) { action(communityID) }
+}
+
+private struct OpenCommunityActionKey: EnvironmentKey {
+    static let defaultValue = OpenCommunityAction(action: { _ in })
+}
+
+private extension EnvironmentValues {
+    var openCommonGroundCommunity: OpenCommunityAction {
+        get { self[OpenCommunityActionKey.self] }
+        set { self[OpenCommunityActionKey.self] = newValue }
+    }
+}
+
 private struct HomeContent: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @ObservedObject var store: SyncStore
     @State private var selectedSpace: NavigationSpace = .messages
     @State private var sidebarSelection: SidebarItem? = .feed
@@ -102,6 +119,12 @@ private struct HomeContent: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .environment(
+            \.openCommonGroundCommunity,
+            OpenCommunityAction { communityID in
+                Task { await openDiscoveredCommunity(communityID) }
+            }
+        )
         .sheet(isPresented: $showAccount) {
             AccountView(store: store)
                 .presentationDetents([.medium, .large])
@@ -220,7 +243,7 @@ private struct HomeContent: View {
             railDestination(
                 title: "Feed",
                 systemImage: "newspaper.fill",
-                selected: sidebarSelection == .feed
+                selected: railSelectionIsVisible(.feed)
             ) {
                 rememberCurrentCommunityDestination()
                 sidebarSelection = .feed
@@ -232,7 +255,7 @@ private struct HomeContent: View {
                 title: "Messages",
                 systemImage: "bubble.left.fill",
                 badge: unreadChatCount,
-                selected: sidebarSelection == .directMessages
+                selected: railSelectionIsVisible(.directMessages)
             ) {
                 rememberCurrentCommunityDestination()
                 selectedSpace = .messages
@@ -244,7 +267,7 @@ private struct HomeContent: View {
             railDestination(
                 title: "Search",
                 systemImage: "magnifyingglass",
-                selected: sidebarSelection == .search
+                selected: railSelectionIsVisible(.search)
             ) {
                 rememberCurrentCommunityDestination()
                 sidebarSelection = .search
@@ -255,7 +278,7 @@ private struct HomeContent: View {
             railDestination(
                 title: "Events",
                 systemImage: "calendar",
-                selected: sidebarSelection == .events
+                selected: railSelectionIsVisible(.events)
             ) {
                 rememberCurrentCommunityDestination()
                 sidebarSelection = .events
@@ -310,6 +333,7 @@ private struct HomeContent: View {
                 PublicCommunityChannelListView(
                     community: community,
                     selectedChannelID: publicChannelID,
+                    showsDetailSelection: detailSelectionIsVisible,
                     openHome: {
                         publicChannelID = nil
                         preferredCompactColumn = .detail
@@ -328,6 +352,7 @@ private struct HomeContent: View {
                 ChannelListView(
                     community: community,
                     selectedChannelID: model.selectedChannelID,
+                    showsDetailSelection: detailSelectionIsVisible,
                     openHome: {
                         rememberedChannelIDs.removeValue(forKey: community.id)
                         model.selectChannel(nil)
@@ -458,10 +483,9 @@ private struct HomeContent: View {
         _ community: Community,
         isPublicPreview: Bool = false
     ) -> some View {
-        let selected = switch sidebarSelection {
-        case .community(let id), .publicCommunity(let id): id == community.id
-        default: false
-        }
+        let selected = railSelectionIsVisible(
+            isPublicPreview ? .publicCommunity(community.id) : .community(community.id)
+        )
         return Button {
             if isPublicPreview {
                 selectedSpace = .publicCommunity(community.id)
@@ -488,6 +512,7 @@ private struct HomeContent: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel(isPublicPreview ? "Preview \(community.title)" : community.title)
         .accessibilityIdentifier("navigation.community.\(community.id)")
     }
@@ -524,6 +549,7 @@ private struct HomeContent: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel(title)
         .accessibilityValue(badge > 0 ? "\(badge) unread" : "")
     }
@@ -693,6 +719,24 @@ private struct HomeContent: View {
         guard let communityID = model.selectedCommunityID,
               let channelID = model.selectedChannelID else { return }
         rememberedChannelIDs[communityID] = channelID
+    }
+
+    private var detailSelectionIsVisible: Bool {
+        horizontalSizeClass != .compact || preferredCompactColumn == .detail
+    }
+
+    private func railSelectionIsVisible(_ item: SidebarItem) -> Bool {
+        if detailSelectionIsVisible { return sidebarSelection == item }
+        switch (item, selectedSpace) {
+        case (.directMessages, .messages):
+            return true
+        case let (.community(itemID), .community(spaceID)):
+            return itemID == spaceID
+        case let (.publicCommunity(itemID), .publicCommunity(spaceID)):
+            return itemID == spaceID
+        default:
+            return false
+        }
     }
 
     private func openPluginDestination(_ path: String) {
@@ -5433,6 +5477,7 @@ private struct PublicCommunityChannelListView: View {
     @EnvironmentObject private var model: AppModel
     let community: Community
     let selectedChannelID: String?
+    let showsDetailSelection: Bool
     let openHome: () -> Void
     let select: (String) -> Void
     let didJoin: () -> Void
@@ -5474,12 +5519,15 @@ private struct PublicCommunityChannelListView: View {
                     HStack {
                         Label("Community Home", systemImage: "newspaper")
                         Spacer()
-                        if selectedChannelID == nil {
+                        if showsDetailSelection && selectedChannelID == nil {
                             Image(systemName: "checkmark").foregroundStyle(AppTheme.accent)
                         }
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(
+                    showsDetailSelection && selectedChannelID == nil ? .isSelected : []
+                )
             }
 
             Section("Public channels") {
@@ -5492,13 +5540,18 @@ private struct PublicCommunityChannelListView: View {
                             Spacer()
                             if !channel.publicCanRead {
                                 Image(systemName: "lock").foregroundStyle(.tertiary)
-                            } else if selectedChannelID == channel.channelId {
+                            } else if showsDetailSelection && selectedChannelID == channel.channelId {
                                 Image(systemName: "checkmark").foregroundStyle(AppTheme.accent)
                             }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(
+                        showsDetailSelection && selectedChannelID == channel.channelId
+                            ? .isSelected
+                            : []
+                    )
                     .disabled(!channel.publicCanRead)
                 }
             }
@@ -5563,6 +5616,7 @@ private struct ChannelListView: View {
     @State private var selectedPlugin: CommunityPluginInfo?
     let community: Community
     let selectedChannelID: String?
+    let showsDetailSelection: Bool
     let openHome: () -> Void
     let select: (String) -> Void
     let leave: () -> Void
@@ -5582,12 +5636,15 @@ private struct ChannelListView: View {
                     HStack {
                         Label("Community Home", systemImage: "newspaper")
                         Spacer()
-                        if selectedChannelID == nil {
+                        if showsDetailSelection && selectedChannelID == nil {
                             Image(systemName: "checkmark").foregroundStyle(AppTheme.accent)
                         }
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(
+                    showsDetailSelection && selectedChannelID == nil ? .isSelected : []
+                )
             }
             if let description = community.channels.first?.description, !description.isEmpty {
                 Section {
@@ -5602,7 +5659,7 @@ private struct ChannelListView: View {
                         HStack {
                             Label(channel.title, systemImage: "number")
                             Spacer()
-                            if selectedChannelID == channel.channelId {
+                            if showsDetailSelection && selectedChannelID == channel.channelId {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(AppTheme.accent)
                             }
@@ -5610,6 +5667,11 @@ private struct ChannelListView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(
+                        showsDetailSelection && selectedChannelID == channel.channelId
+                            ? .isSelected
+                            : []
+                    )
                 }
             }
             if !community.pluginInfos.isEmpty {
@@ -6282,6 +6344,7 @@ private struct SuggestedPersonTile: View {
 private struct UserProfileView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openCommonGroundCommunity) private var openCommunity
     let userID: String
     @ObservedObject var store: SyncStore
     let openChat: (String) -> Void
@@ -6394,21 +6457,29 @@ private struct UserProfileView: View {
                                 spacing: 16
                             ) {
                                 ForEach(communities) { community in
-                                    VStack(spacing: 7) {
-                                        CommunityMark(
-                                            name: community.title,
-                                            url: community.logoSmallId.flatMap {
-                                                model.attachmentURLs[$0]
-                                            },
-                                            size: 54
-                                        )
-                                        Text(community.title)
-                                            .font(.caption.weight(.semibold))
-                                            .multilineTextAlignment(.center)
-                                            .lineLimit(2)
+                                    Button {
+                                        dismiss()
+                                        openCommunity(community.id)
+                                    } label: {
+                                        VStack(spacing: 7) {
+                                            CommunityMark(
+                                                name: community.title,
+                                                url: community.logoSmallId.flatMap {
+                                                    model.attachmentURLs[$0]
+                                                },
+                                                size: 54
+                                            )
+                                            Text(community.title)
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(.primary)
+                                                .multilineTextAlignment(.center)
+                                                .lineLimit(2)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .top)
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .top)
-                                    .accessibilityElement(children: .combine)
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("profile.community.\(community.id)")
+                                    .accessibilityHint("Opens this community")
                                 }
                             }
                         }
