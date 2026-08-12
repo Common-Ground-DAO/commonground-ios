@@ -106,6 +106,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var articlePublishedAt: [String: String] = [:]
     @Published private(set) var articleRolePermissions: [String: [ArticleRolePermission]] = [:]
     @Published private(set) var profileDetails: [String: UserProfileDetails] = [:]
+    @Published private(set) var userCommunities: [String: [CommunitySummary]] = [:]
     @Published private(set) var channelMembers: [String: ChannelMemberList] = [:]
     @Published private(set) var communityMemberLists: [String: CommunityMemberList] = [:]
     @Published private(set) var communityBans: [String: [CommunityBan]] = [:]
@@ -614,8 +615,16 @@ final class AppModel: ObservableObject {
             await hydrateUsers(ids: [userID])
             async let details = client.profiles.details(userID: userID)
             async let articles = client.articles.userArticles(userID: userID)
+            async let communityIDs = client.profiles.communityIDs(userID: userID)
             profileDetails[userID] = try await details
             userArticles[userID] = try await articles
+            if let ids = try? await communityIDs,
+               let communities = try? await client.communities.summaries(ids: ids) {
+                userCommunities[userID] = communities.sorted {
+                    $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                }
+                await loadAttachmentURLs(objectIDs: communities.compactMap(\.logoSmallId))
+            }
             for item in userArticles[userID] ?? [] {
                 if let published = item.userArticle.published {
                     articlePublishedAt[item.id] = published
@@ -3011,6 +3020,7 @@ final class AppModel: ObservableObject {
         suggestedUsersCursor = nil
         suggestedUsers = []
         userSearchResultIDs = []
+        userCommunities = [:]
         communityResults = []
         appStorePlugins = []
         canLoadMoreSuggestedUsers = false

@@ -4473,7 +4473,8 @@ private struct CommunityHomeView: View {
             .padding(24)
             .frame(maxWidth: .infinity)
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle(community.title)
+        .navigationBarTitleDisplayMode(.inline)
         .refreshable {
             async let home: Void = model.refreshCommunityHome(communityID: community.id)
             async let events: Void = model.loadCommunityEvents(communityID: community.id)
@@ -6034,17 +6035,27 @@ private struct ExploreHubView: View {
                     List {
                         if isLanding, !suggestionRows.isEmpty {
                             Section("People to discover") {
-                                ForEach(suggestionRows, id: \.0.userId) { suggestion, user in
-                                    SuggestedPersonRow(
-                                        user: user,
-                                        reason: suggestionSubtitle(suggestion),
-                                        avatarURL: user.imageID.flatMap { model.attachmentURLs[$0] },
-                                        open: { selectedUser = user },
-                                        follow: {
-                                            Task { await model.setFollowing(userID: user.id, following: true) }
-                                        }
-                                    )
+                                LazyVGrid(
+                                    columns: [GridItem(.adaptive(minimum: 104), spacing: 12)],
+                                    alignment: .leading,
+                                    spacing: 18
+                                ) {
+                                    ForEach(suggestionRows, id: \.0.userId) { suggestion, user in
+                                        SuggestedPersonTile(
+                                            user: user,
+                                            reason: suggestionSubtitle(suggestion),
+                                            avatarURL: user.imageID.flatMap { model.attachmentURLs[$0] },
+                                            open: { selectedUser = user },
+                                            follow: {
+                                                Task {
+                                                    await model.setFollowing(userID: user.id, following: true)
+                                                }
+                                            }
+                                        )
+                                    }
                                 }
+                                .padding(.vertical, 8)
+                                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                                 if model.canLoadMoreSuggestedUsers {
                                     Button("More people", systemImage: "arrow.down.circle") {
                                         Task { await model.loadSuggestedUsers(reset: false) }
@@ -6231,7 +6242,7 @@ private struct ExploreHubRequest: Hashable {
     let tags: [String]
 }
 
-private struct SuggestedPersonRow: View {
+private struct SuggestedPersonTile: View {
     let user: UserProfile
     let reason: String
     let avatarURL: URL?
@@ -6239,25 +6250,32 @@ private struct SuggestedPersonRow: View {
     let follow: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: 8) {
             Button(action: open) {
-                HStack(spacing: 12) {
-                    Avatar(name: user.displayName, url: avatarURL, isBot: user.isBot, small: true)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(user.displayName).fontWeight(.semibold).foregroundStyle(.primary)
-                        Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    }
+                VStack(spacing: 7) {
+                    Avatar(name: user.displayName, url: avatarURL, isBot: user.isBot, size: 64)
+                    Text(user.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .frame(minHeight: 30, alignment: .top)
                 }
+                .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Spacer(minLength: 8)
             Button("Follow", action: follow)
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.capsule)
                 .tint(AppTheme.accent)
+                .controlSize(.small)
         }
-        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 }
 
@@ -6277,6 +6295,7 @@ private struct UserProfileView: View {
     }
     private var articles: [UserArticlePreview] { model.userArticles[userID] ?? [] }
     private var drafts: [UserArticlePreview] { model.userArticleDrafts[userID] ?? [] }
+    private var communities: [CommunitySummary] { model.userCommunities[userID] ?? [] }
     private var cgDetails: [String: JSONValue] {
         model.profileDetails[userID]?
             .detailledProfiles
@@ -6360,6 +6379,38 @@ private struct UserProfileView: View {
                             Text(tags.map { "#\($0)" }.joined(separator: "  "))
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
+                        }
+
+                        if !communities.isEmpty {
+                            Divider().padding(.top, 4)
+                            HStack {
+                                Text("Communities").font(.title2.bold())
+                                Spacer()
+                                Text(communities.count, format: .number)
+                                    .foregroundStyle(.secondary)
+                            }
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 116), spacing: 14)],
+                                spacing: 16
+                            ) {
+                                ForEach(communities) { community in
+                                    VStack(spacing: 7) {
+                                        CommunityMark(
+                                            name: community.title,
+                                            url: community.logoSmallId.flatMap {
+                                                model.attachmentURLs[$0]
+                                            },
+                                            size: 54
+                                        )
+                                        Text(community.title)
+                                            .font(.caption.weight(.semibold))
+                                            .multilineTextAlignment(.center)
+                                            .lineLimit(2)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .top)
+                                    .accessibilityElement(children: .combine)
+                                }
+                            }
                         }
 
                         Divider().padding(.top, 4)
@@ -8123,6 +8174,7 @@ private struct Avatar: View {
     var url: URL? = nil
     var isBot = false
     var small = false
+    var size: CGFloat? = nil
 
     var body: some View {
         Group {
@@ -8136,7 +8188,10 @@ private struct Avatar: View {
                 initials
             }
         }
-            .frame(width: small ? 34 : 42, height: small ? 34 : 42)
+            .frame(
+                width: size ?? (small ? 34 : 42),
+                height: size ?? (small ? 34 : 42)
+            )
             .clipShape(Circle())
             .accessibilityHidden(true)
     }

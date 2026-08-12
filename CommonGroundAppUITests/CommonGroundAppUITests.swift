@@ -165,6 +165,11 @@ final class CommonGroundAppUITests: XCTestCase {
             publicCommunity.tap()
             XCTAssertTrue(app.buttons["Join community"].waitForExistence(timeout: 10))
             XCTAssertTrue(app.buttons["Community Home"].exists)
+            app.buttons["Community Home"].tap()
+            XCTAssertTrue(
+                back.waitForExistence(timeout: 5),
+                "Community home should retain the compact-column back affordance"
+            )
         }
     }
 }

@@ -45,6 +45,13 @@ public struct ProfileAPI: Sendable {
         )
     }
 
+    public func communityIDs(userID: String) async throws -> [String] {
+        try await transport.call(
+            "User/getUserCommunityIds",
+            body: UserIDRequest(userId: userID)
+        )
+    }
+
     public func follow(userID: String) async throws {
         let _: EmptyResponse = try await transport.call(
             "User/followUser",

@@ -366,6 +366,29 @@ final class CommonGroundKitTests: XCTestCase {
         XCTAssertEqual(page.nextCursor, "opaque-cursor")
     }
 
+    func testUserCommunityMembershipContract() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v2/User/getUserCommunityIds")
+            let body = try XCTUnwrap(Self.bodyData(request))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(object["userId"] as? String, "user-1")
+            return Self.response(
+                request,
+                status: 200,
+                body: #"{"status":"OK","data":["community-1","community-2"]}"#
+            )
+        }
+        let api = ProfileAPI(
+            transport: HTTPTransport(
+                baseURL: URL(string: "https://example.org")!,
+                sessionConfiguration: configuration()
+            )
+        )
+
+        let ids = try await api.communityIDs(userID: "user-1")
+        XCTAssertEqual(ids, ["community-1", "community-2"])
+    }
+
     func testCommunityDiscoveryCreateAndUpdateContracts() async throws {
         MockURLProtocol.handler = { request in
             switch request.url?.path {
